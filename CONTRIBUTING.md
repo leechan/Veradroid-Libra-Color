@@ -12,7 +12,7 @@
 ## 提交代码
 
 - 一个 PR 只做一件事。说明改了什么、为什么、怎么验证的（真机型号 / 模拟器 / 静态测试）。
-- 宿主脚本运行在 Kindle 自带的 busybox `sh` 上：只用 POSIX sh 语法，提交前跑 `sh -n`，并运行 `tests/` 下的相关测试。
+- 宿主脚本运行在 Kindle 自带的 busybox `sh` 上：只用 POSIX sh 语法，提交前跑 `sh -n`，并运行 `tests/` 下的相关测试（全部：`sh tests/run-static.sh`，GitHub Actions 也会跑）。
 - `host/pw6/`、`host/k49/`、`host/legacy/` 下的同名文件大多应该保持一致；只改其中一套时请说明原因。
 - 不覆盖 Kindle 系统分区、不改启动分区、不刷内核；会删除用户数据的改动必须有备份和回退。
 - 新文件请在开头加许可标识：shell 脚本放在 shebang 后面 `# SPDX-License-Identifier: GPL-3.0-or-later`，

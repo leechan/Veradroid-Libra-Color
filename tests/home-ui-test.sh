@@ -19,12 +19,15 @@ need   "$S/HomeActivity.java" 'items\.size\(\) \+ 2' 'two pinned tiles (store, s
 # 3. settings show what the host really uses
 need   "$S/HomeActivity.java" 'FLASH_V = \{ "0", "1", "3", "6", "8",' 'KFB_FLASH=8 (host default) is a selectable value'
 need   "$REPO/host/pw6/boot/lib/settings.sh" 'KFB_FLASH=8' 'host default flash'
-need   "$S/HomeActivity.java" 'KFB_SETTLE=40\\nKFB_MODE=0\\nKFB_FLASH=8' 'restore defaults = host defaults'
+# restore defaults sends KEY=default (no hard-coded values) so the host falls back to its own / the model's defaults
+need   "$S/HomeActivity.java" 'RESET_KEYS = \{ "KFB_SETTLE", "KFB_MODE", "KFB_FLASH",' 'restore defaults covers the display settings'
+need   "$S/HomeActivity.java" 'for \(String k : RESET_KEYS\) r\.append\(k\)\.append\("=default\\n"\)' 'restore defaults = host defaults (KEY=default)'
+need   "$REPO/host/pw6/boot/lib/settings.sh" '\[ "\$v" = default \] \|\| echo "\$k=\$v"' 'host drops KEY=default back to its default'
 need   "$S/HomeActivity.java" 'if \(BluetoothActivity\.supported\(\)\) action\(list, "蓝牙' 'bluetooth row only with bluetooth hardware'
 need   "$S/HomeActivity.java" 'if \("size"\.equals\(key\)\) showSettings\(\); else vb\.setText' 'local choices update in place'
 need   "$S/HomeActivity.java" 'iconCache' 'app icons are cached across redraws'
 need   "$S/HomeActivity.java" 'appLabels' 'app labels are cached across redraws'
-need   "$REPO/host/pw6/boot/lib/cmd.sh" 'VD_EXPERIMENTAL=1 ;; esac; B=/tmp/vd-fullupdate-bootstrap.sh; cd /; curl -fsSL https://veradroid.wenjin.jp/bootstrap.sh -o "\$B" && sh "\$B"' 'full update keeps the experimental model'
+need   "$REPO/host/pw6/boot/lib/cmd.sh" 'VD_EXPERIMENTAL=1 ;; esac; B=/tmp/vd-fullupdate-bootstrap.sh; cd /;.* curl -fsSL [^;]*https://veradroid.wenjin.jp/bootstrap.sh -o "\$B"; then sh "\$B"' 'full update keeps the experimental model'
 # 4. store and Google Drive are open to every device
 forbid "$S/StoreActivity.java" 'showBind' 'store still asks for account binding'
 forbid "$S/Cloud.java" 'api/cloud/allowed' 'Google Drive still checks account authorization'

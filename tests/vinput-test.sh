@@ -9,13 +9,21 @@
 #   VINPUT_BASE= sh tests/vinput-test.sh   # skip the comparison
 set -eu
 R=$(cd "$(dirname "$0")/.." && pwd)
+[ "$(uname -s)" = Linux ] || { echo "SKIP vinput-test: needs a Linux host (linux/input.h, LD_PRELOAD)"; exit 0; }
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 gcc -O2 -Wall -o "$T/vinput" "$R/input/vinput.c"
 gcc -O2 -shared -fPIC -o "$T/fakeevdev.so" "$R/tests/vinput/fakeevdev.c" -ldl
 BASE=${VINPUT_BASE-b5f37b3}
 if [ -n "$BASE" ]; then
-    if [ -f "$BASE" ]; then cp "$BASE" "$T/base.c"; else git -C "$R" show "$BASE:input/vinput.c" > "$T/base.c"; fi
+    if [ -f "$BASE" ]; then cp "$BASE" "$T/base.c"
+    elif ! git -C "$R" show "$BASE:input/vinput.c" > "$T/base.c" 2>/dev/null; then
+        # a checkout without that revision (e.g. the public repository's history starts later): no comparison
+        echo "note: base revision $BASE not in this checkout, skipping the comparison (set VINPUT_BASE to a file or rev)"
+        BASE=
+    fi
+fi
+if [ -n "$BASE" ]; then
     gcc -O2 -o "$T/vinput-base" "$T/base.c"
     exec python3 "$R/tests/vinput/run.py" "$T/vinput" "$T/fakeevdev.so" --base "$T/vinput-base"
 fi

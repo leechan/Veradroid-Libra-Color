@@ -10,9 +10,14 @@ grep -q 'case "$(uname -r)" in 3.\*) EMU=' $E || fail "Experimental.sh: confirm 
 grep -q 'export VD_EMUONLY_OK=1' $E || fail "Experimental.sh: no confirmation token"
 grep -q 'export VD_EMUONLY_OK=1' $O || fail "Offline.sh: no confirmation token"
 grep -q '\[ $((now - cu)) -ge 10 \] && \[ $((now - cu)) -le 120 \]' $E || fail "Experimental.sh: second tap window not 10-120 s"
-grep -q 'model_tested() { case "$1" in legacy|imx41) echo emulator-only ;; \*) echo device ;; esac; }' $B || fail "bootstrap: model table flag"
-grep -q 'die "空间不够做书库备份' $B || fail "bootstrap: emulator-only install without a documents backup"
-grep -q 'echo emulator-only > "$VD/tested"' $B || fail "bootstrap: tested marker not written"
+# 0.92+: the shared bootstrap.sh refuses emulator-only models; they install through VeraDroid-Legacy.sh, which asks for
+# the second tap and fetches the legacy installer (static/bootstrap-legacy.sh, published separately from the legacy branch)
+LG=cloud/static/VeraDroid-Legacy.sh; sh -n $LG || fail "syntax $LG"
+grep -q 'imx41) show "老机型：请改用官网“老机型安装”脚本，本机未改动"; exit 1' $B || fail "bootstrap: PW4 / Oasis 3 not sent to the legacy installer"
+grep -q 'legacy) \[ "${VD_LEGACY_TEST:-0}" = 1 \] || { show "老机型' $B || fail "bootstrap: 3.0-kernel models installable from the shared installer"
+grep -q 'export VD_EMUONLY_OK=1' $LG || fail "Legacy.sh: no confirmation token"
+grep -q '\[ $((now - cu)) -ge 10 \] && \[ $((now - cu)) -le 120 \]' $LG || fail "Legacy.sh: second tap window not 10-120 s"
+grep -q 'BS_URL="$BASE/static/bootstrap-legacy.sh"' $LG || fail "Legacy.sh: emulator-only models not routed to the legacy installer"
 grep -q '^test_begin$' $L/veradroid.sh || fail "veradroid.sh: no test watcher"
 grep -q 'test_after_stop "$uc_line"' $L/stop.sh || fail "stop.sh: no return-to-Kindle record"
 grep -q 'nk" != "$(cat "$VD/kmod.id"' $L/lib/auto-update.sh || fail "auto-update: kernel-module changes installed silently"

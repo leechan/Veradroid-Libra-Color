@@ -13,7 +13,15 @@ for m in pw6 k49 legacy; do
     grep -q 'mount --bind /mnt/base-us/documents \$R\$KLIB_MP' "$C" || f "$m: documents not bound at \$R\$KLIB_MP"
     grep -q '^KLIB_MP=/kindle_library$' "$L" || f "$m: KLIB_MP"
     case "$(sed -n 's/^KLIB_MP=//p' "$L")" in /data*|/storage*|/mnt*|'') f "$m: KLIB_MP inside a tree that Android deletes / vold unmounts" ;; esac
-    grep -q 'klib_link \$R/data' "$C" || f "$m: KindleLibrary symlink not set up"
+    case $m in
+    legacy) # /data/media/0/KindleLibrary is a symlink to $KLIB_MP outside /data
+        grep -q 'klib_link \$R/data' "$C" || f "$m: KindleLibrary symlink not set up" ;;
+    *)      # 0.92: a real (empty) mount point again -- vold's FUSE does not follow symlinks -- bound read-only during boot,
+            # the writable layer is stacked on top by after_boot (klib_rw)
+        grep -q 'klib_dir \$R/data' "$C" || f "$m: KindleLibrary mount point not prepared (klib_dir)"
+        grep -q 'mount -o remount,ro,bind \$R\$KLIB' "$C" || f "$m: library not bound read-only under /data during boot"
+        grep -q '^    klib_rw$' "$A" || f "$m: after_boot does not stack the writable library layer" ;;
+    esac
     # the trigger: boot-time mandatory fstrim -> vold SIGSEGV
     grep -q '^    fstrim_defuse$' "$C" && grep -q 'touch \$SYS/data/system/last-fstrim' "$C" || f "$m: last-fstrim not refreshed before start"
     # mount guard must look inside the container namespace
@@ -41,7 +49,37 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/vdwipe.XXXXXX"); trap 'rm -rf "$T"' EXIT
 for FM in pw6 legacy; do
 FC=host/$FM/boot/lib/common.sh; rm -rf "$T"/*
 fx() { awk -v n="$1" '$0 ~ "^" n "\\(\\) \\{" {p=1} p {print} p && /^}/ {exit}' "$FC"; }
-if grep -q '^klib_link()' "$FC"; then
+if grep -q '^klib_dir()' "$FC"; then
+    # pw6 / k49 (0.92+): KindleLibrary is a real mount point; klib_dir prepares it and never deletes anything
+    { echo 't() { echo "[t] $*"; }'; echo 'KLIB_MP=/kindle_library'
+      for n in mounts_under mounts_under_ns klib_dir docs_list docs_snapshot docs_verify; do fx $n; done; } > "$T/lib.sh"
+    mkdir -p "$T/W" "$T/VD" "$T/base/documents/sub" "$T/sys/data/media/0/KindleLibrary"
+    (
+        SYS=$T/sys; R=$T/rootfs; W=$T/W; VD=$T/VD; DOCS_DIR=$T/base/documents
+        . "$T/lib.sh"
+        KL=$SYS/data/media/0/KindleLibrary
+        # 1. an empty directory stays a plain directory (the mount point)
+        klib_dir "$SYS/data" && [ -d "$KL" ] && [ ! -L "$KL" ] || { echo "FAIL klib_dir empty dir"; exit 1; }
+        # 2. a non-empty directory is moved aside, never deleted, and an empty mount point takes its place
+        echo keep > "$KL/x"
+        klib_dir "$SYS/data" >/dev/null && [ -d "$KL" ] && [ -z "$(ls -A "$KL")" ] && cat "$SYS"/data/media/0/KindleLibrary.stray-*/x | grep -q keep || { echo "FAIL klib_dir non-empty dir"; exit 1; }
+        # 3. the 0.89 candidate's symlink is removed (only the link) and replaced by a directory
+        echo book > "$DOCS_DIR/b.txt"; rm -rf "$KL"; ln -s "$DOCS_DIR" "$KL"
+        klib_dir "$SYS/data" && [ -d "$KL" ] && [ ! -L "$KL" ] && [ -f "$DOCS_DIR/b.txt" ] || { echo "FAIL klib_dir old symlink"; exit 1; }
+        # 4. docs_verify: detects loss, restores from the newest pre-install backup, never overwrites
+        echo one > "$DOCS_DIR/sub/one.txt"; echo two > "$DOCS_DIR/two.txt"
+        docs_snapshot; grep -q '^documents/sub/one.txt$' "$W/docs.before" || { echo "FAIL docs_snapshot"; exit 1; }
+        ( cd "$T/base" && tar -czf "$T/base/../veradroid-user-backup-20261113-000000.tgz" documents )
+        docs_verify "$W/docs.before" test >/dev/null || { echo "FAIL docs_verify on intact library"; exit 1; }
+        rm -f "$DOCS_DIR/sub/one.txt" "$DOCS_DIR/two.txt"; echo changed > "$DOCS_DIR/b.txt"
+        sed "s|/mnt/base-us/veradroid-user-backup-|$T/veradroid-user-backup-|" "$T/lib.sh" > "$T/lib2.sh"; . "$T/lib2.sh"
+        docs_verify "$W/docs.before" test >/dev/null && { echo "FAIL docs_verify did not report the loss"; exit 1; }
+        [ "$(cat "$DOCS_DIR/sub/one.txt" 2>/dev/null)" = one ] && [ "$(cat "$DOCS_DIR/two.txt" 2>/dev/null)" = two ] || { echo "FAIL docs_verify did not restore"; exit 1; }
+        [ "$(cat "$DOCS_DIR/b.txt")" = changed ] || { echo "FAIL docs_verify overwrote an existing file"; exit 1; }
+        grep -q 'DOCUMENTS LOSS' "$VD/DOCUMENTS-LOSS.log" || { echo "FAIL loss not logged"; exit 1; }
+        exit 0
+    ) 2>/dev/null || { echo "FAIL $FM: helper functional test"; fail=1; }
+elif grep -q '^klib_link()' "$FC"; then
     { echo 't() { echo "[t] $*"; }'; echo 'KLIB_MP=/kindle_library'
       for n in mounts_under mounts_under_ns klib_link docs_list docs_snapshot docs_verify; do fx $n; done; } > "$T/lib.sh"
     mkdir -p "$T/W" "$T/VD" "$T/base/documents/sub" "$T/sys/data/media/0/KindleLibrary"
@@ -72,7 +110,7 @@ if grep -q '^klib_link()' "$FC"; then
         exit 0
     ) 2>/dev/null || { echo "FAIL $FM: helper functional test"; fail=1; }
 else
-    f "$FM: klib_link / docs_verify helpers missing"
+    f "$FM: klib_dir / klib_link / docs_verify helpers missing"
 fi
 done
 [ "$fail" = 0 ] && echo 'DOCS WIPE GUARD OK' || echo 'DOCS WIPE GUARD FAILURES'

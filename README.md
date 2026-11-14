@@ -65,7 +65,7 @@
 | `kpm/`、`kual/`、`documents/` | KPM 包、KUAL 扩展、书库入口 |
 | `tools/` | 交叉编译（`cross/`）、老内核的外挂内核模块（`kmod/`）、系统镜像构建（`build/`）、测量工具（`bench/`）、小程序源码（`src/`） |
 | `diagnostics/` | 设备调查、兼容性检查、冒烟测试 |
-| `tests/` | 宿主脚本和安装器的静态测试（`sh tests/<名字>.sh`） |
+| `tests/` | 宿主脚本和安装器的静态测试（全部：`sh tests/run-static.sh`；单个：`sh tests/<名字>-test.sh`） |
 | `docs/` | 设计说明：宿主设置接口、打包与更新、系统镜像、蓝牙、旋转、界面等 |
 
 ## 构建

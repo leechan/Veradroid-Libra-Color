@@ -9,9 +9,11 @@ L=host/legacy/boot
 fail() { echo "FAIL: $*"; exit 1; }
 B=cloud/static/bootstrap.sh
 grep -q 'guessed=legacy' $B || fail "bootstrap: 3.x kernels not classified as legacy"
-grep -q 'legacy|imx41) echo emulator-only' $B || fail "bootstrap: legacy / imx41 not flagged emulator-only"
-grep -q 'if \[ "$TESTED" = emulator-only \] && ! emuonly_ok; then' $B || fail "bootstrap: emulator-only models installable without confirmation"
-grep -q '\[ "$MODEL" != legacy \] && \[ "$MODEL" != imx41 \] && \[ "$fwn" -lt 50[0-9]*000 \]' $B || fail "bootstrap: firmware gate not relaxed for legacy / imx41"
+# 0.92+: emulator-only models (legacy / imx41) are refused by the shared installer and go through VeraDroid-Legacy.sh
+# (its confirm step and installer routing are checked in emulator-only-test.sh)
+grep -q 'imx41) echo "这台是老机型' $B || fail "bootstrap: PW4 / Oasis 3 not refused"
+grep -q 'legacy) \[ "${VD_LEGACY_TEST:-0}" = 1 \]' $B || fail "bootstrap: legacy installable without VD_LEGACY_TEST"
+grep -q '\[ "$MODEL" != legacy \] && \[ "$fwn" -lt 50[0-9]*000 \]' $B || fail "bootstrap: firmware gate not relaxed for legacy"
 grep -q 'IMGFS=ext3' $B || fail "bootstrap: no ext3 system disk for 3.x"
 grep -q 'bootstrap-legacy.json' $B || fail "bootstrap: no legacy bundle meta"
 grep -q 'veradroid-pw6/kmod' $B || fail "bootstrap: kmod not copied"

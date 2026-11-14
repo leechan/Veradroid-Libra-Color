@@ -48,7 +48,24 @@ PY
         tar -tzf "$f" | grep -qx install.sh || { echo "FAIL tar install $f"; fail=1; }
         tar -tzf "$f" | grep -qx launch.sh || { echo "FAIL tar launch $f"; fail=1; }
     done
-    [ "$found" = 1 ] || { echo "FAIL no kpkg for $name"; fail=1; }
+    if [ "$found" = 0 ]; then
+        # Source-only tree (the public repository ships no built .kpkg): pack the package the way it is published
+        # (manifest.json / install.sh / launch.sh at the archive root) and check that instead.
+        KT=$(mktemp -d "${TMPDIR:-/tmp}/vdkpm.XXXXXX")
+        f=$KT/${name}_src.kpkg
+        if tar -czf "$f" -C "$d" manifest.json install.sh launch.sh 2>/dev/null; then
+            for m in manifest.json install.sh launch.sh; do
+                tar -tzf "$f" | grep -qx "$m" || { echo "FAIL packed $name has no $m"; fail=1; }
+            done
+            echo "no built kpkg for $name: packed from source ok"
+        else
+            echo "FAIL cannot pack $name from source"; fail=1
+        fi
+        rm -rf "$KT"
+    fi
+    # every package must be listed in the KPM repository manifest
+    python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1]))["packages"] else 1)' \
+        "$REPO/kpm/manifest.v2.json" "$name" || { echo "FAIL $name not listed in kpm/manifest.v2.json"; fail=1; }
 done <<EOF
 $PKGS
 EOF

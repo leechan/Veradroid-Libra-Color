@@ -1,0 +1,12 @@
+# SYNTH: the measured fts_ts capabilities re-encoded the way a 64-bit kernel prints them (BITS_PER_LONG=64):
+# ABS bits 47 48 53 54 57 in one 64-bit word, KEY bit 330 = word 5 bit 10. Used to check VERADROID_BPL handling only.
+I: Bus=0018 Vendor=0000 Product=0000 Version=0000
+N: Name="fts_ts"
+P: Phys=
+S: Sysfs=/devices/platform/SYNTH/input/input1
+U: Uniq=
+H: Handlers=event1 
+B: PROP=2
+B: EV=b
+B: KEY=400 0 0 0 0 0
+B: ABS=261800000000000

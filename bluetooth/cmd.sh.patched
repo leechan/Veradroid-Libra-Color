@@ -1,0 +1,81 @@
+# 桌面 / 面板发给宿主的命令：一个 FIFO（$X/ctl/cmd），宿主阻塞读，没有命令时一点 CPU 都不用。
+# 一行一条：exit stop restart diag clear invert status apply | light N | warmth N | wifi 0|1
+numeric() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; }
+
+# 传书：把 Wi-Fi 上的端口转进 Android（slirp4netns 的 add_hostfwd）。只在传书开着的时候开；关了就撤掉。
+fwd_off() {
+    [ -f $W/fwd.id ] || return 0
+    $VD/bin/slirpctl $W/slirp.sock "{\"execute\":\"remove_hostfwd\",\"arguments\":{\"id\":$(cat $W/fwd.id)}}" >/dev/null 2>&1
+    rm -f $W/fwd.id
+}
+fwd_on() {
+    fwd_off
+    [ -x $VD/bin/slirpctl ] && [ -S $W/slirp.sock ] || { t "fwd: no slirp control"; return 1; }
+    r=$($VD/bin/slirpctl $W/slirp.sock "{\"execute\":\"add_hostfwd\",\"arguments\":{\"proto\":\"tcp\",\"host_addr\":\"0.0.0.0\",\"host_port\":$1,\"guest_addr\":\"$NET.15\",\"guest_port\":$1}}" 2>&1)
+    id=$(echo "$r" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+    if [ -n "$id" ]; then echo $id > $W/fwd.id; t "fwd: port $1 open (id $id)"; else t "fwd failed: $r"; fi
+}
+
+cmd_listen() {
+    cmdfifo=$X/ctl/cmd
+    rm -f $cmdfifo; mkfifo $cmdfifo && chmod 666 $cmdfifo || return 1
+    # 读写方式打开一次，一直留着：这样同时来的几条命令（比如“开传书”紧跟着“查状态”）不会因为读端反复开关而丢掉
+    exec 3<>$cmdfifo
+    while :; do
+        read -r c a <&3 || { usleep 300000; continue; }
+        case "$c" in
+        exit)    do_exit ;;
+        stop)    do_stop ;;
+        restart) do_restart ;;
+        diag)    ( diag_save; touch $X/ctl/diag.done ) & ;;
+        diag-upload) # 保存诊断并把归档上传到服务器 data/diagnostics
+            ( diag_save
+              d=$(ls -dt "$SYS/data/media/0/Diagnostics"/* 2>/dev/null | head -1)
+              [ -n "$d" ] || exit 1
+              tgz="$d/veradroid-diag.tgz"
+              tar -czf "$tgz" -C "$d" . 2>/dev/null || exit 1
+              id=$(cat "$SYS/device-id" 2>/dev/null | tr -cd '0-9A-Za-z' | cut -c1-40)
+              [ -n "$id" ] || id=unknown
+              hwmodel=$(cat "$SYS/model" 2>/dev/null | tr -cd '0-9A-Za-z_.-' | cut -c1-32)
+              ver=$(cat "$SYS/version" 2>/dev/null | tr -cd '0-9A-Za-z_.-' | cut -c1-32)
+              r=$(curl -fsS --max-time 120 -F "device_id=$id" -F "model=$hwmodel" -F "version=$ver" -F "file=@$tgz" https://veradroid.wenjin.jp/api/diag/upload 2>&1)
+              echo "$r" > "$d/upload-result.txt"
+              rm -f "$tgz"
+              touch $X/ctl/diag.upload.done ) & ;;
+        clear)   echo FULL > $X/epd.fifo ;;
+        status)  status_write ;;
+        apply)   settings_apply ;;
+        invert)
+            cur=$(sed -n 's/^KFB_INVERT=//p' $X/settings 2>/dev/null); [ "$cur" = 1 ] && n=0 || n=1
+            echo "KFB_INVERT=$n" > $X/ctl/settings.new; settings_apply ;;
+        light)   numeric "$a" && lipc-set-prop -i com.lab126.powerd flIntensity "$a" ;;
+        warmth)  numeric "$a" && lipc-set-prop -i com.lab126.powerd currentAmberLevel "$a" ;;
+        sleeptime) numeric "$a" && [ "$a" -ge 60 ] && lipc-set-prop -i com.lab126.powerd screenSaverTimeout "$a" ;;
+        fwd)     numeric "$a" && fwd_on "$a" ;;
+        fwdoff)  fwd_off ;;
+        fullupdate) # 整包更新：后台脱离 cmd 进程，stop.sh 杀掉 cmd 也能继续下载/替换；实验机型沿用安装时的 model
+            ( setsid sh -c 'm=$(cat /mnt/base-us/system/veradroid/model 2>/dev/null); case "$m" in ""|pw6) ;; *) export VD_MODEL="$m" VD_EXPERIMENTAL=1 ;; esac; curl -fsSL https://veradroid.wenjin.jp/bootstrap.sh | sh; i=0; while [ $i -lt 3 ]; do sleep 2; P=$(cat /dev/shm/veradroid/pid 2>/dev/null); if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then break; fi; sh /mnt/base-us/veradroid/boot/veradroid.sh home; i=$((i+1)); done' > /mnt/base-us/system/veradroid/fullupdate.log 2>&1; echo $? > /mnt/base-us/system/veradroid/fullupdate.rc ) </dev/null >/dev/null 2>&1 & ;;
+        uninstall) # 卸载 VeraDroid：见 boot/uninstall.sh（保留 data/media：书 / 微信读书下载 / token）
+            cp $VD/boot/uninstall.sh $W/uninstall.sh 2>/dev/null && ( setsid sh $W/uninstall.sh ) </dev/null >/dev/null 2>&1 & ;;
+        install) # 传书网页上传的 apk：用 root 身份在容器里 pm install，结果写进 ctl/inst.<名字>（后台做，不堵住别的命令）
+            case "$a" in ''|*[!A-Za-z0-9._]*) ;; *)
+                ( chmod 777 $SYS/data/media/0/.upload 2>/dev/null
+                  ensure_installd_dirs
+                  # Fresh packages with `pm install -r` can become frozen on this
+                  # container (WeRead 1.8.5 did); try install first, then upgrade.
+                  r=$(adb_sh "pm install -d -g /data/media/0/.upload/$a" 2>&1 | tr '\n' ' ')
+                  case "$r" in *Success*) ;; *) r=$(adb_sh "pm install -r -d -g /data/media/0/.upload/$a" 2>&1 | tr '\n' ' ') ;; esac
+                  echo "$r" > $X/ctl/inst.$a.tmp; mv -f $X/ctl/inst.$a.tmp $X/ctl/inst.$a ) & ;;
+            esac ;;
+        bt)      type bt_cmd >/dev/null 2>&1 && bt_cmd $a ;;   # 蓝牙：bt status|on|off|scan|bond|connect|disconnect|unbond ADDR|map M|swap 0|1
+        poke)    lipc-set-prop -i com.lab126.powerd touchScreenSaverTimeout 1 2>/dev/null ;;
+        wifi)    numeric "$a" && lipc-set-prop -i com.lab126.cmd wirelessEnable "$a" ;;
+        dns)     case "$a" in
+                     auto|aliyun|tencent|google)
+                         grep -v "^DNS_MODE=" $SYS/settings.conf > $SYS/settings.conf.tmp 2>/dev/null
+                         echo "DNS_MODE=$a" >> $SYS/settings.conf.tmp; mv -f $SYS/settings.conf.tmp $SYS/settings.conf
+                         settings_load; settings_publish; dns_apply ;;
+                 esac ;;
+        esac
+    done
+}

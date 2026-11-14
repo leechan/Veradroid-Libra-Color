@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Build environment for AOSP android-7.1.1_r61 (Ubuntu 16.04 + OpenJDK 8, as required by that release).
+#
+#   docker build -t vdaosp:7.1 -f tools/build/Dockerfile.aosp tools/build
+#
+# The AOSP source itself is not part of the image: sync it on the host with repo
+#   repo init -u https://android.googlesource.com/platform/manifest -b android-7.1.1_r61 --depth=1
+#   repo sync -c -j8
+# into $AOSP_WORK/src and mount $AOSP_WORK into the container (tools/build/build_rootfs.sh does that).
+FROM ubuntu:16.04
+
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openjdk-8-jdk git-core gnupg flex bison gperf build-essential zip unzip curl zlib1g-dev \
+        gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev \
+        lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc python bc ccache rsync m4 kmod \
+        libssl-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# AOSP 7.1 refuses to build as root and Jack needs a home directory.
+RUN useradd -m -u 1000 builder
+USER builder
+WORKDIR /aosp

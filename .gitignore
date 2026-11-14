@@ -1,0 +1,24 @@
+# Never commit runtime data or mail credentials.
+cloud/data/
+cloud/*.env
+cloud/*.secret
+cloud/inbound.secret
+cloud/admin-password.txt
+cloud/google-client.json
+data/
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+# Built artifacts (publish via Releases, not git).
+dist/*.apk
+dist/*.tar.gz
+# Dependencies and private host keys (added when the git baseline was created).
+node_modules/
+hostkey_rsa
+hostkey_*
+dist/VeraDroidSSH*.zip
+kpm/veradroid-ssh_*.kpkg
+diagnostics/ssh/VeraDroid-SSH.zip
+my-public-keys.txt
+device_host_key*

@@ -1,0 +1,10 @@
+# SYNTH: pt_mt-comment with ABS_MT_SLOT (bit 47 = 0x8000 in the high word) removed.
+I: Bus=0000 Vendor=0000 Product=0000 Version=0000
+N: Name="pt_mt"
+P: Phys=
+S: Sysfs=/devices/platform/SYNTH/input/input1
+U: Uniq=
+H: Handlers=event1 
+B: EV=b
+B: KEY=0
+B: ABS=2e10000 0

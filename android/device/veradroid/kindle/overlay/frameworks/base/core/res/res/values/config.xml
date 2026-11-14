@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- VeraDroid framework overrides. -->
+<resources>
+    <!-- No wallpaper service: with the default true, WindowManager waits for a wallpaper window that never comes and only
+         gives up after its 30 s BOOT TIMEOUT. That was most of the boot time. -->
+    <bool name="config_enableWallpaperService">false</bool>
+</resources>

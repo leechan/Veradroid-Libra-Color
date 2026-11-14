@@ -1,0 +1,42 @@
+# SYNTH: measured PW6 dump plus a second, non-virtual MT touchscreen.
+I: Bus=0019 Vendor=0001 Product=0001 Version=0100
+N: Name="bd71828-pwrkey"
+P: Phys=gpio-keys/input0
+S: Sysfs=/devices/platform/10019000.i2c/i2c-1/1-004b/gpio-keys.8.auto/input/input0
+U: Uniq=
+H: Handlers=event0 ktch
+B: PROP=0
+B: EV=3
+B: KEY=100000 0 0 0
+
+I: Bus=0018 Vendor=0000 Product=0000 Version=0000
+N: Name="fts_ts"
+P: Phys=
+S: Sysfs=/devices/platform/1001e000.i2c/i2c-2/2-0038/input/input1
+U: Uniq=
+H: Handlers=event1 ktch
+B: PROP=2
+B: EV=b
+B: KEY=400 0 0 0 0 0 0 0 0 0 0
+B: ABS=2618000 0
+
+I: Bus=0006 Vendor=0001 Product=0001 Version=0001
+N: Name="kindle-input-pt"
+P: Phys=
+S: Sysfs=/devices/virtual/input/input2
+U: Uniq=
+H: Handlers=sysrq event2 ktch
+B: PROP=0
+B: EV=3
+B: KEY=ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff fffffffe
+
+I: Bus=0018 Vendor=0000 Product=0000 Version=0000
+N: Name="synth_ts"
+P: Phys=
+S: Sysfs=/devices/platform/SYNTH/input/input9
+U: Uniq=
+H: Handlers=event5 
+B: PROP=2
+B: EV=b
+B: KEY=400 0 0 0 0 0 0 0 0 0 0
+B: ABS=2618000 0

@@ -1,0 +1,41 @@
+VeraDroid
+Copyright (C) 2026 the VeraDroid contributors
+
+VeraDroid's own code is licensed under the GNU General Public License,
+version 3 or (at your option) any later version. See LICENSE. Files carry an
+SPDX-License-Identifier line; files without one are either third-party
+(AOSP overlays keep the licence of the file they replace) or still awaiting a
+licence decision, see THIRD_PARTY.md. This repository contains source code
+only; prebuilt binaries, APKs, fonts and system images are not included.
+
+VeraDroid is an independent project. It is not affiliated with, endorsed by or
+sponsored by Amazon. "Kindle" is a trademark of Amazon.com, Inc. or its
+affiliates. This repository contains no Amazon firmware, kernel image, kernel
+module or other file extracted from Amazon software.
+
+Third-party components that are bundled, linked or built from, with their
+licences, versions and the place to get the corresponding source:
+
+  FBInk (v1.25.0-543-g886f25f + patches/fbink-state-dump-args.patch)
+      GPL-3.0-or-later   https://github.com/NiLuJe/FBInk
+  slirp4netns v1.3.7 (unmodified static binary; contains libslirp, BSD-3-Clause)
+      GPL-2.0-or-later   https://github.com/rootless-containers/slirp4netns
+  e2fsprogs 1.47.1 (e2fsck, resize2fs; unmodified)
+      GPL-2.0-only       https://e2fsprogs.sourceforge.net/
+  Dropbear SSH (KOReader build, debugging package only)
+      MIT-style          https://github.com/mkj/dropbear
+  Android Open Source Project, android-7.1.1_r61 (system image, libandroid_runtime.so)
+      Apache-2.0 and others   https://source.android.com/
+  Linux binder driver (external module for old kernels, built on demand, not shipped)
+      GPL-2.0-only       https://android.googlesource.com/kernel/common
+  glibc / libgcc (statically linked into the host programs)
+      LGPL-2.1-or-later / GPL-3.0-or-later with the GCC runtime library exception
+  LXGW WenKai 1.510 (fonts/LXGWWenKai-Regular.ttf in the packages, see fonts/OFL.txt)
+      SIL OFL 1.1        https://github.com/lxgw/LxgwWenKai
+  pinyin-data, phrase-pinyin-data, jieba (data extracted into VeraIME's pinyin.tsv)
+      MIT                see android/packages/VeraIME/assets/NOTICE-pinyin.txt
+  Mozilla CA certificate bundle (added to the Android image)
+      MPL-2.0            https://curl.se/docs/caextract.html
+
+Full details, build recipes and source offers: THIRD_PARTY.md.
+No third-party Android application (APK) is part of this project.

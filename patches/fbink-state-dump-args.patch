@@ -1,0 +1,15 @@
+FBInk v1.25.0-543-g886f25f1: fbink_state_dump() passes two arguments for three
+format fields (isTolino, SunxiHasFBDamage, SunxiForceRota) on non-Kobo builds,
+so the trailing %s (pixelFormat) reads a garbage pointer and `fbink -e`
+segfaults on every Kindle. VeraDroid probes fbink with `-e`, so the boot splash
+silently disappeared on real devices.
+
+--- a/fbink.c
++++ b/fbink.c
+@@
+ #else
+ 	    false,
++	    false,
+ 	    FORCE_ROTA_NOTSUP,
+ #endif
+ 	    deviceQuirks.isKindleLegacy,

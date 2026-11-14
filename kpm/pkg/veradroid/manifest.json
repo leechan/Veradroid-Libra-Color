@@ -1,0 +1,16 @@
+{
+  "manifest_version": 2,
+  "id": "veradroid",
+  "name": "VeraDroid",
+  "author": "ajie",
+  "description": "Install VeraDroid on a jailbroken PaperWhite 6 from the official KPM repository.",
+  "version": [
+    0,
+    21,
+    41
+  ],
+  "dependencies": [],
+  "supported_platforms": [
+    "kindlehf"
+  ]
+}

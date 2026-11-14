@@ -1,0 +1,33 @@
+# VeraDroid slim: imported by init.kindle.rc (only the slim products install this file).
+# init.kindle.rc and its imports are parsed before /system/etc/init/*.rc and the first definition of a service wins,
+# so redefining a stock service here as "disabled" keeps "class_start main" from starting it.
+
+# media.codec / media.drm / media.extractor are only reachable through mediaserver (media.player), which is already
+# disabled in init.kindle.rc: three processes (about 5.5 MB PSS) that start while zygote is fighting for the two cores.
+# audioserver is NOT here: system_server's AudioService waits forever for media.audio_policy.
+service mediacodec /system/bin/mediacodec
+    class main
+    user mediacodec
+    group camera drmrpc mediadrm
+    disabled
+
+service mediadrm /system/bin/mediadrmserver
+    class main
+    user media
+    group mediadrm drmrpc
+    disabled
+
+service mediaextractor /system/bin/mediaextractor
+    class main
+    user mediaex
+    group drmrpc mediadrm
+    disabled
+
+# SurfaceFlinger does "ctl.start bootanim" on every boot; bootanimation then loads the whole android runtime just to
+# read debug.sf.nobootanimation=1 and exit. Run something that exits at once instead.
+service bootanim /system/bin/true
+    class core
+    user graphics
+    group graphics
+    disabled
+    oneshot

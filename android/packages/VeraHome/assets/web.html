@@ -1,0 +1,1170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>VeraDroid 管理</title>
+<style>
+:root{--bg:#f3f3f1;--panel:#fff;--panel2:#f7f7f5;--fg:#16181d;--muted:#6b7079;--line:#e1e2e4;--line2:#cfd1d5;--acc:#2f6fed;--acc-fg:#fff;--acc-soft:#e7efff;
+ --ok:#1f8a4c;--ok-soft:#e3f5ea;--warn:#b26a00;--warn-soft:#fff3dd;--err:#c62f2f;--err-soft:#fde8e8;--sel:#dce8ff;--shadow:0 1px 2px rgba(0,0,0,.06),0 4px 14px rgba(0,0,0,.06);--r:12px}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#121417;--panel:#1b1e23;--panel2:#22262c;--fg:#e8eaed;--muted:#9aa1ab;--line:#2c3138;--line2:#3a4049;--acc:#6b9bff;--acc-fg:#0d1320;--acc-soft:#1f2c47;
+ --ok:#4cc27e;--ok-soft:#173225;--warn:#e3a33b;--warn-soft:#3a2c12;--err:#ff6b6b;--err-soft:#3d1c1c;--sel:#22365c;--shadow:0 1px 2px rgba(0,0,0,.4),0 4px 14px rgba(0,0,0,.3)}}
+:root[data-theme=dark]{--bg:#121417;--panel:#1b1e23;--panel2:#22262c;--fg:#e8eaed;--muted:#9aa1ab;--line:#2c3138;--line2:#3a4049;--acc:#6b9bff;--acc-fg:#0d1320;--acc-soft:#1f2c47;
+ --ok:#4cc27e;--ok-soft:#173225;--warn:#e3a33b;--warn-soft:#3a2c12;--err:#ff6b6b;--err-soft:#3d1c1c;--sel:#22365c;--shadow:0 1px 2px rgba(0,0,0,.4),0 4px 14px rgba(0,0,0,.3)}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;background:var(--bg);color:var(--fg)}
+body{font:14.5px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;-webkit-text-size-adjust:100%}
+a{color:var(--acc)}
+svg.i{width:18px;height:18px;flex:0 0 auto;vertical-align:-3px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:6px}
+/* ---------- layout ---------- */
+#app{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100vh}
+#side{position:sticky;top:0;height:100vh;overflow:auto;background:var(--panel);border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:2px}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 8px 14px}
+.brand .logo{width:34px;height:34px;border-radius:9px;background:var(--fg);color:var(--bg);display:grid;place-items:center;font-weight:800}
+.brand b{display:block;font-size:15px}.brand small{color:var(--muted);font-size:12px}
+.nav{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;color:var(--fg);text-decoration:none;cursor:pointer;border:0;background:none;font:inherit;text-align:left;width:100%}
+.nav:hover{background:var(--panel2)}.nav.on{background:var(--acc-soft);color:var(--acc);font-weight:600}
+.nav .badge{margin-left:auto}
+.navsep{height:1px;background:var(--line);margin:8px 6px}
+#main{min-width:0;display:flex;flex-direction:column}
+#top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;padding:10px 20px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+#top h1{font-size:18px;margin:0;display:flex;align-items:center;gap:8px}
+#chips{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.content{padding:18px 20px 40px;max-width:1280px;width:100%}
+#tabbar{display:none}
+@media (max-width:899px){
+ #app{grid-template-columns:minmax(0,1fr)}#side{display:none}
+ #top{padding:9px 12px}#top h1{font-size:16px}
+ .content{padding:12px 12px 96px}
+ #tabbar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--panel);border-top:1px solid var(--line);padding:4px 4px calc(4px + env(safe-area-inset-bottom))}
+ #tabbar button{flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;border:0;background:none;color:var(--muted);font:12px/1.2 inherit;padding:6px 2px;border-radius:8px}
+ #tabbar button.on{color:var(--acc);font-weight:600}
+ #tabbar svg.i{width:22px;height:22px}
+ .hide-s{display:none!important}
+}
+/* ---------- building blocks ---------- */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:16px;margin-bottom:16px;min-width:0}
+.card>h3,.card .h{margin:0 0 12px;font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card .h .sp,.row .sp{flex:1}
+.sub{color:var(--muted);font-size:13px}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.grid>.card{margin:0}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:0}
+.kv dt{color:var(--muted)}.kv dd{margin:0;word-break:break-word;font-variant-numeric:tabular-nums}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--line2);background:var(--panel);color:var(--fg);border-radius:9px;padding:7px 12px;font:inherit;font-size:14px;cursor:pointer;white-space:nowrap;text-decoration:none;line-height:1.25}
+.btn:hover{background:var(--panel2)}.btn:disabled{opacity:.45;cursor:default}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}.btn.pri:hover{filter:brightness(1.05)}
+.btn.dan{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,var(--line2))}
+.btn.sm{padding:4px 9px;font-size:13px;border-radius:8px}
+.btn.ghost{border-color:transparent;background:none}.btn.ghost:hover{background:var(--panel2)}
+.btn.icon{padding:6px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input[type=text],input[type=password],input[type=search],input[type=number],select,textarea{background:var(--panel);color:var(--fg);border:1px solid var(--line2);border-radius:9px;padding:7px 10px;font:inherit;font-size:14px;min-width:0}
+textarea{width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;line-height:1.5}
+input:focus,select:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--acc) 60%,transparent);outline-offset:0;border-color:var(--acc)}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:12px;line-height:1;padding:4px 8px;border-radius:999px;background:var(--panel2);color:var(--muted);border:1px solid var(--line);white-space:nowrap}
+.badge.ok{background:var(--ok-soft);color:var(--ok);border-color:transparent}.badge.warn{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.badge.err{background:var(--err-soft);color:var(--err);border-color:transparent}.badge.acc{background:var(--acc-soft);color:var(--acc);border-color:transparent}
+.dot{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
+.meter{height:8px;border-radius:99px;background:var(--panel2);overflow:hidden;border:1px solid var(--line)}
+.meter i{display:block;height:100%;background:var(--acc);width:0;transition:width .4s}
+.meter.warn i{background:var(--warn)}.meter.err i{background:var(--err)}
+.stat{display:flex;align-items:center;gap:14px}
+.stat .num{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+.donut{width:84px;height:84px;flex:0 0 84px}
+.donut circle{fill:none;stroke-width:10}.donut .bgc{stroke:var(--panel2)}.donut .fgc{stroke:var(--acc);transition:stroke-dasharray .5s;transform:rotate(-90deg);transform-origin:50% 50%}
+.donut text{fill:var(--fg);font-size:17px;font-weight:700;text-anchor:middle;dominant-baseline:central;font-family:inherit}
+.legend{display:flex;flex-direction:column;gap:3px;min-width:0;font-size:13px}
+.legend .t{font-weight:600;font-size:14px}
+.empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:28px 10px;color:var(--muted);text-align:center}
+.empty svg.i{width:34px;height:34px;opacity:.6}
+.skel{background:linear-gradient(90deg,var(--panel2),var(--line),var(--panel2));background-size:200% 100%;animation:sk 1.2s infinite;border-radius:6px;height:14px;margin:8px 0}
+@keyframes sk{to{background-position:-200% 0}}
+.spin{width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;animation:sp .8s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.note{background:var(--warn-soft);color:var(--fg);border-radius:9px;padding:9px 12px;font-size:13px;margin:10px 0}
+.note.info{background:var(--acc-soft)}.note.err{background:var(--err-soft)}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;background:var(--panel2);padding:1px 5px;border-radius:5px;font-size:12.5px;word-break:break-all}
+table.t{width:100%;border-collapse:collapse;font-size:13.5px;font-variant-numeric:tabular-nums}
+table.t th{position:sticky;top:0;background:var(--panel);text-align:left;font-weight:600;color:var(--muted);font-size:12.5px;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap;cursor:default;user-select:none}
+table.t th.s{cursor:pointer}table.t th.s:hover{color:var(--fg)}
+table.t td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+table.t .r{text-align:right;white-space:nowrap}
+.scroll{overflow:auto;max-height:70vh;border-radius:8px}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:9px;overflow:hidden;flex-wrap:wrap;background:var(--panel)}
+.seg button{border:0;border-right:1px solid var(--line2);background:none;color:var(--fg);padding:6px 12px;font:inherit;font-size:13.5px;cursor:pointer;position:relative}
+.seg button:last-child{border-right:0}.seg button.on{background:var(--acc);color:var(--acc-fg)}
+.seg button.pending{color:transparent}.seg button.pending:after{content:"";position:absolute;left:50%;top:50%;width:12px;height:12px;margin:-6px;border:2px solid var(--acc);border-right-color:transparent;border-radius:50%;animation:sp .8s linear infinite}
+.set{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.set:last-child{border-bottom:0}.set .lbl{display:flex;flex-direction:column}
+.switch{position:relative;width:42px;height:24px;flex:0 0 42px}
+.switch input{opacity:0;width:0;height:0}.switch span{position:absolute;top:0;right:0;bottom:0;left:0;background:var(--line2);border-radius:99px;transition:.2s;cursor:pointer}
+.switch span:before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.3)}
+.switch input:checked+span{background:var(--acc)}.switch input:checked+span:before{transform:translateX(18px)}
+.switch input:focus-visible+span{outline:2px solid var(--acc);outline-offset:2px}
+.drop{border:2px dashed var(--line2);border-radius:var(--r);padding:22px 12px;text-align:center;color:var(--muted);transition:.15s}
+.drop.hot{border-color:var(--acc);background:var(--acc-soft);color:var(--acc)}
+.list .item{display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--line)}
+.list .item:last-child{border-bottom:0}
+.grow{flex:1;min-width:0}.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+img.appic{width:40px;height:40px;border-radius:10px;flex:0 0 40px;background:#fff;border:1px solid var(--line);object-fit:contain}
+/* ---------- bluetooth / storage ---------- */
+.dev{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.dev:last-child{border-bottom:0}
+.dev .nm{font-weight:600}
+.presets{display:flex;gap:6px;flex-wrap:wrap}
+.presets .btn.on{background:var(--acc-soft);border-color:var(--acc);color:var(--acc)}
+/* ---------- files ---------- */
+#fm{display:grid;grid-template-columns:240px minmax(0,1fr);gap:0;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);min-height:70vh;position:relative}
+#fmTree{border-right:1px solid var(--line);padding:10px 6px;overflow:auto;max-height:calc(100vh - 120px);position:sticky;top:60px}
+#fmPane{min-width:0;display:flex;flex-direction:column;position:relative}
+@media (max-width:899px){#fm{grid-template-columns:minmax(0,1fr)}#fmTree{display:none}#fFilter{flex:1 1 100px;width:auto!important}.fbar .crumb{flex-basis:100%;order:-1}}
+.tnode{display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:7px;cursor:pointer;white-space:nowrap;font-size:13.5px}
+.tnode:hover{background:var(--panel2)}.tnode.on{background:var(--acc-soft);color:var(--acc);font-weight:600}
+.tnode.dropok{outline:2px dashed var(--acc)}
+.tnode .tw{width:16px;display:inline-grid;place-items:center;color:var(--muted)}
+.tnode .tw svg{width:14px;height:14px}
+.tkids{padding-left:14px}
+.fbar{display:flex;align-items:center;gap:6px;padding:10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.crumb{display:flex;align-items:center;gap:2px;flex:1;min-width:120px;flex-wrap:wrap;padding:3px 6px;border-radius:8px;cursor:text;min-height:32px}
+.crumb:hover{background:var(--panel2)}
+.crumb a{padding:2px 6px;border-radius:6px;cursor:pointer;color:var(--fg);text-decoration:none;white-space:nowrap}
+.crumb a:hover{background:var(--line)}.crumb a.dropok{outline:2px dashed var(--acc)}
+.crumb .sep{color:var(--muted)}
+.crumb input{flex:1;width:100%}
+.selbar{display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--acc-soft);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.fhead,.frow{display:grid;grid-template-columns:30px 34px minmax(0,1fr) 92px 150px 40px;align-items:center;gap:6px;padding:0 10px}
+.fhead{font-size:12.5px;color:var(--muted);font-weight:600;border-bottom:1px solid var(--line);height:34px;user-select:none}
+.fhead span.s{cursor:pointer}.fhead span.s:hover{color:var(--fg)}
+.frow{height:44px;border-bottom:1px solid var(--line);cursor:default;user-select:none;outline:0}
+.frow:hover{background:var(--panel2)}.frow.sel{background:var(--sel)}.frow.cur{box-shadow:inset 3px 0 0 var(--acc)}
+.frow.dropok{outline:2px dashed var(--acc);outline-offset:-2px}
+.frow.cut{opacity:.5}
+.frow .nm{display:flex;align-items:center;gap:6px;min-width:0}
+.frow .nm .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.frow .nm input{width:100%}
+.frow .sz,.frow .dt{color:var(--muted);font-size:13px;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.frow .ft{width:28px;height:28px;display:grid;place-items:center;border-radius:7px}
+.frow .ft svg{width:20px;height:20px}
+.ft.dir{color:#d9a400}.ft.img{color:#2b9b6a}.ft.book{color:#3a6fe0}.ft.zip{color:#9a5bd6}.ft.apk{color:#2fa25a}.ft.txt{color:var(--muted)}.ft.font{color:#cc6a2d}.ft.lnk{color:var(--muted)}
+.frow input[type=checkbox],.fhead input[type=checkbox]{width:16px;height:16px;accent-color:var(--acc)}
+@media (max-width:899px){.fhead,.frow{grid-template-columns:30px 34px minmax(0,1fr) 78px 36px}.fhead .dt,.frow .dt{display:none}}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(124px,1fr));gap:10px;padding:12px}
+.fcell{border:1px solid var(--line);border-radius:10px;padding:8px;text-align:center;cursor:default;user-select:none;position:relative}
+.fcell.sel{background:var(--sel);border-color:var(--acc)}.fcell.dropok{outline:2px dashed var(--acc)}
+.fcell .th{height:96px;display:grid;place-items:center;border-radius:7px;background:var(--panel2);overflow:hidden;margin-bottom:6px}
+.fcell .th img{max-width:100%;max-height:96px;object-fit:contain}
+.fcell .th svg{width:40px;height:40px}
+.fcell .n{font-size:12.5px;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.fcell .sz{font-size:11.5px;color:var(--muted)}
+#fmList{flex:1;overflow:auto;position:relative;min-height:300px}
+#fmDrop{position:absolute;top:0;right:0;bottom:0;left:0;z-index:5;background:color-mix(in srgb,var(--acc-soft) 85%,transparent);border:2px dashed var(--acc);border-radius:var(--r);display:grid;place-items:center;color:var(--acc);font-size:16px;font-weight:600;pointer-events:none}
+.ffoot{padding:8px 12px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px;display:flex;gap:12px;flex-wrap:wrap}
+/* ---------- overlays ---------- */
+#toasts{position:fixed;right:16px;bottom:16px;z-index:100;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none}
+.toast{pointer-events:auto;background:var(--fg);color:var(--bg);padding:10px 14px;border-radius:10px;box-shadow:var(--shadow);max-width:min(440px,90vw);display:flex;gap:8px;align-items:flex-start;animation:tin .2s}
+.toast.ok{background:var(--ok);color:#fff}.toast.err{background:var(--err);color:#fff}
+@keyframes tin{from{transform:translateY(8px);opacity:0}}
+@media (max-width:899px){#toasts{left:12px;right:12px;bottom:84px;align-items:stretch}}
+.modal-bg{position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(0,0,0,.45);z-index:80;display:grid;place-items:center;padding:16px}
+.modal{background:var(--panel);border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,.35);width:min(520px,100%);max-height:calc(100vh - 32px);display:flex;flex-direction:column;overflow:hidden}
+.modal.wide{width:min(1100px,100%);height:min(86vh,900px)}
+.modal .mh{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.modal .mh b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.modal .mb{padding:14px;overflow:auto;flex:1;min-height:0}
+.modal .mf{display:flex;gap:8px;justify-content:flex-end;padding:12px 14px;border-top:1px solid var(--line);flex-wrap:wrap;align-items:center}
+#ctx{position:fixed;z-index:90;background:var(--panel);border:1px solid var(--line2);border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.2);padding:5px;min-width:190px}
+#ctx button{display:flex;align-items:center;gap:9px;width:100%;border:0;background:none;color:var(--fg);font:inherit;font-size:13.5px;padding:7px 10px;border-radius:7px;cursor:pointer;text-align:left}
+#ctx button:hover,#ctx button:focus{background:var(--acc-soft);outline:0}#ctx button.dan{color:var(--err)}
+#ctx button kbd{margin-left:auto;color:var(--muted);font:12px inherit}
+#ctx hr{border:0;border-top:1px solid var(--line);margin:4px 2px}
+#queue{position:fixed;right:16px;bottom:16px;z-index:70;width:min(400px,calc(100vw - 24px));background:var(--panel);border:1px solid var(--line2);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.2);overflow:hidden}
+@media (max-width:899px){#queue{right:12px;bottom:84px}}
+#queue .qh{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);font-weight:600}
+#queue .qb{max-height:300px;overflow:auto}
+#queue .qi{padding:8px 12px;border-bottom:1px solid var(--line);font-size:13px}
+#queue .qi .meter{height:6px;margin:4px 0}
+#queue.min .qb{display:none}
+#login{position:fixed;top:0;right:0;bottom:0;left:0;z-index:120;background:var(--bg);display:grid;place-items:center;padding:16px}
+#login .card{width:min(360px,100%);text-align:center;padding:26px 22px}
+#pin{font-size:30px;text-align:center;letter-spacing:12px;width:100%;padding:10px}
+pre.log{margin:0;background:#0f1115;color:#d9dde3;padding:12px;border-radius:10px;max-height:66vh;overflow:auto;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+pre.log .e{color:#ff8a8a}pre.log .w{color:#ffcb6b}pre.log mark{background:#4a6bd8;color:#fff;border-radius:2px}
+.pre{white-space:pre-wrap;word-break:break-word;font:13px/1.55 ui-monospace,Menlo,Consolas,monospace;background:var(--panel2);padding:12px;border-radius:9px;margin:0}
+.thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px}
+.thumb{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel2);position:relative}
+.thumb img{display:block;width:100%;aspect-ratio:3/4;object-fit:cover;background:var(--panel2)}
+.thumb .cap{padding:6px 8px;font-size:12px;display:flex;gap:4px;align-items:center}
+.thumb .cap span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thumb.cur{outline:3px solid var(--acc)}
+.icons{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:12px}
+.icn{text-align:center;padding:10px 4px;border-radius:10px;border:1px solid var(--line);cursor:pointer;position:relative}
+.icn:hover{background:var(--panel2)}.icn img{width:52px;height:52px;border-radius:12px;background:#fff;object-fit:contain}
+.icn .n{font-size:12px;margin-top:4px}.icn .badge{position:absolute;top:6px;right:6px;padding:2px 6px}
+img.shot{max-width:100%;max-height:75vh;border-radius:10px;border:1px solid var(--line);display:block;background:#fff}
+.placeholder{border:2px dashed var(--line2);border-radius:var(--r);padding:30px 16px;text-align:center;color:var(--muted)}
+</style>
+</head>
+<body>
+<div id="login" hidden><div class="card"><div class="brand" style="justify-content:center"><div class="logo">V</div><div style="text-align:left"><b>VeraDroid 管理</b><small>传书与设备管理</small></div></div>
+<p class="sub" id="lmsgTop">输入 Kindle 屏幕上显示的 4 位 PIN</p>
+<input id="pin" type="text" inputmode="numeric" maxlength="4" autocomplete="one-time-code" aria-label="PIN"><p id="lmsg" style="color:var(--err);min-height:1.4em;margin:8px 0"></p>
+<button class="btn pri" id="loginBtn" style="width:100%">进入</button></div></div>
+
+<div id="app">
+<aside id="side" aria-label="导航">
+ <div class="brand"><div class="logo">V</div><div><b>VeraDroid</b><small id="sideDev">管理</small></div></div>
+ <div id="navList"></div>
+ <div style="margin-top:auto" class="sub">
+  <button class="nav" id="themeBtn" title="切换浅色 / 深色"></button>
+ </div>
+</aside>
+<div id="main">
+ <header id="top"><h1 id="title">概览</h1><div id="chips"></div></header>
+ <div class="content">
+
+<!-- ================================================================ 概览 -->
+<section id="s-ov" data-title="概览">
+ <div class="grid" id="ovTop">
+  <div class="card"><div class="h"><svg class="i" data-i="tablet"></svg>设备<span class="sp"></span><span class="sub" id="ovUpd"></span></div><dl class="kv" id="ovDev"><div class="skel"></div><div class="skel"></div></dl></div>
+  <div class="card"><div class="h"><svg class="i" data-i="activity"></svg>状态</div><div id="ovState" class="btns"><div class="skel" style="width:100%"></div></div><dl class="kv" id="ovTimes" style="margin-top:12px"></dl></div>
+  <div class="card"><div class="h"><svg class="i" data-i="battery"></svg>电池与网络</div><div class="stat"><svg class="donut" viewBox="0 0 84 84" id="dBat"></svg><dl class="kv" id="ovNet"></dl></div></div>
+ </div>
+ <div class="grid" style="margin-top:16px">
+  <div class="card"><div class="h"><svg class="i" data-i="cpu"></svg>内存与 CPU<span class="sp"></span><span class="sub">Kindle 和 Android 共用</span></div>
+   <div class="stat" style="margin-bottom:12px"><svg class="donut" viewBox="0 0 84 84" id="dMem"></svg><div class="legend" id="lgMem"></div></div>
+   <div id="ovCpu"></div></div>
+  <div class="card"><div class="h"><svg class="i" data-i="drive"></svg>存储<span class="sp"></span><button class="btn sm" id="duBtn"><svg class="i" data-i="search"></svg>计算占用</button></div>
+   <div class="stat" style="margin-bottom:12px"><svg class="donut" viewBox="0 0 84 84" id="dDisk"></svg><div class="legend" id="lgDisk"></div></div>
+   <div id="ovDisk2"></div><div id="ovDu"></div></div>
+ </div>
+ <div class="card" style="margin-top:16px"><div class="h"><svg class="i" data-i="zap"></svg>常用操作</div>
+  <div class="btns"><button class="btn" data-go="files"><svg class="i" data-i="folder"></svg>管理文件</button><button class="btn" data-go="up"><svg class="i" data-i="upload"></svg>传书</button>
+  <button class="btn" data-go="sys"><svg class="i" data-i="camera"></svg>截屏</button><button class="btn" id="ovRefresh"><svg class="i" data-i="refresh"></svg>清除残影</button>
+  <button class="btn" data-go="ssh"><svg class="i" data-i="terminal"></svg>SSH 诊断</button></div></div>
+</section>
+
+<!-- ================================================================ 文件 -->
+<section id="s-files" data-title="文件" hidden>
+ <div id="fm">
+  <nav id="fmTree" aria-label="文件夹"></nav>
+  <div id="fmPane" tabindex="-1">
+   <div class="fbar">
+    <button class="btn icon ghost" id="fUp" title="上一级 (Backspace)"><svg class="i" data-i="up"></svg></button>
+    <div class="crumb" id="crumb" title="点空白处可以直接输入路径"></div>
+    <input type="search" id="fFilter" placeholder="筛选 (Ctrl+F)" style="width:150px" aria-label="筛选">
+    <select id="fSort" aria-label="排序"><option value="name">按名称</option><option value="size">按大小</option><option value="time">按时间</option><option value="type">按类型</option></select>
+    <button class="btn icon ghost" id="fView" title="列表 / 缩略图"><svg class="i" data-i="grid"></svg></button>
+    <button class="btn icon ghost" id="fRefresh" title="刷新"><svg class="i" data-i="refresh"></svg></button>
+    <span class="btns"><button class="btn sm pri" id="fUpBtn"><svg class="i" data-i="upload"></svg>上传</button><button class="btn sm" id="fMenuBtn" title="更多"><svg class="i" data-i="more"></svg></button></span>
+   </div>
+   <div class="selbar" id="selBar" hidden><b id="selN"></b><span class="sp" style="flex:1"></span>
+    <button class="btn sm" data-a="zip"><svg class="i" data-i="download"></svg>打包下载</button><button class="btn sm" data-a="move"><svg class="i" data-i="move"></svg>移动到</button>
+    <button class="btn sm" data-a="copy"><svg class="i" data-i="copy"></svg>复制到</button><button class="btn sm" data-a="rename"><svg class="i" data-i="edit"></svg>改名</button>
+    <button class="btn sm dan" data-a="del"><svg class="i" data-i="trash"></svg>删除</button><button class="btn sm ghost" data-a="none" title="取消选择 (Esc)"><svg class="i" data-i="x"></svg></button></div>
+   <div class="note" id="fRo" hidden style="margin:10px 12px 0"></div>
+   <div id="fmList" tabindex="0" aria-label="文件列表"></div>
+   <div class="ffoot" id="fFoot"></div>
+   <div id="fmDrop" hidden>松开就上传到这个文件夹（文件夹也可以）</div>
+  </div>
+ </div>
+ <input type="file" id="fFile" multiple hidden><input type="file" id="fDir" webkitdirectory multiple hidden>
+ <p class="sub hide-s" style="margin-top:10px">快捷键：Enter 打开 · Backspace 上一级 · F2 改名 · Delete 删除 · Ctrl/⌘+A 全选 · Ctrl/⌘+C / X / V 复制、剪切、粘贴 · Ctrl/⌘+F 筛选 · 右键更多操作。拖动文件到左边或列表里的文件夹上就是移动（按住 Ctrl/⌥ 是复制）。从电脑拖进来、或者 Ctrl/⌘+V 粘贴截图都能上传。</p>
+</section>
+
+<!-- ================================================================ 传书 -->
+<section id="s-up" data-title="传书" hidden>
+ <div class="grid">
+  <div class="card"><div class="h"><svg class="i" data-i="book"></svg>把书传到 Kindle</div>
+   <div class="set"><span class="lbl">存到哪里<span class="sub">APK 安装包不受影响：上传后自动安装</span></span>
+    <span class="seg" id="upTo"><button data-v="books" class="on">Android 的 Books</button><button data-v="kindle">Kindle 书库</button></span></div>
+   <div class="drop" id="upDrop" style="margin-top:12px"><svg class="i" data-i="upload" style="width:30px;height:30px"></svg><p>把书（epub、pdf、mobi、azw3、txt…）或 APK 拖到这里</p><button class="btn pri" id="upPick">选择文件</button><input type="file" id="upFile" multiple hidden></div></div>
+  <div class="card"><div class="h"><svg class="i" data-i="link"></svg>从链接下载</div><p class="sub">粘贴 http(s) 直链，Kindle 自己去下载。</p>
+   <div class="btns"><input type="text" id="link" placeholder="https://…" style="flex:1"><button class="btn pri" id="linkBtn">开始下载</button></div>
+   <div class="h" style="margin-top:18px"><svg class="i" data-i="list"></svg>Kindle 上的任务</div><div id="tlist" class="sub">还没有任务</div></div>
+ </div>
+</section>
+
+<!-- ================================================================ 应用 -->
+<section id="s-apps" data-title="应用" hidden>
+ <div class="card" id="compCard" hidden><div class="h"><svg class="i" data-i="zap"></svg>预编译<span class="sp"></span><button class="btn sm" id="compAll">全部优化</button></div><div id="compSt" class="sub"></div></div>
+ <div class="card">
+  <div class="h"><svg class="i" data-i="grid"></svg>应用<span class="badge" id="appN"></span><span class="sp"></span>
+   <input type="search" id="appQ" placeholder="搜索名称或包名" style="width:180px"><select id="appSort"><option value="name">按名称</option><option value="size">按占用</option><option value="updated">最近更新</option><option value="running">运行中优先</option></select>
+   <label class="sub" style="display:flex;align-items:center;gap:6px"><span class="switch"><input type="checkbox" id="appSys"><span></span></span>系统应用</label>
+   <button class="btn sm pri" id="apkPick"><svg class="i" data-i="plus"></svg>安装 APK</button><input type="file" id="apkFile" accept=".apk" multiple hidden></div>
+  <div class="selbar" id="appSel" hidden style="border-radius:9px;margin-bottom:8px"><b id="appSelN"></b><span style="flex:1"></span><button class="btn sm" id="appBatchStop">停止</button><button class="btn sm dan" id="appBatchDel">卸载</button><button class="btn sm ghost" id="appSelNone"><svg class="i" data-i="x"></svg></button></div>
+  <div class="drop" id="apkDrop" hidden>松开安装 APK</div>
+  <div id="alist" class="list"></div></div>
+</section>
+
+<!-- ================================================================ 运行 -->
+<section id="s-run" data-title="运行" hidden>
+ <div class="card"><div class="h"><svg class="i" data-i="activity"></svg>Android 进程<span class="sp"></span><span class="sub" id="runSum"></span>
+  <label class="sub" style="display:flex;align-items:center;gap:6px"><span class="switch"><input type="checkbox" id="runAuto" checked><span></span></span>自动刷新</label><button class="btn sm" id="runBtn"><svg class="i" data-i="refresh"></svg></button></div>
+  <div class="scroll"><table class="t" id="ptab"></table></div></div>
+ <div class="card"><div class="h"><svg class="i" data-i="tablet"></svg>Kindle 这边<span class="badge">只读</span><span class="sp"></span><span id="hostSum"></span></div>
+  <div class="scroll"><table class="t" id="htab"></table></div>
+  <p class="sub">“已暂停”是正常的：Android 在前台时 Kindle 界面的窗口管理器被暂停，回到 Kindle 时恢复。</p></div>
+</section>
+
+<!-- ================================================================ 日志 -->
+<section id="s-log" data-title="日志" hidden>
+ <div class="card"><div class="h"><svg class="i" data-i="list"></svg>日志<span class="sp"></span>
+  <select id="logWhich"><option value="main">VeraDroid 运行日志</option><option value="update">自动更新日志</option><option value="ssh">SSH 日志</option><option value="fsck">系统盘检查日志</option></select>
+  <select id="logN"><option>200</option><option selected>500</option><option>2000</option></select>
+  <select id="logLvl"><option value="">全部</option><option value="w">只看警告和错误</option><option value="e">只看错误</option></select>
+  <input type="search" id="logQ" placeholder="搜索" style="width:140px">
+  <label class="sub" style="display:flex;align-items:center;gap:6px"><span class="switch"><input type="checkbox" id="logFollow"><span></span></span>跟随</label>
+  <button class="btn sm" id="logBtn"><svg class="i" data-i="refresh"></svg></button><a class="btn sm" id="logSave" download="veradroid.log"><svg class="i" data-i="download"></svg></a></div>
+  <div class="sub" id="logInfo" style="margin-bottom:8px"></div>
+  <pre class="log" id="logText">选择日志后会显示在这里</pre></div>
+</section>
+
+<!-- ================================================================ SSH 与诊断 -->
+<section id="s-ssh" data-title="SSH 与诊断" hidden>
+ <div class="grid">
+  <div class="card"><div class="h"><svg class="i" data-i="terminal"></svg>SSH 诊断<span class="sp"></span><span id="sshBadge"></span></div>
+   <div id="sshState"><div class="skel"></div><div class="skel"></div></div>
+   <div class="btns" style="margin-top:12px"><button class="btn pri" id="sshStart">打开 SSH</button><button class="btn" id="sshStop">关闭 SSH</button></div>
+   <div class="note">SSH 登录进去就是 Kindle 的 root。<b>只认你自己的公钥</b>，没有密码登录；用完请关（开着时 Kindle 不进屏保）；重启 Kindle 后自动关闭。需要先把 SSH 诊断包（VeraDroid-SSH 文件夹）拷进 Kindle 的 documents。</div></div>
+  <div class="card"><div class="h"><svg class="i" data-i="key"></svg>允许登录的公钥</div><div id="sshKeys" class="list"></div>
+   <p class="sub">添加你自己的公钥：电脑上 <code>~/.ssh/id_ed25519.pub</code> 那一整行。<b>不要</b>贴私钥。改了公钥要关掉 SSH 再打开才生效。</p>
+   <textarea id="sshKey" rows="3" placeholder="ssh-ed25519 AAAAC3Nza… you@computer"></textarea>
+   <div class="btns" style="margin-top:8px"><button class="btn sm" id="sshKeyPick">从 .pub 文件读取</button><input type="file" id="sshKeyFile" accept=".pub,text/plain" hidden>
+    <input type="password" id="sshPin" inputmode="numeric" maxlength="4" placeholder="再输一次 PIN" style="width:130px"><button class="btn sm pri" id="sshAdd">添加公钥</button></div></div>
+ </div>
+ <div class="card"><div class="h"><svg class="i" data-i="send"></svg>诊断日志</div><p class="sub">把 VeraDroid 的日志和系统状态打包上传到 VeraDroid 服务器，反馈问题时告诉我们编号。不含书和账号密码。</p>
+  <div class="btns"><button class="btn pri" id="diagBtn">上传诊断日志</button><span id="diagSt" class="sub"></span><span class="sp" style="flex:1"></span><button class="btn sm" data-go="log">查看日志</button></div></div>
+</section>
+
+<!-- ================================================================ 系统 -->
+<section id="s-sys" data-title="系统" hidden>
+ <div class="grid">
+  <div class="card" style="grid-column:1/-1"><div class="h"><svg class="i" data-i="camera"></svg>屏幕<span class="sp"></span>
+   <label class="sub" style="display:flex;align-items:center;gap:6px"><span class="switch"><input type="checkbox" id="shotAuto"><span></span></span>每 10 秒刷新</label>
+   <button class="btn sm pri" id="shotBtn">截取当前屏幕</button><button class="btn sm" id="clearBtn">清除残影</button><a class="btn sm" id="shotSave" hidden download="kindle-screen.png"><svg class="i" data-i="download"></svg>PNG</a></div>
+   <div id="shotBox" class="empty"><svg class="i" data-i="camera"></svg>点“截取当前屏幕”看看 Kindle 上现在显示的是什么</div></div>
+  <div class="card"><div class="h"><svg class="i" data-i="sun"></svg>显示<span class="sp"></span><span class="sub">和下拉面板同步，立即生效</span></div><div id="dispSets"><div class="skel"></div><div class="skel"></div></div></div>
+  <div class="card"><div class="h"><svg class="i" data-i="refresh"></svg>更新</div><div id="updSets"></div>
+   <div class="btns" style="margin-top:10px"><button class="btn sm" id="updBtn">检查更新</button></div><div id="updInfo" class="sub" style="margin-top:8px"></div>
+   <p class="sub">这里只查看服务器上的版本，不会下载安装。</p></div>
+  <div class="card" id="lightCard" hidden><div class="h"><svg class="i" data-i="sun"></svg>前光</div><div id="lightSets"></div></div>
+  <div class="card"><div class="h"><svg class="i" data-i="clipboard"></svg>发送文字到 Kindle</div><p class="sub">放进 Android 的剪贴板，在应用里长按输入框“粘贴”。</p>
+   <textarea id="clip" rows="3" placeholder="网址、验证码、一段话…"></textarea><div class="btns" style="margin-top:8px"><button class="btn pri sm" id="clipBtn">发送</button></div></div>
+  <div class="card"><div class="h"><svg class="i" data-i="power"></svg>电源</div><div class="btns"><button class="btn" id="rebootBtn">重启 Android</button><button class="btn" id="exitBtn">返回 Kindle</button></div>
+   <p class="sub">两个操作都会让这个网页断开，要在 Kindle 上重新打开传输。</p></div>
+ </div>
+</section>
+
+<!-- ================================================================ 主题 -->
+<section id="s-theme" data-title="壁纸与图标" hidden>
+ <div class="card"><div class="h"><svg class="i" data-i="image"></svg>壁纸<span class="sp"></span><button class="btn sm pri" id="galPick"><svg class="i" data-i="plus"></svg>添加到图库</button><input type="file" id="galFile" accept="image/png,image/jpeg,image/webp" multiple hidden></div>
+  <p class="sub">图库是 Android 存储里的 <code>VeraDroid/wallpaper</code>，在 Kindle 上选壁纸、换图标时最先列出这里的图片。点一张图可以设成壁纸、用作应用图标或删除。可以直接把图片拖进来。</p>
+  <div class="thumbs" id="galList"></div></div>
+ <div class="card"><div class="h"><svg class="i" data-i="grid"></svg>应用图标<span class="sp"></span><span class="sub">点一个应用：用图库里的图、上传 PNG，或恢复默认</span></div><div class="icons" id="iconList"></div></div>
+ <div class="grid">
+  <div class="card"><div class="h"><svg class="i" data-i="list"></svg>状态栏</div>
+   <div class="set"><span>显示时间</span><label class="switch"><input type="checkbox" id="sb_clock" checked><span></span></label></div>
+   <div class="set"><span>显示电量</span><label class="switch"><input type="checkbox" id="sb_battery" checked><span></span></label></div>
+   <div class="set"><span>时间格式</span><select id="sb_fmt"><option value="HH:mm">14:05</option><option value="h:mm">2:05</option><option value="M/d HH:mm">11/7 14:05</option></select></div>
+   <div class="set"><span>左侧文字</span><input id="sb_text" type="text" maxlength="20" placeholder="比如：我的 Kindle"></div>
+   <div class="btns" style="margin-top:10px"><button class="btn pri sm" id="sbSave">保存状态栏</button></div></div>
+  <div class="card"><div class="h"><svg class="i" data-i="archive"></svg>主题包</div><p class="sub">一个 .zip，里面可以有 wallpaper.jpg、icons/包名.png、statusbar.json，一次换好。</p>
+   <div class="btns"><button class="btn pri sm" id="zipPick">选择 .zip</button><input type="file" id="zipFile" accept=".zip" hidden><button class="btn sm dan" id="themeReset">全部恢复默认</button></div></div>
+ </div>
+</section>
+
+<!-- ================================================================ 蓝牙 -->
+<section id="s-bt" data-title="蓝牙" hidden>
+ <div id="btBody">
+  <div class="card"><div class="skel"></div><div class="skel"></div></div>
+ </div>
+</section>
+
+<!-- ================================================================ 存储空间 -->
+<section id="s-storage" data-title="存储空间" hidden>
+ <div id="stoBody">
+  <div class="card"><div class="skel"></div><div class="skel"></div></div>
+ </div>
+</section>
+
+ </div>
+</div>
+</div>
+<nav id="tabbar" aria-label="导航"></nav>
+<div id="toasts" aria-live="polite"></div>
+<div id="queue" hidden><div class="qh"><svg class="i" data-i="upload"></svg><span id="qTitle"></span><span style="flex:1"></span><button class="btn sm ghost" id="qClear">清除已完成</button><button class="btn icon ghost" id="qMin" title="收起"><svg class="i" data-i="down"></svg></button></div><div class="qb" id="qList"></div></div>
+
+<script>
+'use strict';
+/* =================================================================== icons (inline SVG paths, 24x24) */
+var IC={
+home:'<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/>',folder:'<path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>',
+file:'<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',upload:'<path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 16v4h16v-4"/>',download:'<path d="M12 4v12"/><path d="M7 11l5 5 5-5"/><path d="M4 20h16"/>',
+grid:'<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+activity:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>',
+image:'<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>',terminal:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/>',
+list:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',bluetooth:'<path d="M7 7l10 10-5 4V3l5 4L7 17"/>',drive:'<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13l2.5-8h9L19 13M7 16.5h.01"/>',
+more:'<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>',search:'<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+refresh:'<path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 4v7h-7"/>',trash:'<path d="M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3"/>',edit:'<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/>',
+copy:'<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/>',move:'<path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M10 13h6M13 10l3 3-3 3"/>',
+plus:'<path d="M12 5v14M5 12h14"/>',x:'<path d="M6 6l12 12M18 6L6 18"/>',check:'<path d="M5 12l5 5 9-10"/>',right:'<path d="M9 6l6 6-6 6"/>',down:'<path d="M6 9l6 6 6-6"/>',up:'<path d="M12 19V5M6 11l6-6 6 6"/>',
+book:'<path d="M4 5a2 2 0 012-2h13v16H6a2 2 0 00-2 2z"/><path d="M4 19V5"/>',archive:'<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v11h14V9M10 13h4"/>',
+android:'<rect x="5" y="9" width="14" height="10" rx="2"/><path d="M8 9a4 4 0 018 0M8 5l1.5 2M16 5l-1.5 2M9.5 13h.01M14.5 13h.01"/>',text:'<path d="M6 3h8l4 4v14H6z"/><path d="M9 12h6M9 16h6M9 8h2"/>',
+font:'<path d="M5 20L11 4h2l6 16M8 14h8"/>',link:'<path d="M10 14l4-4M8 12l-2 2a3 3 0 004 4l2-2M16 12l2-2a3 3 0 00-4-4l-2 2"/>',tablet:'<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M11 18h2"/>',
+battery:'<rect x="2" y="7" width="17" height="10" rx="2"/><path d="M22 11v2"/>',cpu:'<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
+zap:'<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',camera:'<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',key:'<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/>',
+send:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+moon:'<path d="M21 13A9 9 0 1111 3a7 7 0 0010 10z"/>',power:'<path d="M12 3v9"/><path d="M6.3 7a8 8 0 1011.4 0"/>',clipboard:'<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1"/>',
+wifi:'<path d="M2 9a15 15 0 0120 0M5 12.5a10 10 0 0114 0M8.5 16a5 5 0 017 0M12 19.5h.01"/>',eye:'<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+pkg:'<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',palette:'<path d="M12 3a9 9 0 100 18c1 0 1.5-.8 1.5-1.5 0-1.5 1-2 2-2H18a3 3 0 003-3c0-5-4-8.5-9-8.5z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/>',
+folderplus:'<path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M12 10v6M9 13h6"/>',fileplus:'<path d="M6 3h8l4 4v14H6z"/><path d="M12 11v6M9 14h6"/>',
+open:'<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/>',stop:'<rect x="6" y="6" width="12" height="12" rx="2"/>',cut:'<circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8 16L20 4M16 16L4 4"/>',
+paste:'<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1M9 12h6M9 16h4"/>',lock:'<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>',sort:'<path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/>'
+};
+function svg(n,cls){return '<svg class="i'+(cls?' '+cls:'')+'" viewBox="0 0 24 24" aria-hidden="true">'+(IC[n]||'')+'</svg>'}
+function fillIcons(root){var l=(root||document).querySelectorAll('svg[data-i]');for(var i=0;i<l.length;i++){var s=l[i];s.setAttribute('viewBox','0 0 24 24');s.setAttribute('aria-hidden','true');s.classList.add('i');s.innerHTML=IC[s.getAttribute('data-i')]||'';s.removeAttribute('data-i')}}
+
+/* =================================================================== helpers */
+function $(i){return document.getElementById(i)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function fmt(n){n=+n;if(!(n>=0))return'—';if(n<1024)return n+' B';if(n<1048576)return(n/1024).toFixed(n<10240?1:0)+' KB';if(n<1073741824)return(n/1048576).toFixed(n<104857600?1:0)+' MB';return(n/1073741824).toFixed(2)+' GB'}
+function fmtK(k){return fmt(k*1024)}
+function pct(a,b){return b>0?Math.round(a*1000/b)/10:0}
+function dur(s){s=+s;if(!(s>=0))return'—';var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+' 天 '+h+' 小时':h?h+' 小时 '+m+' 分':m+' 分钟'}
+function rel(t){if(!t)return'';var s=(Date.now()-t)/1000;if(s<60)return'刚刚';if(s<3600)return Math.floor(s/60)+' 分钟前';if(s<86400)return Math.floor(s/3600)+' 小时前';if(s<86400*7)return Math.floor(s/86400)+' 天前';return date(t).slice(0,10)}
+function date(t){var d=new Date(+t);function p(n){return(n<10?'0':'')+n}return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())}
+function q(o){return Object.keys(o).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o[k])}).join('&')}
+function isMac(){return /Mac|iPhone|iPad/.test(navigator.platform)}
+function toast(msg,kind,ms){var d=document.createElement('div');d.className='toast '+(kind||'');d.innerHTML=(kind==='ok'?svg('check'):kind==='err'?svg('x'):'')+'<span>'+esc(msg)+'</span>';
+ $('toasts').appendChild(d);setTimeout(function(){d.style.opacity='0';d.style.transition='.3s';setTimeout(function(){d.remove()},300)},ms||(kind==='err'?6000:3200))}
+function empty(icon,text,extra){return '<div class="empty">'+svg(icon)+'<div>'+text+'</div>'+(extra||'')+'</div>'}
+function errBox(msg,retry){return '<div class="empty" style="color:var(--err)">'+svg('x')+'<div>'+esc(msg)+'</div>'+(retry?'<button class="btn sm" onclick="'+retry+'">重试</button>':'')+'</div>'}
+function skel(n){var h='';for(var i=0;i<(n||3);i++)h+='<div class="skel" style="width:'+(60+Math.random()*40)+'%"></div>';return h}
+
+/* modal dialogs (instead of alert/confirm/prompt) */
+var modalStack=[];
+function modal(opt){return new Promise(function(res){
+ var bg=document.createElement('div');bg.className='modal-bg';
+ bg.innerHTML='<div class="modal'+(opt.wide?' wide':'')+'" role="dialog" aria-modal="true"><div class="mh"><b>'+esc(opt.title||'')+'</b>'+(opt.head||'')+'<button class="btn icon ghost" data-x="1" aria-label="关闭">'+svg('x')+'</button></div><div class="mb">'+(opt.body||'')+'</div>'+(opt.buttons===false?'':'<div class="mf">'+(opt.foot||'')+'<span style="flex:1"></span>'+(opt.cancel===false?'':'<button class="btn" data-x="1">'+esc(opt.cancel||'取消')+'</button>')+'<button class="btn '+(opt.danger?'dan':'pri')+'" data-ok="1">'+esc(opt.ok||'确定')+'</button></div>')+'</div>';
+ document.body.appendChild(bg);modalStack.push(bg);
+ var done=function(v){if(opt.beforeClose&&v!==null&&opt.beforeClose(v,bg)===false)return;bg.remove();modalStack.splice(modalStack.indexOf(bg),1);document.removeEventListener('keydown',kd,true);res(v)};
+ bg.close=done;
+ var kd=function(e){if(modalStack[modalStack.length-1]!==bg)return;if(e.key==='Escape'){e.preventDefault();e.stopPropagation();if(opt.onEsc&&opt.onEsc(bg)===false)return;done(null)}
+  else if(e.key==='Enter'&&!opt.noEnter&&e.target.tagName!=='TEXTAREA'){e.preventDefault();e.stopPropagation();done(opt.value?opt.value(bg):true)}};
+ document.addEventListener('keydown',kd,true);
+ bg.addEventListener('click',function(e){var x=e.target.closest('[data-x]');if(x||e.target===bg&&!opt.sticky){if(opt.onEsc&&opt.onEsc(bg)===false)return;done(null);return}if(e.target.closest('[data-ok]'))done(opt.value?opt.value(bg):true)});
+ if(opt.init)opt.init(bg,done);
+ var f=bg.querySelector('[autofocus]')||bg.querySelector('[data-ok]');if(f)setTimeout(function(){f.focus();if(f.select&&f.tagName==='INPUT'){var v=f.value,d=v.lastIndexOf('.');if(opt.selectBase&&d>0)f.setSelectionRange(0,d);else f.select()}},30)})}
+function confirmBox(title,body,ok,danger){return modal({title:title,body:'<p style="margin:0">'+body+'</p>',ok:ok||'确定',danger:danger})}
+function promptBox(title,label,val,ok,selectBase){return modal({title:title,body:(label?'<p class="sub" style="margin-top:0">'+label+'</p>':'')+'<input type="text" id="pr" style="width:100%" autofocus value="'+esc(val||'')+'">',ok:ok||'确定',selectBase:selectBase,value:function(bg){return bg.querySelector('#pr').value.trim()}})}
+
+/* =================================================================== API + session */
+var TOKEN='',LOGGED=false,pendingAfterLogin=[];
+function api(path,opt){opt=opt||{};opt.credentials='same-origin';
+ return fetch(path,opt).then(function(r){
+  if(r.status==401){sessionExpired();throw new Error('login')}
+  var ct=r.headers.get('content-type')||'';
+  if(ct.indexOf('json')<0){if(!r.ok)throw new Error('HTTP '+r.status);return r}
+  return r.json().then(function(j){j._s=r.status;
+   if(r.status==403&&j.csrf&&!opt._retry){return refreshToken().then(function(){opt._retry=1;opt.headers=opt.headers||{};opt.headers['X-VD-Token']=TOKEN;return api(path,opt)})}
+   return j})})}
+function post(path,obj){return api(path,{method:'POST',headers:{'Content-Type':'application/json','X-VD-Token':TOKEN},body:JSON.stringify(obj||{})})}
+function refreshToken(){return fetch('/api/state',{credentials:'same-origin'}).then(function(r){if(r.status==401){sessionExpired();throw new Error('login')}return r.json()}).then(function(j){if(j.token)TOKEN=j.token})}
+function sessionExpired(){if(!$('login').hidden)return;var was=LOGGED;LOGGED=false;stopTimers();
+ $('lmsgTop').textContent=was?'登录已过期（Kindle 上的传输重新打开过，或者 PIN 换了）。请输入 Kindle 屏幕上现在的 PIN。':'输入 Kindle 屏幕上显示的 4 位 PIN';
+ $('login').hidden=false;setTimeout(function(){$('pin').focus()},50)}
+$('loginBtn').onclick=login;$('pin').addEventListener('keydown',function(e){if(e.key==='Enter')login()});
+$('pin').addEventListener('input',function(){if(/^\d{4}$/.test(this.value))login()});
+function login(){var b=$('loginBtn');b.disabled=true;
+ fetch('/login',{method:'POST',credentials:'same-origin',body:'pin='+encodeURIComponent($('pin').value)}).then(function(r){return r.json()}).then(function(j){b.disabled=false;
+  if(j.ok){$('login').hidden=true;$('pin').value='';$('lmsg').textContent='';init()}else{$('lmsg').textContent=j.msg||'PIN 不对';$('pin').select()}}).catch(function(){b.disabled=false;$('lmsg').textContent='连不上 Kindle：传输是不是关了？'})}
+
+/* =================================================================== navigation */
+var NAV=[['ov','概览','home'],['files','文件','folder'],['up','传书','book'],['apps','应用','grid'],['run','运行','activity'],['sys','系统','settings'],['theme','壁纸与图标','palette'],['ssh','SSH 与诊断','terminal'],['log','日志','list'],['-'],['bt','蓝牙','bluetooth'],['storage','存储空间','drive']];
+var TABS=['ov','files','apps','sys'],cur='ov',timers={};
+function buildNav(){var h='';NAV.forEach(function(n){if(n[0]==='-'){h+='<div class="navsep"></div>';return}h+='<button class="nav" data-go="'+n[0]+'">'+svg(n[2])+'<span>'+n[1]+'</span><span class="badge" id="nb-'+n[0]+'" hidden></span></button>'});$('navList').innerHTML=h;
+ var t='';TABS.forEach(function(k){var n=NAV.filter(function(x){return x[0]===k})[0];t+='<button data-go="'+k+'">'+svg(n[2])+'<span>'+n[1]+'</span></button>'});t+='<button id="moreTab">'+svg('more')+'<span>更多</span></button>';$('tabbar').innerHTML=t}
+document.addEventListener('click',function(e){var g=e.target.closest('[data-go]');if(g){e.preventDefault();show(g.getAttribute('data-go'))}});
+document.addEventListener('click',function(e){if(e.target.closest('#moreTab')){var h='<div class="list">';NAV.forEach(function(n){if(n[0]==='-'||TABS.indexOf(n[0])>=0)return;h+='<button class="nav" data-go="'+n[0]+'" data-x="1">'+svg(n[2])+n[1]+'</button>'});modal({title:'更多',body:h+'</div>',buttons:false})}});
+function stopTimers(){for(var k in timers){clearInterval(timers[k]);delete timers[k]}}
+function every(name,ms,fn){clearInterval(timers[name]);timers[name]=setInterval(function(){if(!document.hidden&&LOGGED)fn()},ms)}
+function show(t){if(!$('s-'+t))t='ov';cur=t;var secs=document.querySelectorAll('section[id^=s-]');for(var i=0;i<secs.length;i++)secs[i].hidden=secs[i].id!=='s-'+t;
+ $('title').textContent=$('s-'+t).getAttribute('data-title');document.title=$('title').textContent+' · VeraDroid';
+ var bs=document.querySelectorAll('.nav[data-go],#tabbar button[data-go]');for(i=0;i<bs.length;i++)bs[i].classList.toggle('on',bs[i].getAttribute('data-go')===t);
+ $('moreTab')&&$('moreTab').classList.toggle('on',TABS.indexOf(t)<0);
+ try{history.replaceState(null,'','#'+t)}catch(e){}
+ stopTimers();every('tasks',3000,pollTasks);
+ ({ov:function(){loadOv();every('ov',8000,loadOv)},files:function(){fsOpen(FS.root,FS.path)},apps:function(){loadApps();loadCompile();every('comp',4000,loadCompile)},
+   run:function(){loadRun();every('run',5000,function(){if($('runAuto').checked)loadRun()})},log:function(){loadLog()},ssh:loadSsh,bt:loadBt,storage:loadStorage,sys:loadSys,theme:loadTheme,up:pollTasks}[t]||function(){})();
+ window.scrollTo(0,0)}
+function applyTheme(){var m=localStorage.getItem('vd-theme')||'';if(m)document.documentElement.setAttribute('data-theme',m);else document.documentElement.removeAttribute('data-theme');
+ var dark=m==='dark'||(!m&&matchMedia('(prefers-color-scheme: dark)').matches);$('themeBtn').innerHTML=svg(dark?'sun':'moon')+'<span>'+(m?(dark?'深色（手动）':'浅色（手动）'):'跟随系统')+'</span>'}
+$('themeBtn').onclick=function(){var m=localStorage.getItem('vd-theme')||'';try{localStorage.setItem('vd-theme',m===''?'dark':m==='dark'?'light':'')}catch(e){}applyTheme()};
+
+function init(){refreshToken().then(function(){return api('/api/state')}).then(function(j){LOGGED=true;
+ $('sideDev').textContent=(j.name||'')+(j.home?' · 桌面 '+j.home:'');
+ var h=(location.hash||'').slice(1);show($('s-'+h)?h:cur)}).catch(function(){})}
+
+/* =================================================================== donuts / meters */
+function donut(el,p,label,color){p=Math.max(0,Math.min(100,+p||0));var C=2*Math.PI*35;
+ if(!el.firstChild)el.innerHTML='<circle class="bgc" cx="42" cy="42" r="35"/><circle class="fgc" cx="42" cy="42" r="35" stroke-dasharray="0 999"/><text x="42" y="42"></text>';
+ var f=el.querySelector('.fgc');f.setAttribute('stroke-dasharray',(C*p/100).toFixed(1)+' 999');f.style.stroke=color||(p>90?'var(--err)':p>75?'var(--warn)':'var(--acc)');el.querySelector('text').textContent=label!=null?label:Math.round(p)+'%'}
+function meter(p){p=Math.max(0,Math.min(100,+p||0));return '<div class="meter'+(p>90?' err':p>75?' warn':'')+'"><i style="width:'+p.toFixed(1)+'%"></i></div>'}
+function setHTML(id,h){var e=$(id);if(e&&e.innerHTML!==h)e.innerHTML=h}
+function kv(rows){return rows.filter(function(r){return r[1]!==''&&r[1]!=null}).map(function(r){return'<dt>'+esc(r[0])+'</dt><dd>'+(r[2]?r[1]:esc(r[1]))+'</dd>'}).join('')}
+function chip(cls,icon,text,title){return '<span class="badge '+cls+'"'+(title?' title="'+esc(title)+'"':'')+'>'+(icon?svg(icon):'<span class="dot"></span>')+esc(text)+'</span>'}
+
+/* =================================================================== 概览 */
+var OV={};
+function loadOv(){api('/api/overview').then(function(j){OV=j;var h=j.hostinfo||{},st=j.status||{},m=j.mem||{};
+ $('ovUpd').textContent=!j.hostBusy?'刚刚更新':j.host?'宿主正忙，先显示 '+(j.hostAge||0)+' 秒前的信息，稍后自动刷新':'宿主正忙（可能刚开机），稍后自动刷新…';
+ setHTML('ovDev',kv([['机型',h.model||''],['Kindle 固件',(h.firmware||'').replace(/\s*\(.*\)$/,'')],['VeraDroid',h.vdversion||''],['桌面应用',j.home||''],['Android',j.android?j.android+' · '+j.abi:''],['内核',h.kernel||'']]));
+ var s='';s+=chip(h.frozen==='1'?'warn':'ok','',h.frozen==='1'?'Android 已冻结':'Android 运行中');
+ s+=chip(h.fwpaused==='1'?'acc':'','',h.fwpaused==='1'?'Kindle 界面已暂停':'Kindle 界面运行中');
+ s+=chip(j.sshRunning?'warn':'','terminal',j.sshRunning?'SSH 开着':'SSH 关闭');
+ s+=chip(h.autoupdate==='0'?'':'ok','refresh',h.autoupdate==='0'?'自动更新关':'自动更新开');
+ if(h.mode==='chroot')s+=chip('','', 'chroot 模式');
+ setHTML('ovState',s);
+ setHTML('ovTimes',kv([['Kindle 已开机',dur(h.uptime||j.uptime)],['Android 已运行',h.androidup?dur(h.androidup):'']]));
+ var bat=+st.battery;donut($('dBat'),bat,isNaN(bat)?'—':bat+'%',bat<15?'var(--err)':bat<30?'var(--warn)':'var(--ok)');
+ var ssid='';(j.wifiList||'').split('\n').forEach(function(l){if(l.charAt(0)==='*')ssid=l.slice(1)});
+ setHTML('ovNet',kv([['电量',isNaN(bat)?'—':bat+'%'+(st.charging==='1'?'（充电中）':'')],['Wi-Fi',st.wifi==='0'?'关闭':'开启'+(ssid?' · '+ssid:'')],['IP 地址',st.lanip||location.hostname],['前光',st.haslight==='1'?st.light+' / '+st.lightmax:''],['自动休眠',st.hassleeptime==='1'&&st.sleep?Math.round(st.sleep/60)+' 分钟':'']]));
+ var mt=m.MemTotal||0,ma=m.MemAvailable||0,su=(m.SwapTotal||0)-(m.SwapFree||0);donut($('dMem'),pct(mt-ma,mt));
+ setHTML('lgMem','<span class="t">已用 '+fmtK(mt-ma)+'</span><span class="sub">共 '+fmtK(mt)+' · 可用 '+fmtK(ma)+'</span>'+(m.SwapTotal?'<span class="sub">交换区 '+fmtK(su)+' / '+fmtK(m.SwapTotal)+'</span>':''));
+ setHTML('ovCpu','<div class="btns" style="justify-content:space-between"><span>CPU（'+j.ncpu+' 核）</span><span class="sub">'+(j.cpu!=null?j.cpu+'%':'')+' · 负载 '+esc((j.load||'').split(' ').slice(0,3).join(' '))+'</span></div>'+meter(j.cpu||0));
+ var dk=(h['df.kindle']||'').split(' ');
+ if(dk.length>=3){var t=+dk[0],u=+dk[1],a=+dk[2];donut($('dDisk'),pct(u,t));setHTML('lgDisk','<span class="t">Kindle 用户存储 · 已用 '+fmtK(u)+'</span><span class="sub">共 '+fmtK(t)+' · 剩 '+fmtK(a)+'</span><span class="sub">书、VeraDroid 程序和数据都在这里</span>')}
+ var d2='',da=h['df.android'],dr=(h['df.root']||'').split(' ');
+ if(da&&da!==h['df.kindle']){var x=da.split(' ');d2+=row2('Android 系统盘镜像',+x[1],+x[0])}
+ if(dr.length>=3)d2+=row2('Kindle 系统分区（只读）',+dr[1],+dr[0]);
+ setHTML('ovDisk2',d2);showDu(h)}).catch(function(e){if(e.message!=='login')$('ovUpd').textContent='刷新失败'})}
+function row2(l,u,t){return '<div style="margin:8px 0"><div class="btns" style="justify-content:space-between"><span>'+esc(l)+'</span><span class="sub">'+fmtK(u)+' / '+fmtK(t)+'</span></div>'+meter(pct(u,t))+'</div>'}
+function showDu(h){if(!h['du.time'])return;var rows=[['Android 系统',h['du.system']],['已装应用',h['du.apps']],['应用数据',h['du.appdata']],['Android 共享存储',h['du.media']],['VeraDroid 程序',h['du.program']],['Kindle 书库',h['du.kindledocs']]];
+ var mx=0;rows.forEach(function(r){mx=Math.max(mx,+r[1]||0)});
+ setHTML('ovDu','<div class="sub" style="margin:12px 0 4px">占用明细 · '+rel(h['du.time']*1000)+'计算</div>'+rows.map(function(r){return '<div style="margin:6px 0"><div class="btns" style="justify-content:space-between"><span>'+r[0]+'</span><span class="sub">'+fmtK(+r[1]||0)+'</span></div>'+meter(pct(+r[1]||0,mx))+'</div>'}).join(''))}
+$('duBtn').onclick=function(){var b=this;b.disabled=true;b.innerHTML='<span class="spin"></span>正在计算…';
+ api('/api/du').then(function(j){b.disabled=false;b.innerHTML=svg('search')+'重新计算';if(!j.ok){toast(j.msg||'失败','err');return}showDu(j)}).catch(function(){b.disabled=false;b.innerHTML=svg('search')+'计算占用'})};
+$('ovRefresh').onclick=function(){post('/api/sys/refresh').then(function(){toast('已整屏刷新','ok')})};
+
+/* =================================================================== upload queue */
+var Q=[],QN=0,QACT=0,QMAX=2;
+function qAdd(file,url,label,after){var it={id:++QN,file:file,url:url,label:label||file.name,state:'wait',loaded:0,total:file.size,after:after};Q.push(it);qRender();qPump();return it}
+function qPump(){while(QACT<QMAX){var it=Q.filter(function(x){return x.state==='wait'})[0];if(!it)break;qStart(it)}qRender()}
+function qStart(it){QACT++;it.state='run';it.t0=Date.now();it.lastT=it.t0;it.lastL=0;it.speed=0;
+ var go=function(url){var fd=new FormData();fd.append('file',it.file,it.file.name);var x=new XMLHttpRequest();it.xhr=x;x.open('POST',url);x.setRequestHeader('X-VD-Token',TOKEN);
+  x.upload.onprogress=function(e){if(!e.lengthComputable)return;it.loaded=e.loaded;it.total=e.total;var now=Date.now();if(now-it.lastT>700){it.speed=(e.loaded-it.lastL)*1000/(now-it.lastT);it.lastT=now;it.lastL=e.loaded}qRenderSoon()};
+  x.onload=function(){var j={};try{j=JSON.parse(x.responseText)}catch(e){}QACT--;
+   if(x.status==401){it.state='err';it.msg='登录过期';sessionExpired()}
+   else if(x.status==403&&j.csrf){refreshToken().then(function(){it.state='wait';qPump()});return}
+   else if(j.ok&&!(j.results&&j.results[0]&&j.results[0].ok===false)){var r=(j.results&&j.results[0])||{};it.state='done';it.msg=r.msg||'完成';it.loaded=it.total}
+   else{var r2=(j.results&&j.results[0])||{};it.state='err';it.msg=r2.msg||j.msg||('HTTP '+x.status)}
+   if(it.after)it.after(it);qRender();qPump()};
+  x.onerror=function(){QACT--;it.state='err';it.msg='网络中断（空间不够或传输被关时也会这样）';qRender();qPump()};
+  x.onabort=function(){QACT--;it.state='cancel';it.msg='已取消';qRender();qPump()};
+  x.send(fd)};
+ if(it.prep)it.prep().then(go,function(e){QACT--;it.state='err';it.msg=e.message||'失败';qRender();qPump()});else go(it.url)}
+var qT;function qRenderSoon(){if(!qT)qT=setTimeout(function(){qT=null;qRender()},250)}
+function qRender(){if(!Q.length){$('queue').hidden=true;return}$('queue').hidden=false;
+ var run=Q.filter(function(x){return x.state==='run'||x.state==='wait'}).length,done=Q.filter(function(x){return x.state==='done'}).length,bad=Q.filter(function(x){return x.state==='err'}).length;
+ $('qTitle').textContent=run?'正在上传 '+(Q.length-run)+' / '+Q.length:'上传完成 '+done+(bad?'，失败 '+bad:'');
+ var h='';Q.slice().reverse().slice(0,200).forEach(function(it){var p=it.total?pct(it.loaded,it.total):0;
+  var info=it.state==='run'?fmt(it.loaded)+' / '+fmt(it.total)+(it.speed?' · '+fmt(it.speed)+'/s'+(it.speed>0?' · 还要 '+dur((it.total-it.loaded)/it.speed):''):''):it.state==='wait'?'排队中 · '+fmt(it.total):esc(it.msg||'');
+  h+='<div class="qi"><div class="btns" style="flex-wrap:nowrap"><span class="grow ell" title="'+esc(it.label)+'">'+(it.state==='done'?'<span style="color:var(--ok)">'+svg('check')+'</span> ':it.state==='err'?'<span style="color:var(--err)">'+svg('x')+'</span> ':'')+esc(it.label)+'</span>'
+  +(it.state==='run'||it.state==='wait'?'<button class="btn sm ghost" data-qc="'+it.id+'">取消</button>':'')+(it.state==='err'||it.state==='cancel'?'<button class="btn sm ghost" data-qr="'+it.id+'">重试</button>':'')+'</div>'
+  +(it.state==='run'||it.state==='wait'?meter(p):'')+'<div class="sub'+(it.state==='err'?'" style="color:var(--err)':'')+'">'+info+'</div></div>'});
+ $('qList').innerHTML=h}
+$('qList').onclick=function(e){var c=e.target.getAttribute('data-qc'),r=e.target.getAttribute('data-qr');
+ if(c){var it=Q.filter(function(x){return x.id==c})[0];if(!it)return;if(it.state==='run'&&it.xhr)it.xhr.abort();else{it.state='cancel';it.msg='已取消';qRender()}}
+ if(r){var it2=Q.filter(function(x){return x.id==r})[0];if(it2){it2.state='wait';it2.loaded=0;qPump()}}};
+$('qClear').onclick=function(){Q=Q.filter(function(x){return x.state==='run'||x.state==='wait'});qRender()};
+$('qMin').onclick=function(){$('queue').classList.toggle('min')};
+window.addEventListener('beforeunload',function(e){if(Q.some(function(x){return x.state==='run'||x.state==='wait'})){e.preventDefault();e.returnValue='还有文件在上传'}});
+function bindDrop(el,fn,hot){var n=0;el.addEventListener('dragenter',function(e){if(!hasFiles(e))return;e.preventDefault();n++;(hot||el).classList.add('hot')});
+ el.addEventListener('dragover',function(e){if(hasFiles(e))e.preventDefault()});
+ el.addEventListener('dragleave',function(){if(--n<=0){n=0;(hot||el).classList.remove('hot')}});
+ el.addEventListener('drop',function(e){if(!hasFiles(e))return;e.preventDefault();n=0;(hot||el).classList.remove('hot');fn(e.dataTransfer)})}
+function hasFiles(e){var t=e.dataTransfer&&e.dataTransfer.types;return t&&Array.prototype.indexOf.call(t,'Files')>=0}
+
+/* =================================================================== 传书 */
+var upTo='books';
+$('upTo').onclick=function(e){var v=e.target.getAttribute('data-v');if(!v)return;upTo=v;var b=this.querySelectorAll('button');for(var i=0;i<b.length;i++)b[i].classList.toggle('on',b[i]===e.target)};
+$('upPick').onclick=function(){$('upFile').click()};
+$('upFile').onchange=function(){sendSimple(this.files,'/api/upload?to='+upTo);this.value=''};
+bindDrop($('upDrop'),function(dt){sendSimple(dt.files,'/api/upload?to='+upTo)});
+function sendSimple(files,url,after){for(var i=0;i<files.length;i++)qAdd(files[i],url,null,after)}
+$('linkBtn').onclick=function(){var u=$('link').value.trim();if(!/^https?:\/\//i.test(u)){toast('请输入 http(s) 开头的链接','err');return}
+ post('/api/link',{url:u,to:upTo}).then(function(j){if(j.ok){$('link').value='';toast('已开始下载','ok');pollTasks()}else toast(j.msg||'失败','err')})};
+function pollTasks(){api('/api/tasks').then(function(j){var t=(j.tasks||[]).slice().reverse(),h='',running=0;t.forEach(function(x){
+ var k=x.kind==='install'?'安装':x.kind==='download'?'下载':'接收';if(x.state==='running')running++;
+ h+='<div class="item"><span class="badge '+(x.state==='error'?'err':x.state==='done'?'ok':'acc')+'">'+k+'</span><div class="grow"><div class="ell">'+esc(x.name)+'</div><div class="sub">'+(x.state==='running'&&x.total>0?Math.floor(x.done*100/x.total)+'% · ':'')+esc(x.msg)+'</div></div></div>'});
+ setHTML('tlist',h?'<div class="list">'+h+'</div>':'还没有任务');var nb=$('nb-up');nb.hidden=!running;nb.textContent=running}).catch(function(){})}
+
+/* =================================================================== 文件 */
+var FS={root:'sdcard',path:'',items:[],shown:[],free:0,ro:null,sel:{},cur:-1,anchor:-1,sort:'name',asc:true,view:'list',filter:'',clip:null,tree:{},open:{'sdcard:':1,'kindle:':1}};
+try{FS.view=localStorage.getItem('vd-fview')||'list';FS.sort=localStorage.getItem('vd-fsort')||'name'}catch(e){}
+$('fSort').value=FS.sort;
+var EXT={img:'jpg jpeg png gif webp bmp',book:'epub pdf mobi azw azw3 kfx txt fb2 djvu cbz cbr',zip:'zip rar 7z gz tgz tar',apk:'apk',txt:'md json conf css opf ncx csv ini xml log yml yaml html htm',font:'ttf otf'};
+var EDIT='txt md json conf css opf ncx csv ini xml log yml yaml'.split(' ');
+function ext(n){var d=n.lastIndexOf('.');return d<0?'':n.slice(d+1).toLowerCase()}
+function kind(f){if(f.link)return'lnk';if(f.dir)return'dir';var e=ext(f.name);for(var k in EXT)if((' '+EXT[k]+' ').indexOf(' '+e+' ')>=0)return k;return'file'}
+var KIND_IC={dir:'folder',img:'image',book:'book',zip:'archive',apk:'android',txt:'text',font:'font',lnk:'link',file:'file'};
+function full(n){return(FS.path?FS.path+'/':'')+n}
+function rootName(r){return r==='kindle'?'Kindle 书库':'Android 存储'}
+function fsOpen(root,path,focusName){FS.root=root;FS.path=path||'';FS.sel={};FS.cur=-1;FS.anchor=-1;$('fFilter').value='';FS.filter='';
+ if(!FS.items.length)$('fmList').innerHTML='<div style="padding:12px">'+skel(6)+'</div>';
+ return api('/api/fs/list?'+q({root:root,path:FS.path})).then(function(j){
+  if(!j.ok){$('fmList').innerHTML=errBox(j.msg||'打不开','fsOpen(FS.root,\'\')');FS.items=[];FS.shown=[];renderCrumb();renderTree();return}
+  FS.items=j.items;FS.free=j.free;FS.ro=j.readonly||null;FS.path=j.path;
+  FS.tree[root+':'+FS.path]=j.items.filter(function(x){return x.dir}).map(function(x){return x.name});
+  var parts=FS.path?FS.path.split('/'):[];for(var i=0;i<=parts.length;i++)FS.open[root+':'+parts.slice(0,i).join('/')]=1;
+  renderFs();renderCrumb();renderTree();
+  if(focusName){var k=FS.shown.findIndex(function(x){return x.name===focusName});if(k>=0){FS.cur=k;FS.sel={};FS.sel[focusName]=1;renderFs();scrollCur()}}
+ }).catch(function(e){if(e.message!=='login')$('fmList').innerHTML=errBox('加载失败：'+e.message,'fsOpen(FS.root,FS.path)')})}
+function sortItems(a){var s=FS.sort,m=FS.asc?1:-1;return a.slice().sort(function(x,y){if(x.dir!==y.dir)return x.dir?-1:1;var r=0;
+ if(s==='size')r=(x.size||0)-(y.size||0);else if(s==='time')r=(x.time||0)-(y.time||0);else if(s==='type')r=ext(x.name).localeCompare(ext(y.name));
+ if(!r)r=x.name.localeCompare(y.name,'zh-CN',{numeric:true});return r*m})}
+function renderFs(){var f=FS.filter.toLowerCase();FS.shown=sortItems(FS.items.filter(function(x){return!f||x.name.toLowerCase().indexOf(f)>=0}));
+ $('fRo').hidden=!FS.ro;$('fRo').innerHTML=FS.ro?svg('lock')+' '+esc(FS.ro):'';$('fUpBtn').disabled=!!FS.ro;$('fUp').disabled=!FS.path;
+ var h='';
+ if(!FS.shown.length)h=FS.items.length?empty('search','没有名字里含“'+esc(FS.filter)+'”的文件'):empty('folder','这个文件夹是空的',FS.ro?'':'<div class="sub">把文件或文件夹拖到这里上传，或者 Ctrl/⌘+V 粘贴</div>');
+ else if(FS.view==='grid'){h='<div class="fgrid">';FS.shown.forEach(function(x,i){var k=kind(x),thumb=(k==='img'||ext(x.name)==='epub'||ext(x.name)==='pdf')&&!x.link;
+  h+='<div class="fcell'+(FS.sel[x.name]?' sel':'')+'" data-i="'+i+'" draggable="'+(!x.locked&&!FS.ro)+'"><div class="th">'+(thumb?'<img loading="lazy" alt="" src="/api/fs/thumb?'+esc(q({root:FS.root,path:full(x.name),w:200}))+'" onerror="this.replaceWith(document.createRange().createContextualFragment(svg(\''+KIND_IC[k]+'\')))">':'<span class="ft '+k+'">'+svg(KIND_IC[k])+'</span>')+'</div>'
+  +'<div class="n" title="'+esc(x.name)+'">'+esc(x.name)+'</div><div class="sz">'+(x.dir?'文件夹':fmt(x.size))+(x.locked?' · 只读':'')+'</div></div>'});h+='</div>'}
+ else{var ar=function(k){return FS.sort===k?(FS.asc?' ↑':' ↓'):''};
+  h='<div class="fhead"><input type="checkbox" id="fAll" aria-label="全选"'+(FS.shown.length&&Object.keys(FS.sel).length===FS.shown.length?' checked':'')+'><span></span><span class="s" data-sort="name">名称'+ar('name')+'</span><span class="s" data-sort="size" style="text-align:right">大小'+ar('size')+'</span><span class="s dt" data-sort="time" style="text-align:right">修改时间'+ar('time')+'</span><span></span></div>';
+  FS.shown.forEach(function(x,i){var k=kind(x);
+   h+='<div class="frow'+(FS.sel[x.name]?' sel':'')+(i===FS.cur?' cur':'')+(FS.clip&&FS.clip.cut&&FS.clip.root===FS.root&&FS.clip.path===FS.path&&FS.clip.names.indexOf(x.name)>=0?' cut':'')+'" data-i="'+i+'" draggable="'+(!x.locked&&!FS.ro)+'">'
+   +(x.locked||FS.ro?'<span title="只读">'+svg('lock')+'</span>':'<input type="checkbox" data-c="'+i+'"'+(FS.sel[x.name]?' checked':'')+' aria-label="选择">')
+   +'<span class="ft '+k+'">'+svg(KIND_IC[k])+'</span><span class="nm"><span class="n" title="'+esc(x.name)+'">'+esc(x.name)+'</span>'+(x.link?'<span class="badge">链接</span>':'')+(x.locked&&!FS.ro?'<span class="badge">只读</span>':'')+'</span>'
+   +'<span class="sz" data-sz="'+esc(x.name)+'">'+(x.dir?(x.du!=null?fmt(x.du):'—'):x.link?'':fmt(x.size))+'</span><span class="dt" title="'+date(x.time)+'">'+rel(x.time)+'</span>'
+   +'<button class="btn icon ghost" data-m="'+i+'" aria-label="更多">'+svg('more')+'</button></div>'})}
+ $('fmList').innerHTML=h;selUpd();
+ var dirs=FS.items.filter(function(x){return x.dir}).length;$('fFoot').innerHTML='<span>'+dirs+' 个文件夹，'+(FS.items.length-dirs)+' 个文件</span><span>文件共 '+fmt(FS.items.reduce(function(a,x){return a+(x.dir?0:x.size||0)},0))+'</span><span>这块存储还剩 '+fmt(FS.free)+'</span>'+(FS.clip?'<span>剪贴板：'+FS.clip.names.length+' 项（'+(FS.clip.cut?'剪切':'复制')+'）</span>':'')}
+function selNames(){return Object.keys(FS.sel)}
+function selUpd(){var n=selNames().length;$('selBar').hidden=!n;$('selN').textContent='已选 '+n+' 项';
+ var bs=$('selBar').querySelectorAll('[data-a=move],[data-a=rename],[data-a=del]');for(var i=0;i<bs.length;i++)bs[i].disabled=!!FS.ro||(bs[i].getAttribute('data-a')==='rename'&&n!==1)}
+function renderCrumb(){var parts=FS.path?FS.path.split('/'):[],h='<a data-p="" data-drop="">'+rootName(FS.root)+'</a>';
+ parts.forEach(function(p,i){var pp=parts.slice(0,i+1).join('/');h+='<span class="sep">›</span><a data-p="'+esc(pp)+'" data-drop="'+esc(pp)+'">'+esc(p)+'</a>'});$('crumb').innerHTML=h}
+$('crumb').onclick=function(e){var a=e.target.closest('a');if(a){fsOpen(FS.root,a.getAttribute('data-p'));return}
+ if(e.target.tagName==='INPUT')return;var c=this;c.innerHTML='<input type="text" value="/'+esc(FS.path)+'" aria-label="路径">';var i=c.querySelector('input');i.focus();i.select();
+ i.onkeydown=function(ev){if(ev.key==='Enter'){fsOpen(FS.root,i.value.replace(/^\/+|\/+$/g,'').replace(/\/+/g,'/'))}if(ev.key==='Escape')renderCrumb();ev.stopPropagation()};i.onblur=function(){setTimeout(renderCrumb,150)}};
+function renderTree(){function node(root,path,name,depth){var key=root+':'+path,open=FS.open[key],kids=FS.tree[key],on=FS.root===root&&FS.path===path;
+  var h='<div class="tnode'+(on?' on':'')+'" data-root="'+root+'" data-p="'+esc(path)+'" style="padding-left:'+(6+depth*12)+'px"><span class="tw" data-tw="1">'+(kids&&!kids.length?'':svg(open?'down':'right'))+'</span>'+svg(depth?'folder':root==='kindle'?'book':'tablet')+'<span class="ell">'+esc(name)+'</span></div>';
+  if(open&&kids)kids.slice().sort(function(a,b){return a.localeCompare(b,'zh-CN',{numeric:true})}).forEach(function(k){h+=node(root,path?path+'/'+k:k,k,depth+1)});return h}
+ $('fmTree').innerHTML=node('sdcard','',rootName('sdcard'),0)+node('kindle','',rootName('kindle'),0)}
+$('fmTree').onclick=function(e){var n=e.target.closest('.tnode');if(!n)return;var root=n.getAttribute('data-root'),p=n.getAttribute('data-p'),key=root+':'+p;
+ if(e.target.closest('[data-tw]')){if(FS.open[key]){delete FS.open[key];renderTree();return}FS.open[key]=1;if(FS.tree[key]){renderTree();return}
+  api('/api/fs/list?'+q({root:root,path:p})).then(function(j){FS.tree[key]=j.ok?j.items.filter(function(x){return x.dir}).map(function(x){return x.name}):[];renderTree()});return}
+ fsOpen(root,p)};
+$('fFilter').oninput=function(){FS.filter=this.value;FS.sel={};FS.cur=-1;renderFs()};
+$('fFilter').onkeydown=function(e){if(e.key==='Escape'){this.value='';FS.filter='';renderFs();$('fmList').focus()}if(e.key==='ArrowDown'||e.key==='Enter'){e.preventDefault();FS.cur=0;renderFs();$('fmList').focus()}};
+$('fSort').onchange=function(){FS.sort=this.value;FS.asc=FS.sort==='name'||FS.sort==='type';try{localStorage.setItem('vd-fsort',FS.sort)}catch(e){}renderFs()};
+$('fView').onclick=function(){FS.view=FS.view==='list'?'grid':'list';try{localStorage.setItem('vd-fview',FS.view)}catch(e){}renderFs()};
+$('fRefresh').onclick=function(){fsOpen(FS.root,FS.path)};
+$('fUp').onclick=fsUp;function fsUp(){if(!FS.path)return;var p=FS.path.split('/'),last=p.pop();fsOpen(FS.root,p.join('/'),last)}
+$('fUpBtn').onclick=function(e){ctxMenu(e.clientX,e.clientY,[['upload','上传文件',function(){$('fFile').click()}],['folder','上传文件夹',function(){$('fDir').click()}]],this)};
+$('fMenuBtn').onclick=function(){var r=this.getBoundingClientRect();ctxMenu(r.left,r.bottom+4,bgMenu())};
+$('fFile').onchange=function(){upFiles(Array.prototype.map.call(this.files,function(f){return{file:f,rel:''}}));this.value=''};
+$('fDir').onchange=function(){upFiles(Array.prototype.map.call(this.files,function(f){var r=(f.webkitRelativePath||f.name).split('/');r.pop();return{file:f,rel:r.join('/')}}));this.value=''};
+/* list interaction */
+$('fmList').addEventListener('click',function(e){
+ if(e.target.id==='fAll'){FS.sel={};if(e.target.checked)FS.shown.forEach(function(x){if(!x.locked)FS.sel[x.name]=1});renderFs();return}
+ var s=e.target.closest('[data-sort]');if(s){var k=s.getAttribute('data-sort');if(FS.sort===k)FS.asc=!FS.asc;else{FS.sort=k;FS.asc=k==='name'}$('fSort').value=FS.sort;renderFs();return}
+ var m=e.target.closest('[data-m]');if(m){var i=+m.getAttribute('data-m');if(!FS.sel[FS.shown[i].name]){FS.sel={};FS.sel[FS.shown[i].name]=1;FS.cur=i;renderFs()}var r=m.getBoundingClientRect();ctxMenu(r.left-150,r.bottom,itemMenu());return}
+ var c=e.target.getAttribute&&e.target.getAttribute('data-c');if(c!=null){var x=FS.shown[+c];if(e.target.checked)FS.sel[x.name]=1;else delete FS.sel[x.name];FS.cur=+c;FS.anchor=+c;renderFs();return}
+ var row=e.target.closest('[data-i]');if(!row){if(e.target===this||e.target.classList.contains('fgrid')){FS.sel={};renderFs()}return}
+ var idx=+row.getAttribute('data-i'),it=FS.shown[idx];
+ if(matchMedia('(hover: none)').matches&&!e.shiftKey&&!Object.keys(FS.sel).length){openItem(it);return}
+ if(e.shiftKey&&FS.anchor>=0){FS.sel={};var a=Math.min(FS.anchor,idx),b=Math.max(FS.anchor,idx);for(var k2=a;k2<=b;k2++)if(!FS.shown[k2].locked)FS.sel[FS.shown[k2].name]=1}
+ else if(e.ctrlKey||e.metaKey){if(FS.sel[it.name])delete FS.sel[it.name];else FS.sel[it.name]=1;FS.anchor=idx}
+ else{FS.sel={};FS.sel[it.name]=1;FS.anchor=idx}
+ FS.cur=idx;renderFs();$('fmList').focus({preventScroll:true})});
+$('fmList').addEventListener('dblclick',function(e){var row=e.target.closest('[data-i]');if(row&&!e.target.closest('input,button'))openItem(FS.shown[+row.getAttribute('data-i')])});
+$('fmList').addEventListener('contextmenu',function(e){var row=e.target.closest('[data-i]');e.preventDefault();
+ if(row){var i=+row.getAttribute('data-i');if(!FS.sel[FS.shown[i].name]){FS.sel={};FS.sel[FS.shown[i].name]=1;FS.cur=i;FS.anchor=i;renderFs()}ctxMenu(e.clientX,e.clientY,itemMenu())}
+ else{FS.sel={};renderFs();ctxMenu(e.clientX,e.clientY,bgMenu())}});
+function scrollCur(){var r=$('fmList').querySelector('[data-i="'+FS.cur+'"]');if(r&&r.scrollIntoView)r.scrollIntoView({block:'nearest'})}
+document.addEventListener('keydown',function(e){if(cur!=='files'||!LOGGED||modalStack.length||!$('login').hidden)return;
+ var tg=e.target.tagName,mod=e.ctrlKey||e.metaKey;if((tg==='INPUT'||tg==='TEXTAREA'||tg==='SELECT')&&!(mod&&e.key.toLowerCase()==='f'))return;
+ var k=e.key,n=FS.shown.length;
+ if(mod&&k.toLowerCase()==='f'){e.preventDefault();$('fFilter').focus();$('fFilter').select();return}
+ if(mod&&k.toLowerCase()==='a'){e.preventDefault();FS.sel={};FS.shown.forEach(function(x){if(!x.locked)FS.sel[x.name]=1});renderFs();return}
+ if(mod&&k.toLowerCase()==='c'){if(selNames().length){FS.clip={root:FS.root,path:FS.path,names:selNames(),cut:false};toast('已复制 '+FS.clip.names.length+' 项，到目标文件夹按 Ctrl/⌘+V');renderFs()}return}
+ if(mod&&k.toLowerCase()==='x'){if(selNames().length&&!FS.ro){FS.clip={root:FS.root,path:FS.path,names:selNames(),cut:true};toast('已剪切 '+FS.clip.names.length+' 项，到目标文件夹按 Ctrl/⌘+V');renderFs()}return}
+ if(mod&&k.toLowerCase()==='v'){if(FS.clip){e.preventDefault();pasteClip()}return}   /* 没有内部剪贴板时交给 paste 事件（电脑剪贴板里的文件） */
+ if(k==='ArrowDown'||k==='ArrowUp'){e.preventDefault();if(!n)return;FS.cur=Math.max(0,Math.min(n-1,FS.cur+(k==='ArrowDown'?1:-1)));if(e.shiftKey){if(FS.anchor<0)FS.anchor=FS.cur;FS.sel={};var a=Math.min(FS.anchor,FS.cur),b=Math.max(FS.anchor,FS.cur);for(var i=a;i<=b;i++)if(!FS.shown[i].locked)FS.sel[FS.shown[i].name]=1}else{FS.sel={};if(!FS.shown[FS.cur].locked)FS.sel[FS.shown[FS.cur].name]=1;FS.anchor=FS.cur}renderFs();scrollCur();return}
+ if(k==='Enter'){if(FS.cur>=0&&FS.shown[FS.cur]){e.preventDefault();openItem(FS.shown[FS.cur])}return}
+ if(k==='Backspace'){e.preventDefault();fsUp();return}
+ if(k==='Delete'||(isMac()&&k==='Backspace'&&mod)){if(selNames().length&&!FS.ro){e.preventDefault();fsDel(selNames())}return}
+ if(k==='F2'){if(selNames().length===1&&!FS.ro){e.preventDefault();inlineRename(selNames()[0])}return}
+ if(k==='Escape'){FS.sel={};FS.clip=null;renderFs()}});
+document.addEventListener('paste',function(e){if(cur!=='files'||!LOGGED||modalStack.length)return;var tg=e.target.tagName;if(tg==='INPUT'||tg==='TEXTAREA')return;
+ var fl=e.clipboardData&&e.clipboardData.files;if(!fl||!fl.length)return;e.preventDefault();if(FS.ro){toast(FS.ro,'err');return}
+ var arr=[];for(var i=0;i<fl.length;i++){var f=fl[i];if(f.name==='image.png'||!f.name){var d=new Date();f=new File([f],'粘贴-'+date(d).replace(/[-: ]/g,'')+'.'+(f.type.split('/')[1]||'png'),{type:f.type})}arr.push({file:f,rel:''})}upFiles(arr)});
+/* drag & drop: external files / folders and internal moves */
+var dragN=0,DRAG=null;
+$('fmPane').addEventListener('dragstart',function(e){var row=e.target.closest('[data-i]');if(!row)return;var it=FS.shown[+row.getAttribute('data-i')];if(it.locked||FS.ro){e.preventDefault();return}
+ if(!FS.sel[it.name]){FS.sel={};FS.sel[it.name]=1;renderFs()}DRAG={root:FS.root,path:FS.path,names:selNames()};e.dataTransfer.effectAllowed='copyMove';e.dataTransfer.setData('text/plain',DRAG.names.join('\n'))});
+$('fmPane').addEventListener('dragend',function(){DRAG=null;clearDropHi()});
+function clearDropHi(){var l=document.querySelectorAll('.dropok');for(var i=0;i<l.length;i++)l[i].classList.remove('dropok')}
+function dropTarget(e){var row=e.target.closest&&e.target.closest('[data-i]');if(row){var it=FS.shown[+row.getAttribute('data-i')];if(it&&it.dir&&!it.locked&&!(DRAG&&DRAG.names.indexOf(it.name)>=0&&DRAG.path===FS.path))return{el:row,root:FS.root,path:full(it.name)}}
+ var c=e.target.closest&&e.target.closest('#crumb a');if(c)return{el:c,root:FS.root,path:c.getAttribute('data-p')};
+ var t=e.target.closest&&e.target.closest('.tnode');if(t)return{el:t,root:t.getAttribute('data-root'),path:t.getAttribute('data-p')};return null}
+['fmPane','fmTree'].forEach(function(id){var el=$(id);
+ el.addEventListener('dragenter',function(e){if(hasFiles(e)&&id==='fmPane'){e.preventDefault();if(++dragN===1&&!FS.ro)$('fmDrop').hidden=false}});
+ el.addEventListener('dragover',function(e){var tgt=dropTarget(e);clearDropHi();if(DRAG){if(tgt){e.preventDefault();tgt.el.classList.add('dropok');e.dataTransfer.dropEffect=(e.ctrlKey||e.altKey)?'copy':'move'}}else if(hasFiles(e)){e.preventDefault();if(tgt)tgt.el.classList.add('dropok')}});
+ el.addEventListener('dragleave',function(e){if(id==='fmPane'&&hasFiles(e)&&--dragN<=0){dragN=0;$('fmDrop').hidden=true}});
+ el.addEventListener('drop',function(e){var tgt=dropTarget(e);clearDropHi();dragN=0;$('fmDrop').hidden=true;
+  if(DRAG){e.preventDefault();if(tgt)doMove(DRAG,tgt.root,tgt.path,e.ctrlKey||e.altKey);DRAG=null;return}
+  if(!hasFiles(e))return;e.preventDefault();var dest=tgt?{root:tgt.root,path:tgt.path}:{root:FS.root,path:FS.path};
+  if(!tgt&&FS.ro){toast(FS.ro,'err');return}
+  collectDrop(e.dataTransfer).then(function(list){if(!list.length){toast('没有可上传的文件','err');return}upFiles(list,dest)})})});
+function collectDrop(dt){var items=dt.items,out=[],jobs=[];
+ if(items&&items.length&&items[0].webkitGetAsEntry){for(var i=0;i<items.length;i++){var en=items[i].webkitGetAsEntry&&items[i].webkitGetAsEntry();if(en)jobs.push(walk(en,''))}
+  return Promise.all(jobs).then(function(){return out})}
+ for(var k=0;k<dt.files.length;k++)out.push({file:dt.files[k],rel:''});return Promise.resolve(out);
+ function walk(en,rel){if(en.isFile)return new Promise(function(res){en.file(function(f){out.push({file:f,rel:rel});res()},function(){res()})});
+  if(en.isDirectory){var r=en.createReader(),sub=rel?rel+'/'+en.name:en.name,all=[];
+   return new Promise(function(res){(function read(){r.readEntries(function(es){if(!es.length){Promise.all(all.map(function(x){return walk(x,sub)})).then(res);return}all=all.concat(Array.prototype.slice.call(es));read()},function(){res()})})()})}
+  return Promise.resolve()}}
+function upFiles(list,dest){dest=dest||{root:FS.root,path:FS.path};var mk={},bad=0;
+ var tot=list.reduce(function(a,x){return a+x.file.size},0);if(dest.root===FS.root&&tot>FS.free-64*1048576){toast('空间不够：要 '+fmt(tot)+'，只剩 '+fmt(FS.free),'err');return}
+ list.forEach(function(x){var n=x.file.name;if(/\.sh[.\s]*$/i.test(n)||n.charAt(0)==='.'||/(^|\/)\./.test(x.rel)){bad++;return}
+  var rel=x.rel,it=qAdd(x.file,null,(rel?rel+'/':'')+n,function(r){if(r.state==='done'&&cur==='files'&&FS.root===dest.root)refreshSoon()});
+  it.prep=function(){var base=dest.path;if(!rel)return Promise.resolve('/api/upload?'+q({to:'dir',root:dest.root,path:base}));
+   if(!mk[rel])mk[rel]=post('/api/fs/mkdirp',{root:dest.root,path:base,rel:rel}).then(function(j){if(!j.ok)throw new Error(j.msg||'建不了文件夹');return j.path});
+   return mk[rel].then(function(p){return '/api/upload?'+q({to:'dir',root:dest.root,path:p})})}});
+ qPump();if(bad)toast(bad+' 个脚本或隐藏文件没有上传（网页不收这类文件）','err')}
+var rsT;function refreshSoon(){clearTimeout(rsT);rsT=setTimeout(function(){fsOpen(FS.root,FS.path)},600)}
+/* context menu */
+function ctxMenu(x,y,items){closeCtx();var m=document.createElement('div');m.id='ctx';m.setAttribute('role','menu');var h='';
+ items.forEach(function(it,i){if(it==='-'){h+='<hr>';return}if(!it)return;h+='<button role="menuitem" data-k="'+i+'"'+(it[3]?' class="dan"':'')+(it[5]?' disabled style="opacity:.4"':'')+'>'+svg(it[0])+esc(it[1])+(it[4]?'<kbd>'+it[4]+'</kbd>':'')+'</button>'});
+ m.innerHTML=h;document.body.appendChild(m);var w=m.offsetWidth,hh=m.offsetHeight;m.style.left=Math.max(6,Math.min(x,innerWidth-w-6))+'px';m.style.top=Math.max(6,Math.min(y,innerHeight-hh-6))+'px';
+ m.onclick=function(e){var b=e.target.closest('[data-k]');if(!b||b.disabled)return;closeCtx();items[+b.getAttribute('data-k')][2]()};
+ m.onkeydown=function(e){var bs=Array.prototype.slice.call(m.querySelectorAll('button:not([disabled])')),i=bs.indexOf(document.activeElement);
+  if(e.key==='ArrowDown'){e.preventDefault();bs[(i+1)%bs.length].focus()}if(e.key==='ArrowUp'){e.preventDefault();bs[(i-1+bs.length)%bs.length].focus()}if(e.key==='Escape'){closeCtx();$('fmList').focus()}};
+ var f=m.querySelector('button:not([disabled])');if(f)f.focus()}
+function closeCtx(){var m=$('ctx');if(m)m.remove()}
+document.addEventListener('mousedown',function(e){if(!e.target.closest('#ctx'))closeCtx()});window.addEventListener('blur',closeCtx);window.addEventListener('resize',closeCtx);
+var M=isMac()?'⌘':'Ctrl+';
+function itemMenu(){var ns=selNames(),one=ns.length===1?FS.items.filter(function(x){return x.name===ns[0]})[0]:null,ro=!!FS.ro;
+ return[one&&one.dir?['open','打开',function(){openItem(one)},0,'Enter']:null,one&&!one.dir?['eye','预览',function(){openItem(one)},0,'Enter']:null,
+  one&&!one.dir&&EDIT.indexOf(ext(one.name))>=0?['edit','编辑',function(){editFile(one.name)},0,'',ro]:null,'-',
+  one&&!one.dir?['download','下载',function(){location.href='/api/fs/get?'+q({root:FS.root,path:full(one.name)})}]:null,
+  ['archive','打包下载（zip）',function(){zipDl(ns)}],'-',
+  ['copy','复制',function(){FS.clip={root:FS.root,path:FS.path,names:ns,cut:false};toast('已复制，到目标文件夹按 '+M+'V 或右键“粘贴”');renderFs()},0,M+'C'],
+  ['cut','剪切',function(){FS.clip={root:FS.root,path:FS.path,names:ns,cut:true};toast('已剪切，到目标文件夹按 '+M+'V 或右键“粘贴”');renderFs()},0,M+'X',ro],
+  ['move','移动到…',function(){pickDest('移动到').then(function(d){if(d)doMove({root:FS.root,path:FS.path,names:ns},d.root,d.path,false)})},0,'',ro],
+  ['copy','复制到…',function(){pickDest('复制到').then(function(d){if(d)doMove({root:FS.root,path:FS.path,names:ns},d.root,d.path,true)})}],
+  one?['edit','改名',function(){inlineRename(one.name)},0,'F2',ro]:null,
+  one&&one.dir?['search','计算大小',fsDu]:null,'-',['trash','删除',function(){fsDel(ns)},1,'Delete',ro]]}
+function bgMenu(){var ro=!!FS.ro;return[['upload','上传文件',function(){$('fFile').click()},0,'',ro],['folder','上传文件夹',function(){$('fDir').click()},0,'',ro],'-',
+ ['folderplus','新建文件夹',fsMkdir,0,'',ro],['fileplus','新建文本文件',newText,0,'',ro],FS.clip?['paste','粘贴 '+FS.clip.names.length+' 项',pasteClip,0,M+'V',ro]:null,'-',
+ ['archive','把这个文件夹打包下载',function(){zipDl(null)}],['search','查占用（每个文件夹的大小）',fsDu],['refresh','刷新',function(){fsOpen(FS.root,FS.path)}],['check','全选',function(){FS.sel={};FS.shown.forEach(function(x){if(!x.locked)FS.sel[x.name]=1});renderFs()},0,M+'A']]}
+$('selBar').onclick=function(e){var b=e.target.closest('[data-a]');if(!b)return;var a=b.getAttribute('data-a'),ns=selNames();
+ if(a==='none'){FS.sel={};renderFs()}if(a==='del')fsDel(ns);if(a==='zip')zipDl(ns);if(a==='rename'&&ns.length===1)inlineRename(ns[0]);
+ if(a==='move'||a==='copy')pickDest(a==='move'?'移动到':'复制到').then(function(d){if(d)doMove({root:FS.root,path:FS.path,names:ns},d.root,d.path,a==='copy')})};
+function openItem(it){if(!it)return;if(it.link){toast('这是一个链接，网页里不跟着链接走','err');return}if(it.dir){fsOpen(FS.root,full(it.name));return}preview(it)}
+function zipDl(names){var o={root:FS.root,path:FS.path};if(names)o.names=JSON.stringify(names);toast('正在打包，浏览器马上开始下载…');
+ var a=document.createElement('a');a.href='/api/fs/zip?'+q(o);a.download='';document.body.appendChild(a);a.click();a.remove()}
+function fsDel(ns){if(!ns.length)return;var dirs=FS.items.filter(function(x){return ns.indexOf(x.name)>=0&&x.dir}).length;
+ confirmBox('删除 '+ns.length+' 项？',(ns.length===1?'“'+esc(ns[0])+'”':esc(ns.slice(0,5).join('、'))+(ns.length>5?' 等':''))+(dirs?'<br>文件夹会连同里面的东西一起删除。':'')+'<br><b>删除后不能恢复。</b>','删除',true).then(function(ok){if(!ok)return;
+  post('/api/fs/delete',{root:FS.root,path:FS.path,names:ns}).then(function(j){if(j.ok)toast('已删除 '+j.deleted+' 项','ok');else toast((j.msg||'删除失败')+(j.failed&&j.failed.length?'：'+j.failed.join('，'):''),'err');fsOpen(FS.root,FS.path)})})}
+function fsMkdir(){promptBox('新建文件夹','名字不能以点开头，不能含 / \\ : * ? " < > |','新建文件夹','新建').then(function(n){if(!n)return;
+ post('/api/fs/mkdir',{root:FS.root,path:FS.path,name:n}).then(function(j){if(!j.ok){toast(j.msg||'失败','err');return}fsOpen(FS.root,FS.path,n)})})}
+function inlineRename(name){var i=FS.shown.findIndex(function(x){return x.name===name});if(i<0)return;if(FS.view!=='list'){promptBox('改名','','name' && name,'改名',true).then(function(n){if(n&&n!==name)doRename(name,n)});return}
+ var row=$('fmList').querySelector('[data-i="'+i+'"] .nm');if(!row)return;row.innerHTML='<input type="text" value="'+esc(name)+'" aria-label="新名字">';var inp=row.querySelector('input');inp.focus();
+ var d=name.lastIndexOf('.');if(d>0&&!FS.shown[i].dir)inp.setSelectionRange(0,d);else inp.select();var done=false;
+ var fin=function(ok){if(done)return;done=true;var n=inp.value.trim();if(ok&&n&&n!==name)doRename(name,n);else renderFs()};
+ inp.onkeydown=function(e){e.stopPropagation();if(e.key==='Enter')fin(true);if(e.key==='Escape')fin(false)};inp.onblur=function(){fin(true)};inp.onclick=function(e){e.stopPropagation()}}
+function doRename(a,b){post('/api/fs/rename',{root:FS.root,path:FS.path,name:a,to:b}).then(function(j){if(!j.ok){toast(j.msg||'改名失败','err');renderFs();return}toast('已改名','ok');fsOpen(FS.root,FS.path,b)})}
+function doMove(src,root,path,copy){if(!copy&&src.root===root&&src.path===path)return;
+ var t=toastWait((copy?'正在复制 ':'正在移动 ')+src.names.length+' 项…');
+ post('/api/fs/move',{root:src.root,path:src.path,names:src.names,toRoot:root,toPath:path,copy:copy}).then(function(j){t();
+  if(j.ok)toast((copy?'已复制 ':'已移动 ')+j.done+' 项到 '+rootName(root)+(path?' / '+path:''),'ok');else toast((j.msg||'失败')+(j.failed&&j.failed.length?'：'+j.failed.join('，'):''),'err');
+  delete FS.tree[root+':'+path];delete FS.tree[src.root+':'+src.path];fsOpen(FS.root,FS.path)})}
+function toastWait(msg){var d=document.createElement('div');d.className='toast';d.innerHTML='<span class="spin"></span><span>'+esc(msg)+'</span>';$('toasts').appendChild(d);return function(){d.remove()}}
+function pasteClip(){var c=FS.clip;if(!c)return;if(FS.ro){toast(FS.ro,'err');return}doMove(c,FS.root,FS.path,!c.cut);if(c.cut)FS.clip=null}
+function fsDu(){var t=toastWait('正在计算每个文件夹的大小…');api('/api/fs/du?'+q({root:FS.root,path:FS.path})).then(function(j){t();if(!j.ok){toast(j.msg,'err');return}
+ FS.items.forEach(function(x){if(x.dir&&j.sizes[x.name]!=null)x.du=j.sizes[x.name]});if(FS.sort==='size')FS.items.forEach(function(x){if(x.dir)x.size=x.du});renderFs();
+ toast('这个文件夹共 '+fmt(j.total)+(j.partial?'（太大，只算了一部分）':''),'ok')}).catch(t)}
+/* folder picker for move / copy */
+function pickDest(title){var st={root:FS.root,path:FS.path};return modal({title:title,body:'<div class="btns" style="margin-bottom:8px"><span class="seg" id="pkRoot"><button data-r="sdcard">Android 存储</button><button data-r="kindle">Kindle 书库</button></span></div><div class="crumb" id="pkCrumb" style="cursor:default"></div><div class="list" id="pkList" style="max-height:50vh;overflow:auto"></div>',ok:title+'这里',
+ init:function(bg){function load(){bg.querySelector('#pkRoot').querySelectorAll('button').forEach(function(b){b.classList.toggle('on',b.getAttribute('data-r')===st.root)});
+   var parts=st.path?st.path.split('/'):[],c='<a data-p="">'+rootName(st.root)+'</a>';parts.forEach(function(p,i){c+='<span class="sep">›</span><a data-p="'+esc(parts.slice(0,i+1).join('/'))+'">'+esc(p)+'</a>'});bg.querySelector('#pkCrumb').innerHTML=c;
+   bg.querySelector('#pkList').innerHTML=skel(3);
+   api('/api/fs/list?'+q({root:st.root,path:st.path})).then(function(j){var h='';if(j.readonly)h+='<div class="note">'+esc(j.readonly)+'</div>';
+    (j.items||[]).filter(function(x){return x.dir&&!x.link}).forEach(function(x){h+='<div class="item" style="cursor:pointer" data-d="'+esc(x.name)+'"><span class="ft dir">'+svg('folder')+'</span><span class="grow ell">'+esc(x.name)+'</span>'+(x.locked?'<span class="badge">只读</span>':'')+svg('right')+'</div>'});
+    bg.querySelector('#pkList').innerHTML=h||empty('folder','这里没有子文件夹');bg.querySelector('[data-ok]').disabled=!!j.readonly})}
+  bg.querySelector('#pkRoot').onclick=function(e){var r=e.target.getAttribute('data-r');if(r){st.root=r;st.path='';load()}};
+  bg.querySelector('#pkCrumb').onclick=function(e){var a=e.target.closest('a');if(a){st.path=a.getAttribute('data-p');load()}};
+  bg.querySelector('#pkList').onclick=function(e){var d=e.target.closest('[data-d]');if(d){st.path=(st.path?st.path+'/':'')+d.getAttribute('data-d');load()}};load()},
+ value:function(){return{root:st.root,path:st.path}}})}
+/* preview + editor */
+function preview(it){var e=ext(it.name),k=kind(it),p=full(it.name),dl='/api/fs/get?'+q({root:FS.root,path:p});
+ var foot='<a class="btn" href="'+esc(dl)+'">'+svg('download')+'下载</a>'+(EDIT.indexOf(e)>=0&&!FS.ro&&!it.locked?'<button class="btn" id="pvEdit">'+svg('edit')+'编辑</button>':'');
+ var body;
+ if(k==='img'||e==='epub'||e==='pdf')body='<div style="display:grid;place-items:center;min-height:200px"><img src="/api/fs/thumb?'+esc(q({root:FS.root,path:p,w:1200}))+'" alt="" style="max-width:100%;max-height:70vh;border-radius:8px;background:#fff" onerror="this.outerHTML=\'<div class=empty>'+svg('eye').replace(/"/g,'&quot;')+'没有预览</div>\'"></div><p class="sub" style="text-align:center">'+(e==='epub'?'封面 · ':e==='pdf'?'第一页 · ':'')+fmt(it.size)+' · '+date(it.time)+'</p>';
+ else if(EDIT.indexOf(e)>=0||e==='html'||e==='htm'||it.size<65536&&(k==='file'||k==='txt'))body='<div id="pvText">'+skel(6)+'</div>';
+ else body=empty(KIND_IC[k],esc(it.name)+'<br>'+fmt(it.size)+' · '+date(it.time)+'<br>这种文件不能在网页里预览');
+ modal({title:it.name,body:body,wide:k!=='img'&&body.indexOf('pvText')>=0,foot:foot,ok:'关闭',cancel:false,init:function(bg){
+  var ed=bg.querySelector('#pvEdit');if(ed)ed.onclick=function(){bg.close(null);editFile(it.name)};
+  var pt=bg.querySelector('#pvText');if(pt)api('/api/fs/text?'+q({root:FS.root,path:p})).then(function(j){pt.innerHTML=j.ok?'<pre class="pre">'+esc(j.text)+'</pre>':empty('file',esc(j.msg||'打不开'))})}})}
+function newText(){promptBox('新建文本文件','可以用 '+EDIT.join(' / ')+' 结尾','新建文本.txt','新建',true).then(function(n){if(!n)return;if(EDIT.indexOf(ext(n))<0){toast('只能新建 '+EDIT.join(' / ')+' 文件','err');return}
+ openEditor({name:n,text:'',create:true,mtime:0})})}
+function editFile(name){var t=toastWait('正在打开…');api('/api/fs/text?'+q({root:FS.root,path:full(name)})).then(function(j){t();if(!j.ok){toast(j.msg||'打不开','err');return}
+ openEditor({name:name,text:j.text,mtime:j.mtime,editable:j.editable,why:j.why})}).catch(t)}
+function openEditor(f){var dirty=false,root=FS.root,dir=FS.path,ro=f.create?false:!f.editable;
+ modal({title:(ro?'查看 ':'编辑 ')+f.name,wide:true,sticky:true,noEnter:true,head:'<span class="badge" id="edSt">'+(ro?'只读：'+esc(f.why||''):f.create?'新文件':'已保存')+'</span>',
+  body:'<textarea id="edT" spellcheck="false" style="height:100%;min-height:55vh;resize:none" '+(ro?'readonly':'')+'>'+esc(f.text)+'</textarea>',
+  foot:'<span class="sub" id="edInfo"></span>',ok:ro?'关闭':'保存 ('+M+'S)',cancel:ro?false:'关闭',
+  onEsc:function(bg){if(dirty&&!window.confirm('有没保存的修改，确定关闭？'))return false},
+  beforeClose:function(v,bg){if(ro||v===null)return true;save(bg);return false},
+  init:function(bg){var ta=bg.querySelector('#edT');var info=function(){var s=new Blob([ta.value]).size;bg.querySelector('#edInfo').textContent=ta.value.split('\n').length+' 行 · '+fmt(s)+(s>524288?' · 超过 512 KB，保存不了':'')};info();
+   ta.addEventListener('input',function(){if(!dirty){dirty=true;bg.querySelector('#edSt').textContent='有修改';bg.querySelector('#edSt').className='badge warn'}info()});
+   ta.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();if(!ro)save(bg)}
+    if(e.key==='Tab'&&!ro){e.preventDefault();var s=ta.selectionStart;ta.setRangeText('\t',s,ta.selectionEnd,'end');ta.dispatchEvent(new Event('input'))}});
+   bg.querySelector('[data-x]').onclick=function(e){e.stopPropagation();if(dirty&&!window.confirm('有没保存的修改，确定关闭？'))return;bg.remove();modalStack.pop()};setTimeout(function(){ta.focus()},50)}});
+ function save(bg,force){var ta=bg.querySelector('#edT'),st=bg.querySelector('#edSt');st.innerHTML='<span class="spin"></span> 正在保存';st.className='badge';
+  post('/api/fs/text',{root:root,path:(dir?dir+'/':'')+f.name,text:ta.value,mtime:f.mtime,create:!!f.create,force:!!force}).then(function(j){
+   if(j.ok){f.mtime=j.mtime;f.create=false;dirty=false;st.textContent='已保存 '+date(Date.now()).slice(11);st.className='badge ok';toast('已保存','ok');if(cur==='files'&&FS.root===root&&FS.path===dir)refreshSoon()}
+   else if(j.conflict){st.textContent='冲突';st.className='badge err';confirmBox('文件已被别处修改','这个文件在你打开之后被改过了。用你现在的内容覆盖它吗？','覆盖',true).then(function(ok){if(ok)save(bg,true)})}
+   else{st.textContent='没保存';st.className='badge err';toast(j.msg||'保存失败','err')}})}}
+
+/* =================================================================== 应用 */
+var APPS=[],ASEL={},COMP={};
+$('appSys').onchange=loadApps;$('appQ').oninput=renderApps;$('appSort').onchange=renderApps;
+$('apkPick').onclick=function(){$('apkFile').click()};$('apkFile').onchange=function(){sendSimple(this.files,'/api/upload?to=books',function(){setTimeout(loadApps,4000)});this.value=''};
+bindDrop($('s-apps'),function(dt){var fs=Array.prototype.filter.call(dt.files,function(f){return /\.apk$/i.test(f.name)});if(!fs.length){toast('这里只收 APK','err');return}sendSimple(fs,'/api/upload?to=books',function(){setTimeout(loadApps,4000)})},$('apkDrop'));
+$('s-apps').addEventListener('dragenter',function(e){if(hasFiles(e))$('apkDrop').hidden=false});$('s-apps').addEventListener('drop',function(){$('apkDrop').hidden=true});
+function loadApps(){if(!APPS.length)$('alist').innerHTML=skel(5);api('/api/apps2?system='+($('appSys').checked?1:0)).then(function(j){APPS=j.apps||[];ASEL={};renderApps()}).catch(function(e){if(e.message!=='login')$('alist').innerHTML=errBox('加载失败','loadApps()')})}
+function renderApps(){var qq=$('appQ').value.trim().toLowerCase(),s=$('appSort').value;
+ var l=APPS.filter(function(a){return!qq||a.label.toLowerCase().indexOf(qq)>=0||a.pkg.toLowerCase().indexOf(qq)>=0});
+ l.sort(function(a,b){if(s==='size')return((b.apk||0)+(b.data||0)+(b.cache||0))-((a.apk||0)+(a.data||0)+(a.cache||0));if(s==='updated')return(b.updated||0)-(a.updated||0);if(s==='running'&&a.running!==b.running)return a.running?-1:1;return a.label.localeCompare(b.label,'zh-CN')});
+ $('appN').textContent=APPS.length+' 个';var h='';
+ l.forEach(function(a){var p=esc(a.pkg),tot=(a.apk||0)+(a.data||0)+(a.cache||0),comp=COMP.pkg===a.pkg&&COMP.state==='running';
+  h+='<div class="item">'+(!a.system&&!a.self?'<input type="checkbox" data-s="'+p+'"'+(ASEL[a.pkg]?' checked':'')+' aria-label="选择">':'<span style="width:16px"></span>')
+  +'<img class="appic" loading="lazy" src="/api/icon?pkg='+encodeURIComponent(a.pkg)+'" alt=""><div class="grow"><div class="btns" style="gap:6px"><b class="ell">'+esc(a.label)+'</b>'
+  +(a.running?'<span class="badge ok"><span class="dot"></span>运行中</span>':'')+(comp?'<span class="badge acc"><span class="spin"></span>正在优化</span>':'')+(a.system?'<span class="badge">系统</span>':'')+(a.enabled?'':'<span class="badge warn">已停用</span>')+(a.ownIcon?'<span class="badge acc">自定义图标</span>':'')+'</div>'
+  +'<div class="sub ell">'+p+' · '+esc(a.version)+(a.updated?' · '+rel(a.updated)+'更新':'')+'</div>'
+  +'<div class="sub">'+(tot?'共 '+fmt(tot)+'（安装包 '+fmt(a.apk||0)+' · 数据 '+fmt(a.data||0)+' · 缓存 '+fmt(a.cache||0)+'）':'')+'</div></div>'
+  +'<span class="btns" style="justify-content:flex-end">'+(a.launch&&!a.self?'<button class="btn sm pri" data-a="open" data-p="'+p+'">'+svg('open')+'打开</button>':'')
+  +'<button class="btn sm" data-a="more" data-p="'+p+'" aria-label="更多">'+svg('more')+'</button></span></div>'});
+ $('alist').innerHTML=h||empty('grid',qq?'没有找到“'+esc(qq)+'”':'还没有安装应用。把 APK 拖到这里就会安装。');appSelUpd()}
+function appSelUpd(){var n=Object.keys(ASEL).length;$('appSel').hidden=!n;$('appSelN').textContent='已选 '+n+' 个应用'}
+$('alist').onclick=function(e){var c=e.target.getAttribute('data-s');if(c){if(e.target.checked)ASEL[c]=1;else delete ASEL[c];appSelUpd();return}
+ var b=e.target.closest('[data-a]');if(!b)return;var p=b.getAttribute('data-p'),a=APPS.filter(function(x){return x.pkg===p})[0],act=b.getAttribute('data-a');
+ if(act==='open')post('/api/open',{pkg:p}).then(function(j){toast(j.ok?'已在 Kindle 上打开':(j.msg||'打不开'),j.ok?'ok':'err')});
+ if(act==='more'){var r=b.getBoundingClientRect();ctxMenu(r.left-170,r.bottom+2,[
+  a.launch&&!a.self?['open','在 Kindle 上打开',function(){post('/api/open',{pkg:p}).then(function(j){toast(j.ok?'已打开':(j.msg||'失败'),j.ok?'ok':'err')})}]:null,
+  !a.self&&!a.persistent?['stop','强行停止',function(){appStop([p])}]:null,
+  ['zap','优化（预编译）',function(){post('/api/app/compile',{pkg:p}).then(function(j){toast(j.ok?'已排队优化：编好后打开会快很多':(j.msg||'失败'),j.ok?'ok':'err');loadCompile()})}],
+  ['trash','清除缓存',function(){post('/api/app/clearcache',{pkg:p}).then(function(j){toast(j.ok?'缓存已清除':(j.msg||'失败'),j.ok?'ok':'err');setTimeout(loadApps,800)})}],
+  a.launch?['sun','显示设置（在 Kindle 上）',function(){post('/api/app/display',{pkg:p}).then(function(j){toast(j.ok?'已在 Kindle 上打开这个应用的显示设置':(j.msg||'失败'))})}]:null,
+  a.launch&&!a.self?['image','换图标…',function(){iconDialog(p,a.label)}]:null,
+  !a.system&&!a.self?'-':null,!a.system&&!a.self?['trash','卸载',function(){appDel([p])},1]:null])}};
+function appStop(ps){Promise.all(ps.map(function(p){return post('/api/app/stop',{pkg:p})})).then(function(rs){var bad=rs.filter(function(j){return!j.ok});toast(bad.length?bad[0].msg:'已停止 '+ps.length+' 个','ok');setTimeout(loadApps,800)})}
+function appDel(ps){confirmBox('卸载 '+ps.length+' 个应用？',ps.map(esc).join('<br>')+'<br>它们的数据也会一起删除。','卸载',true).then(function(ok){if(!ok)return;
+ var i=0;(function next(){if(i>=ps.length){toast('已交给 Kindle 卸载','ok');ASEL={};setTimeout(loadApps,3500);return}post('/api/uninstall',{pkg:ps[i++]}).then(next,next)})()})}
+$('appBatchDel').onclick=function(){appDel(Object.keys(ASEL))};$('appBatchStop').onclick=function(){appStop(Object.keys(ASEL))};$('appSelNone').onclick=function(){ASEL={};renderApps()};
+$('compAll').onclick=function(){post('/api/app/compile',{pkg:'all'}).then(function(j){toast(j.ok?'所有还没优化的应用都排上了':(j.msg||'失败'),j.ok?'ok':'err');loadCompile()})};
+function loadCompile(){api('/api/compile').then(function(j){var was=COMP.state==='running'?COMP.pkg:null;COMP=j;var on=j.state&&j.state!=='idle';$('compCard').hidden=!on&&!j.last;
+ var R={battery:'电量低',memory:'内存不够',frozen:'Android 冻结中',off:'已关闭'};
+ var s=j.state==='running'?'<span class="badge acc"><span class="spin"></span>正在优化</span> '+esc(j.label||j.pkg||'')+(j.total?'（'+j.index+' / '+j.total+'）':''):j.state==='waiting'||j.state==='paused'?'<span class="badge warn">等待中</span> '+esc(j.msg||R[j.reason]||j.reason||''):'<span class="badge ok">空闲</span>';
+ if(j.last){var l=j.last.split(' ');s+='<span class="sub"> · 上一个：'+esc(l[0])+' '+(l[1]==='ok'?'完成':'失败')+(l[2]?'，'+l[2]+' 秒':'')+'</span>'}
+ setHTML('compSt',s+'<div class="sub" style="margin-top:6px">装好的应用会在后台自动编译成更快的版本（只在充电或电量充足、内存够的时候做）。</div>');
+ if(cur==='apps'&&was&&was!==j.pkg)renderApps()}).catch(function(){})}
+
+/* =================================================================== 运行 */
+var PROCS=null,PSORT={k:'mem',asc:false};
+$('runBtn').onclick=loadRun;
+function loadRun(){api('/api/procs').then(function(j){PROCS=j;renderRun()}).catch(function(e){if(e.message!=='login')$('ptab').innerHTML='<tr><td>'+errBox('加载失败','loadRun()')+'</td></tr>'})}
+var STATE={R:['运行','ok'],S:['睡眠',''],D:['等待磁盘','warn'],T:['已暂停','acc'],t:['已暂停','acc'],Z:['已退出','err'],X:['已退出','err']};
+function stBadge(s){var x=STATE[s]||[s,''];return '<span class="badge '+x[1]+'">'+esc(x[0])+'</span>'}
+function renderRun(){var j=PROCS;if(!j)return;var mt=j.memTotal||0,ma=j.memAvail||0;
+ $('runSum').textContent='内存已用 '+fmtK(mt-ma)+' / '+fmtK(mt)+' · CPU 为最近 0.6 秒';
+ var ps=(j.procs||[]).map(function(p){p.mem=p.pss!=null?p.pss:p.rss;return p});
+ ps.sort(function(a,b){var k=PSORT.k,r=k==='name'?String(a.name).localeCompare(b.name):(k==='cpu'?(a.cpu||0)-(b.cpu||0):k==='pid'?a.pid-b.pid:a.mem-b.mem);return PSORT.asc?r:-r});
+ var mx=Math.max.apply(null,ps.map(function(p){return p.mem}).concat([1]));
+ var ar=function(k){return PSORT.k===k?(PSORT.asc?' ↑':' ↓'):''};
+ var h='<thead><tr><th class="s" data-k="name">进程'+ar('name')+'</th><th class="s r" data-k="pid">PID'+ar('pid')+'</th><th class="s r" data-k="mem">内存'+ar('mem')+'</th><th class="s r" data-k="cpu">CPU'+ar('cpu')+'</th><th class="hide-s">状态</th><th></th></tr></thead><tbody>';
+ ps.forEach(function(p){h+='<tr><td><div class="ell" style="max-width:42vw" title="'+esc(p.name)+'">'+(p.app?'<b>'+esc(p.name)+'</b>':esc(p.name))+'</div><div style="width:120px">'+meter(pct(p.mem,mx))+'</div></td><td class="r">'+p.pid+'</td>'
+  +'<td class="r">'+fmtK(p.mem)+' <span class="sub">'+(p.pss!=null?'PSS':'RSS')+'</span></td><td class="r">'+(p.cpu!=null?(p.cpu>=10?'<b>'+p.cpu+'%</b>':p.cpu+'%'):'')+'</td><td class="hide-s">'+stBadge(p.state)+'</td>'
+  +'<td class="r">'+(p.app&&p.pkg&&p.pkg!=='com.veradroid.home'&&p.pkg!=='android'?'<button class="btn sm" data-stop="'+esc(p.pkg)+'">停止</button>':'')+'</td></tr>'});
+ $('ptab').innerHTML=h+'</tbody>';
+ setHTML('hostSum',j.host?chip(j.frozen?'warn':'ok','',j.frozen?'Android 已冻结':'Android 运行中'+(j.androidup?' '+dur(j.androidup):''))+' '+chip(j.fwpaused?'acc':'','',j.fwpaused?'Kindle 界面已暂停':'Kindle 界面运行中'):chip('err','','宿主没有回应'));
+ var hh='<thead><tr><th>进程</th><th class="r">PID</th><th class="r">内存 (RSS)</th><th>状态</th></tr></thead><tbody>';
+ var NM={'veradroid-epd':'显示桥（把 Android 画面送到墨水屏）','veradroid-input':'触摸 / 手势','slirp4netns':'Android 的网络',vdshutwatch:'关机保护',cmd:'命令监听（脚本）',watchdog:'看门狗（脚本）',sleep:'休眠监视（脚本）',autoupdate:'自动更新（脚本）',boot:'开机进度（脚本）',shutw:'关机钩子',awesome:'Kindle 窗口管理器',cvm:'Kindle 界面（Java）',dropbear:'SSH 服务'};
+ (j.hostprocs||[]).forEach(function(p){hh+='<tr><td>'+esc(p.name)+(NM[p.name]?'<div class="sub">'+NM[p.name]+'</div>':'')+'</td><td class="r">'+esc(p.pid)+'</td><td class="r">'+fmtK(+p.rss)+'</td><td>'+stBadge(p.state)+'</td></tr>'});
+ $('htab').innerHTML=hh+'</tbody>'}
+$('ptab').onclick=function(e){var th=e.target.closest('th[data-k]');if(th){var k=th.getAttribute('data-k');if(PSORT.k===k)PSORT.asc=!PSORT.asc;else{PSORT.k=k;PSORT.asc=k==='name'}renderRun();return}
+ var p=e.target.getAttribute('data-stop');if(!p)return;confirmBox('强行停止？','停止 '+esc(p)+'，没保存的内容会丢失。','停止',true).then(function(ok){if(ok)post('/api/app/stop',{pkg:p}).then(function(j){toast(j.ok?'已停止':(j.msg||'失败'),j.ok?'ok':'err');setTimeout(loadRun,800)})})};
+
+/* =================================================================== 日志 */
+var LOGTXT='';
+['logWhich','logN'].forEach(function(id){$(id).onchange=loadLog});$('logLvl').onchange=renderLog;$('logQ').oninput=renderLog;$('logBtn').onclick=loadLog;
+$('logFollow').onchange=function(){if(this.checked){every('log',3000,loadLog);loadLog()}else{clearInterval(timers.log);delete timers.log}};
+function loadLog(){api('/api/log?'+q({which:$('logWhich').value,n:$('logN').value})).then(function(j){if(!j.ok){$('logText').textContent=j.msg||'失败';return}LOGTXT=j.text;renderLog()}).catch(function(){})}
+function renderLog(){var pre=$('logText'),atBottom=pre.scrollHeight-pre.scrollTop-pre.clientHeight<40,lvl=$('logLvl').value,qq=$('logQ').value.trim();
+ var E=/error|fail|fatal|denied|refused|crash|panic|错误|失败|拒绝/i,W=/warn|timeout|retry|missing|busy|not found|超时|警告|重试/i,re=qq?new RegExp(qq.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'):null;
+ var lines=LOGTXT.split('\n'),out=[],ne=0,nw=0,nm=0;
+ lines.forEach(function(l){var e=E.test(l),w=!e&&W.test(l);if(e)ne++;if(w)nw++;if(lvl==='e'&&!e||lvl==='w'&&!e&&!w)return;if(re&&!re.test(l))return;if(re)nm++;re&&(re.lastIndex=0);
+  var s=esc(l);if(re)s=s.replace(new RegExp(esc(qq).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'),function(m){return'<mark>'+m+'</mark>'});out.push(e?'<span class="e">'+s+'</span>':w?'<span class="w">'+s+'</span>':s)});
+ pre.innerHTML=out.join('\n')||'（没有符合条件的行）';
+ $('logInfo').innerHTML=lines.length+' 行 · '+chip(ne?'err':'','',ne+' 个错误')+' '+chip(nw?'warn':'','',nw+' 个警告')+(re?' · 匹配 '+nm+' 行':'')+($('logFollow').checked?' · <span class="badge acc"><span class="spin"></span>跟随中</span>':'');
+ if(atBottom||$('logFollow').checked)pre.scrollTop=pre.scrollHeight;
+ var a=$('logSave');try{if(a.href&&a.href.indexOf('blob:')===0)URL.revokeObjectURL(a.href)}catch(e){}a.href=URL.createObjectURL(new Blob([LOGTXT],{type:'text/plain'}));a.download='veradroid-'+$('logWhich').value+'.log'}
+
+/* =================================================================== SSH */
+function sshRender(j){var on=j.running==='1';
+ setHTML('sshBadge',j.ok===false&&!j.running?chip('err','',j.msg||'失败'):on?chip('warn','','运行中'):chip('','','关闭'));
+ var s='<dl class="kv">'+kv([['地址',j.ip?j.ip+' : '+(j.port||2222):'（没有 Wi-Fi 地址）'],['连接命令',on&&j.ip?'<code>ssh -p '+esc(j.port||2222)+' root@'+esc(j.ip)+'</code> <button class="btn sm ghost" data-copy="ssh -p '+esc(j.port||2222)+' root@'+esc(j.ip)+'">'+svg('copy')+'</button>':'',1],
+  ['主机密钥',j.hostkeytype?esc(j.hostkeytype)+(j.fingerprint?'<br><code>'+esc(j.fingerprint)+'</code>':''):'（第一次打开时在 Kindle 上生成）',1],['诊断包',j.script==='1'?chip('ok','check','已在 Kindle 上'):chip('err','x','没找到 documents/VeraDroid-SSH'),1],['最近一条记录',j.last||'']])+'</dl>';
+ if(j.ok===false&&j.msg)s='<div class="note err">'+esc(j.msg)+'</div>'+s;
+ if(j.out)s+='<pre class="pre" style="margin-top:10px;max-height:140px;overflow:auto">'+esc(j.out)+'</pre>';
+ setHTML('sshState',s);$('sshStart').disabled=on||j.script!=='1';$('sshStop').disabled=!on;
+ var k='';(j.keys||[]).forEach(function(x){k+='<div class="item">'+svg('key')+'<div class="grow"><div class="ell"><code>'+esc(x.type)+' …'+esc(x.tail)+'</code></div><div class="sub">'+esc(x.comment||'（没有注释）')+'</div></div><button class="btn sm dan" data-kdel="'+esc(x.n)+'">删除</button></div>'});
+ setHTML('sshKeys',k||empty('key','还没有公钥：没有公钥时 SSH 不会启动'))}
+document.addEventListener('click',function(e){var c=e.target.closest('[data-copy]');if(!c)return;var t=c.getAttribute('data-copy');(navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(function(){toast('已复制','ok')},function(){promptBox('复制下面的内容','',t,'好')})});
+function loadSsh(){api('/api/ssh').then(sshRender).catch(function(){})}
+function sshDo(w){var b=$(w==='start'?'sshStart':'sshStop');b.disabled=true;b.innerHTML='<span class="spin"></span>'+(w==='start'?'正在打开（第一次要生成主机密钥，可能一分钟）':'正在关闭');
+ post('/api/ssh/'+w).then(function(j){b.textContent=w==='start'?'打开 SSH':'关闭 SSH';sshRender(j);toast(j.running==='1'?'SSH 已打开':'SSH 已关闭',j.ok===false?'err':'ok')}).catch(function(){b.disabled=false})}
+$('sshStart').onclick=function(){sshDo('start')};$('sshStop').onclick=function(){sshDo('stop')};
+$('sshKeyPick').onclick=function(){$('sshKeyFile').click()};
+$('sshKeyFile').onchange=function(){var f=this.files[0];if(!f)return;if(f.size>16384){toast('这不像公钥文件（太大了）','err');return}var r=new FileReader();r.onload=function(){$('sshKey').value=String(r.result).trim()};r.readAsText(f);this.value=''};
+$('sshAdd').onclick=function(){var k=$('sshKey').value.trim();if(!k){toast('先贴上公钥','err');return}
+ if(/PRIVATE KEY/.test(k)){toast('这是私钥！私钥绝不要传给任何设备。请用 .pub 文件里的公钥。','err');return}
+ if(k.split(/\r?\n/).filter(function(l){return l.trim()}).length>1){toast('一次只能添加一把公钥（一行）','err');return}
+ if(!$('sshPin').value){toast('为了安全，添加公钥前要再输一次 Kindle 上的 PIN','err');$('sshPin').focus();return}
+ post('/api/ssh/key',{key:k,pin:$('sshPin').value}).then(function(j){$('sshPin').value='';if(j.ok){$('sshKey').value='';toast(j.msg==='exists'?'这把公钥已经在里面了':'公钥已添加'+(j.running==='1'?'：关掉 SSH 再打开后生效':''),'ok');sshRender(j)}else toast(j.msg||'失败','err')})};
+$('sshKeys').onclick=function(e){var n=e.target.getAttribute('data-kdel');if(!n)return;confirmBox('删除这把公钥？','它的主人以后就不能登录了（开着的 SSH 要关掉再开才生效）。','删除',true).then(function(ok){if(ok)post('/api/ssh/keydel',{n:+n}).then(function(j){if(!j.ok)toast(j.msg||'失败','err');sshRender(j)})})};
+$('diagBtn').onclick=function(){confirmBox('上传诊断日志？','把 VeraDroid 的日志和系统状态上传到 VeraDroid 服务器（不含你的书和账号密码）。','上传').then(function(ok){if(!ok)return;var b=$('diagBtn');b.disabled=true;$('diagSt').innerHTML='<span class="spin"></span> 正在收集并上传，要一两分钟…';
+ post('/api/diag/upload').then(function(j){var since=j.since||Date.now(),n=0;every('diag',2000,function(){if(++n>90){clearInterval(timers.diag);b.disabled=false;$('diagSt').textContent='超时了，稍后再看看';return}
+  api('/api/diag/result').then(function(r){if(r.time>=since-2000&&r.r_ok!=null){clearInterval(timers.diag);b.disabled=false;
+   $('diagSt').innerHTML=r.r_ok==='1'?chip('ok','check','已上传')+' 编号 <code>'+esc(r.r_id)+'</code> <button class="btn sm ghost" data-copy="'+esc(r.r_id)+'">'+svg('copy')+'</button>':chip('err','x','上传失败')+' '+esc(r.r_error||'')}})})})})};
+
+/* =================================================================== 系统 */
+var DISP=[['KFB_MODE','刷新方式','画面变化时的刷新波形',[['0','均衡'],['1','灰度最准'],['2','最快']]],['KFB_CONTRAST','对比度','数字越大越黑',[['1.0','1.0'],['1.3','1.3'],['1.6','1.6'],['1.9','1.9'],['2.2','2.2']]],
+ ['KFB_FLASH','整屏刷新','每翻几页闪一下清残影',[['0','不按页数'],['1','每页'],['3','3 页'],['6','6 页'],['8','8 页']]],['KFB_ANIM_MODE','翻页动画','',[['0','关'],['1','开']]],['KFB_INVERT','反色','黑底白字',[['0','关'],['1','开']]]];
+var SETS={};
+function loadSys(){api('/api/sys/settings').then(function(j){SETS=j.settings||{};var st=j.status||{};
+ $('dispSets').innerHTML=DISP.map(function(d){var v=SETS[d[0]];return'<div class="set"><span class="lbl">'+d[1]+(d[2]?'<span class="sub">'+d[2]+'</span>':'')+'</span><span class="seg" data-k="'+d[0]+'">'+d[3].map(function(o){return'<button data-v="'+o[0]+'" class="'+(String(v)===o[0]||(d[0]==='KFB_ANIM_MODE'&&o[0]==='1'&&+v>0)?'on':'')+'">'+o[1]+'</button>'}).join('')+'</span></div>'}).join('');
+ var l='';if(st.haslight==='1')l+=slider('light','亮度',st.light,st.lightmax);if(st.haswarmth==='1')l+=slider('warmth','色温',st.warmth,24);$('lightCard').hidden=!l;$('lightSets').innerHTML=l;
+ $('updSets').innerHTML='<div class="set"><span class="lbl">自动更新 VeraDroid<span class="sub">整包；每 6 小时看一次，只在回到 Kindle 时安装'+(j.vdversion?' · 当前 '+esc(j.vdversion):'')+'</span></span><label class="switch"><input type="checkbox" data-au="host"'+(j.hostAutoUpdate!==false?' checked':'')+'><span></span></label></div>'
+  +'<div class="set"><span class="lbl">自动更新桌面应用<span class="sub">'+(j.home?'当前 '+esc(j.home):'')+'</span></span><label class="switch"><input type="checkbox" data-au="app"'+(j.appAutoUpdate?' checked':'')+'><span></span></label></div>'}).catch(function(){})}
+function slider(w,l,v,mx){return'<div class="set"><span class="lbl">'+l+' <b id="v-'+w+'">'+esc(v)+'</b><span class="sub">0 – '+esc(mx)+'</span></span><input type="range" min="0" max="'+esc(mx)+'" value="'+esc(v)+'" data-l="'+w+'" style="flex:1;max-width:260px"></div>'}
+$('dispSets').onclick=function(e){var b=e.target.closest('button[data-v]');if(!b)return;var s=b.parentNode,k=s.getAttribute('data-k'),v=b.getAttribute('data-v');if(b.classList.contains('on'))return;
+ var prev=s.querySelector('.on');var bs=s.querySelectorAll('button');for(var i=0;i<bs.length;i++)bs[i].classList.remove('on');b.classList.add('on','pending');
+ post('/api/sys/display',{key:k,value:v}).then(function(j){if(!j.ok)throw new Error(j.msg||'失败');var n=0;
+  (function check(){api('/api/sys/settings').then(function(r){var got=(r.settings||{})[k];if(String(got)===v||(k==='KFB_ANIM_MODE'&&v==='1'&&+got>0)){b.classList.remove('pending');toast('已生效','ok');SETS=r.settings}
+   else if(++n<10)setTimeout(check,600);else{b.classList.remove('pending');toast('Kindle 那边没有确认，请稍后再看看','err')}})})()})
+  .catch(function(err){b.classList.remove('on','pending');if(prev)prev.classList.add('on');toast(err.message,'err')})};
+$('lightSets').oninput=function(e){var w=e.target.getAttribute('data-l');if(w)$('v-'+w).textContent=e.target.value};
+$('lightSets').onchange=function(e){var w=e.target.getAttribute('data-l');if(w)post('/api/sys/light',{what:w,value:+e.target.value}).then(function(j){toast(j.ok?'已调整':(j.msg||'失败'),j.ok?'ok':'err')})};
+$('updSets').onchange=function(e){var w=e.target.getAttribute('data-au');if(!w)return;var on=e.target.checked;post('/api/sys/autoupdate',{which:w,on:on}).then(function(j){if(!j.ok){e.target.checked=!on;toast(j.msg||'失败','err')}else toast(on?'已打开自动更新':'已关闭自动更新','ok')})};
+var shotURL='';
+function shot(){var b=$('shotBtn');b.disabled=true;b.innerHTML='<span class="spin"></span>截屏中';
+ fetch('/api/screenshot?t='+Date.now(),{credentials:'same-origin'}).then(function(r){if(r.status==401){sessionExpired();throw new Error('login')}if(!r.ok)throw new Error('截屏失败');return r.blob()}).then(function(bl){
+  if(shotURL)URL.revokeObjectURL(shotURL);shotURL=URL.createObjectURL(bl);$('shotBox').className='';$('shotBox').innerHTML='<img class="shot" alt="Kindle 屏幕截图" src="'+shotURL+'"><div class="sub" style="margin-top:6px">'+date(Date.now())+' · '+fmt(bl.size)+'</div>';
+  var a=$('shotSave');a.href=shotURL;a.hidden=false;a.download='kindle-'+date(Date.now()).replace(/[^0-9]/g,'')+'.png';b.disabled=false;b.textContent='重新截屏'}).catch(function(e){b.disabled=false;b.textContent='截取当前屏幕';if(e.message!=='login')toast(e.message,'err')})}
+$('shotBtn').onclick=shot;$('shotAuto').onchange=function(){if(this.checked){shot();every('shot',10000,shot)}else{clearInterval(timers.shot);delete timers.shot}};
+$('clearBtn').onclick=function(){post('/api/sys/refresh').then(function(){toast('已整屏刷新','ok');if($('shotAuto').checked)setTimeout(shot,1500)})};
+$('clipBtn').onclick=function(){var t=$('clip').value;if(!t)return;post('/api/sys/clipboard',{text:t}).then(function(j){toast(j.ok?'已发送到 Kindle 的剪贴板':(j.msg||'失败'),j.ok?'ok':'err');if(j.ok)$('clip').value=''})};
+$('updBtn').onclick=function(){$('updInfo').innerHTML='<span class="spin"></span> 正在查询…';api('/api/sys/update').then(function(j){var s=[];
+ if(j.latest)s.push('VeraDroid：当前 '+esc(j.current||'?')+'，服务器上 '+esc(j.latest)+' '+(j.current&&j.latest!==j.current?chip('acc','','有新版本'):chip('ok','check','已是最新')));else if(j.latestError)s.push('VeraDroid：'+esc(j.latestError));
+ s.push(j.homeError?'桌面：'+esc(j.homeError):'桌面应用：当前 '+esc(j.home||'?')+' '+(j.homeUpdate?chip('acc','','有新版本 '+(j.homeLatest||'')):chip('ok','check','已是最新')));$('updInfo').innerHTML=s.join('<br>')})};
+function power(w,msg){confirmBox(w==='restart'?'重启 Android？':'返回 Kindle？',msg,w==='restart'?'重启':'返回 Kindle',true).then(function(ok){if(ok)post('/api/sys/'+w).then(function(){toast(w==='restart'?'正在重启 Android，大约半分钟…':'正在返回 Kindle…')})})}
+$('rebootBtn').onclick=function(){power('restart','大约半分钟后重新开机。这个网页会断开，传输要在 Kindle 上重新打开。')};
+$('exitBtn').onclick=function(){power('exit','Android 会被冻结，这个网页也会断开，直到再次打开 VeraDroid。')};
+
+/* =================================================================== 壁纸与图标 */
+var THEME=null;
+function loadTheme(){api('/api/theme/list').then(function(j){THEME=j;renderTheme()}).catch(function(){})}
+function renderTheme(){var j=THEME,h='';
+ h+='<div class="thumb cur"><img alt="" src="'+(j.wallpaper?'/api/theme/thumb?kind=wall&w=300&t='+j.wallpaper.time:'')+'" '+(j.wallpaper?'':'style="display:none"')+'>'+(j.wallpaper?'':'<div class="empty" style="aspect-ratio:3/4">'+svg('image')+'没有壁纸</div>')+'<div class="cap"><span><b>当前壁纸</b></span>'+(j.wallpaper?'<button class="btn sm ghost" id="wallClear" title="去掉壁纸">'+svg('x')+'</button>':'')+'</div></div>';
+ (j.gallery||[]).forEach(function(g){h+='<div class="thumb" data-g="'+esc(g.name)+'" style="cursor:pointer" tabindex="0"><img loading="lazy" alt="" src="/api/theme/thumb?'+esc(q({kind:'gallery',name:g.name,w:300}))+'"><div class="cap"><span title="'+esc(g.name)+'">'+esc(g.name)+'</span>'+svg('more')+'</div></div>'});
+ if(!(j.gallery||[]).length)h+='<div class="drop" style="grid-column:span 2;display:grid;place-items:center">图库还是空的：点“添加到图库”或者把图片拖到这里</div>';
+ $('galList').innerHTML=h;
+ var ic='';(j.apps||[]).sort(function(a,b){return a.label.localeCompare(b.label,'zh-CN')}).forEach(function(a){ic+='<div class="icn" data-p="'+esc(a.pkg)+'" tabindex="0">'+(a.custom?'<span class="badge acc">自定义</span>':'')+'<img loading="lazy" alt="" src="'+(a.own?'/api/theme/thumb?kind=icon&w=128&name='+encodeURIComponent(a.pkg)+'&t='+Date.now():'/api/icon?pkg='+encodeURIComponent(a.pkg))+'"><div class="n ell">'+esc(a.label)+'</div></div>'});
+ $('iconList').innerHTML=ic||empty('grid','没有可以换图标的应用')}
+$('galList').onclick=function(e){if(e.target.closest('#wallClear')){confirmBox('去掉壁纸？','主页恢复成白色背景（图库里的图不会删）。','去掉').then(function(ok){if(ok)post('/api/theme/wallpaper/clear').then(function(){toast('已去掉壁纸','ok');loadTheme()})});return}
+ var g=e.target.closest('[data-g]');if(!g)return;var n=g.getAttribute('data-g'),r=g.getBoundingClientRect();
+ ctxMenu(Math.min(e.clientX,r.right-150),e.clientY,[['image','设成壁纸',function(){var t=toastWait('正在设置壁纸…');post('/api/theme/wallpaper/set',{name:n}).then(function(j){t();toast(j.ok?'壁纸已设置，回到主页就能看到':(j.msg||'失败'),j.ok?'ok':'err');loadTheme()})}],
+  ['grid','用作应用图标…',function(){pickApp().then(function(p){if(p)post('/api/theme/icon/set',{pkg:p,name:n}).then(function(j){toast(j.ok?'图标已替换':(j.msg||'失败'),j.ok?'ok':'err');loadTheme()})})}],
+  ['download','下载原图',function(){location.href='/api/fs/get?'+q({root:'sdcard',path:'VeraDroid/wallpaper/'+n})}],'-',
+  ['trash','从图库删除',function(){confirmBox('删除这张图？',esc(n),'删除',true).then(function(ok){if(ok)post('/api/theme/gallery/delete',{name:n}).then(function(j){toast(j.ok?'已删除':(j.msg||'失败'),j.ok?'ok':'err');loadTheme()})})},1]])};
+$('iconList').onclick=function(e){var c=e.target.closest('[data-p]');if(!c)return;var a=(THEME.apps||[]).filter(function(x){return x.pkg===c.getAttribute('data-p')})[0];iconDialog(a.pkg,a.label)};
+function iconDialog(pkg,label){var gal=(THEME&&THEME.gallery)||[];
+ modal({title:'换图标：'+label,body:'<p class="sub" style="margin-top:0">从图库里选一张（会裁成正方形），或者上传一张方形 PNG。</p><div class="thumbs" style="grid-template-columns:repeat(auto-fill,minmax(90px,1fr))">'+gal.map(function(g){return'<div class="thumb" data-n="'+esc(g.name)+'" style="cursor:pointer"><img loading="lazy" alt="" src="/api/theme/thumb?'+esc(q({kind:'gallery',name:g.name,w:180}))+'" style="aspect-ratio:1"></div>'}).join('')+'</div>'+(gal.length?'':empty('image','图库是空的')),
+  foot:'<button class="btn" id="icUp">'+svg('upload')+'上传 PNG</button><button class="btn dan" id="icReset">恢复默认</button>',ok:'关闭',cancel:false,
+  init:function(bg){bg.querySelector('.thumbs').onclick=function(e){var t=e.target.closest('[data-n]');if(!t)return;post('/api/theme/icon/set',{pkg:pkg,name:t.getAttribute('data-n')}).then(function(j){toast(j.ok?'图标已替换':(j.msg||'失败'),j.ok?'ok':'err');bg.close(null);loadTheme();if(cur==='apps')loadApps()})};
+   bg.querySelector('#icReset').onclick=function(){post('/api/theme/icon/clear',{pkg:pkg}).then(function(j){toast(j.ok?'已恢复默认图标':(j.msg||'失败'),j.ok?'ok':'err');bg.close(null);loadTheme();if(cur==='apps')loadApps()})};
+   bg.querySelector('#icUp').onclick=function(){var i=document.createElement('input');i.type='file';i.accept='image/png';i.onchange=function(){if(i.files[0])qAdd(new File([i.files[0]],'icon-'+pkg+'.png',{type:'image/png'}),'/api/upload?to=theme','图标：'+label,function(r){toast(r.state==='done'?'图标已替换':r.msg,r.state==='done'?'ok':'err');loadTheme()});bg.close(null)};i.click()}}})}
+function pickApp(){var apps=(THEME&&THEME.apps)||[];return modal({title:'用作哪个应用的图标？',body:'<div class="icons">'+apps.map(function(a){return'<div class="icn" data-p="'+esc(a.pkg)+'"><img loading="lazy" alt="" src="/api/icon?pkg='+encodeURIComponent(a.pkg)+'"><div class="n ell">'+esc(a.label)+'</div></div>'}).join('')+'</div>',buttons:false,
+ init:function(bg,done){bg.querySelector('.icons').onclick=function(e){var c=e.target.closest('[data-p]');if(c)done(c.getAttribute('data-p'))}}})}
+$('galPick').onclick=function(){$('galFile').click()};
+$('galFile').onchange=function(){sendSimple(this.files,'/api/upload?to=gallery',function(){loadTheme()});this.value=''};
+bindDrop($('s-theme'),function(dt){var fs=Array.prototype.filter.call(dt.files,function(f){return /\.(jpe?g|png|webp)$/i.test(f.name)});if(!fs.length){toast('图库只收 jpg / png / webp','err');return}sendSimple(fs,'/api/upload?to=gallery',function(){loadTheme()})});
+$('zipPick').onclick=function(){$('zipFile').click()};
+$('zipFile').onchange=function(){if(this.files[0])qAdd(this.files[0],'/api/upload?to=theme','主题包',function(r){toast(r.msg||'完成',r.state==='done'?'ok':'err');loadTheme()});this.value=''};
+$('themeReset').onclick=function(){confirmBox('全部恢复默认？','壁纸、自定义图标和状态栏都恢复成默认（图库里的图不会删）。','恢复',true).then(function(ok){if(ok)post('/api/theme/reset').then(function(){toast('已恢复默认','ok');loadTheme()})})};
+$('sbSave').onclick=function(){var o={clock:$('sb_clock').checked,battery:$('sb_battery').checked,clock_format:$('sb_fmt').value,text:$('sb_text').value};
+ qAdd(new File([JSON.stringify(o)],'statusbar.json',{type:'application/json'}),'/api/upload?to=theme','状态栏设置',function(r){toast(r.state==='done'?'状态栏已保存':r.msg,r.state==='done'?'ok':'err')})};
+
+/* =================================================================== 蓝牙（宿主 bt.sh：/api/bt、/api/bt/cmd、/api/bt/set） */
+var BT={},btPend=null,btSeen='',btLoaded=false;
+var BT_MAPS=[['volume','音量键'],['page','翻页键'],['dpad','方向键'],['raw','原样']];
+function btName(mac){var d=(BT.devices||[]).filter(function(x){return x.mac===mac})[0];return d?d.name:(btPend&&btPend.mac===mac&&btPend.name)||mac}
+function btOpName(op){return{scan:'扫描',bond:'配对',connect:'连接',disconnect:'断开',unbond:'取消配对',enable:'打开蓝牙',disable:'关闭蓝牙',power:'开关蓝牙'}[op]||'蓝牙操作'}
+function loadBt(refresh){api('/api/bt'+(refresh===false?'':'?refresh=1')).then(function(j){BT=j;btTrack();renderBt();every('bt',2000,function(){loadBt(false)})}).catch(function(){})}
+/* 这次操作有没有结果、有没有卡住 */
+function btTrack(){var r=BT.result||{};
+ if(btPend){
+  var fresh=r.mtime>=btPend.since-1000;
+  if(fresh&&r.state==='done'&&btSeen!==r.mtime+r.op){btSeen=r.mtime+r.op;var m=btMsg(r);btPend=null;toast(m[0],m[1],m[1]==='err'?8000:5000);setTimeout(function(){loadBt()},400);return}
+  if(Date.now()-btPend.local>(btPend.secs+20)*1000){toast(btOpName(btPend.op)+'没有回应。宿主程序可能太旧，或 Kindle 的蓝牙服务没响应。','err');btPend=null}
+ }}
+function btRunning(){var r=BT.result||{};
+ if(btPend)return{op:btPend.op,mac:btPend.mac,secs:btPend.secs,start:btPend.since};
+ if(r.state==='running'&&BT.now-r.mtime<((+r.secs||45)+10)*1000)return{op:r.op,mac:r.mac,secs:+r.secs||45,start:r.mtime};
+ return null}
+function btMsg(r){var op=r.op,e=r.error||'',ok=r.ok==='1',n=btName(r.mac);
+ if(e==='busy')return['宿主正在做另一项蓝牙操作，请稍等再试。','err'];
+ if(e==='off')return['蓝牙没有打开：先打开蓝牙。','err'];
+ if(e==='unsupported')return['这台 Kindle 没有蓝牙。','err'];
+ if(e==='lipc')return['Kindle 的蓝牙服务没有响应，请稍后再试；一直不行就回 Kindle 的设置里关开一次蓝牙。','err'];
+ if(e==='badmac')return['设备地址不对。','err'];
+ if(op==='scan')return[ok?'扫描完成：找到 '+(BT.devices||[]).length+' 个设备。没看到翻页器就让它重新进入配对模式再扫一次。':'扫描失败。',ok?'ok':'err'];
+ if(op==='bond'){if(ok)return['已配对并连接：'+n+'。打开阅读应用按翻页器试试。','ok'];
+  if(e==='notconnected')return['已配对：'+n+'。按一下翻页器的键让它连上。','ok'];
+  if(e==='failed')return['配对失败：'+n+' 拒绝了配对。让它重新进入配对模式再试一次。','err'];
+  return['配对超时：确认 '+n+' 在配对模式（指示灯快闪），再试一次。','err']}
+ if(op==='connect')return[ok?'已连接：'+n:e==='notpaired'?'还没配对，先配对。':'没连上 '+n+'：按一下翻页器的键唤醒它，再试一次。',ok?'ok':'err'];
+ if(op==='disconnect')return[ok?'已断开：'+n:'断开超时。',ok?'ok':'err'];
+ if(op==='unbond')return[ok?'已取消配对：'+n:'取消配对超时，请再试一次。',ok?'ok':'err'];
+ if(op==='power')return[ok?(r.on==='1'?'蓝牙已打开。':'蓝牙已关闭。'):'蓝牙开关没有响应，请回 Kindle 的设置里试试。',ok?'ok':'err'];
+ return['','']}
+function btSend(op,mac,name){if(btRunning()){toast('请等当前操作做完（'+btOpName(btRunning().op)+'）','err');return}
+ post('/api/bt/cmd',{op:op,mac:mac||''}).then(function(j){if(!j.ok){toast(j.msg||'失败','err');return}
+  btPend={op:op==='enable'||op==='disable'?'power':op,mac:mac,name:name,since:j.since,local:Date.now(),secs:op==='scan'?45:op==='bond'?45:20};renderBt()})}
+function btSet(key,val){post('/api/bt/set',{key:key,value:String(val)}).then(function(j){if(!j.ok){toast(j.msg||'失败','err');return}toast('已保存','ok',1500);setTimeout(function(){loadBt()},1800)})}
+function btDev(d,busy){var h='<div class="dev"><div class="grow"><div class="nm ell">'+esc(d.name)+(d.connected?' '+chip('ok','','已连接'):d.paired?' '+chip('','','未连接'):'')+'</div><div class="sub"><code>'+esc(d.mac)+'</code></div></div><div class="btns">';
+ var a=' data-mac="'+esc(d.mac)+'" data-name="'+esc(d.name)+'"'+(busy?' disabled':'');
+ if(!d.paired)h+='<button class="btn sm pri" data-bt="bond"'+a+'>配对</button>';
+ else{h+=d.connected?'<button class="btn sm" data-bt="disconnect"'+a+'>断开</button>':'<button class="btn sm pri" data-bt="connect"'+a+'>连接</button>';h+='<button class="btn sm dan" data-bt="unbond"'+a+'>取消配对</button>'}
+ return h+'</div></div>'}
+function renderBt(){var b=$('btBody');if(!b)return;
+ if(BT.supported==='old'){b.innerHTML='<div class="card">'+empty('bluetooth','宿主程序太旧，不支持在这里配对。请先更新 VeraDroid；或回到 Kindle，在“设置 → 蓝牙设备”里配对。')+'</div>';return}
+ if(BT.supported==='no'){b.innerHTML='<div class="card">'+empty('bluetooth','这台 Kindle 没有蓝牙。')+'</div>';return}
+ var run=btRunning(),busy=!!run,devs=BT.devices||[],on=!!BT.on;
+ var paired=devs.filter(function(d){return d.paired}),near=devs.filter(function(d){return !d.paired});
+ var h='<div class="card"><div class="h">'+svg('bluetooth')+'蓝牙'+chip(on?'ok':'','',on?'已打开':'已关闭')+'<span class="sp"></span><label class="switch" title="打开 / 关闭蓝牙"><input type="checkbox" id="btPower"'+(on?' checked':'')+(busy?' disabled':'')+'><span></span></label></div>'
+  +'<p class="sub" style="margin:0">蓝牙芯片和协议栈由 Kindle 管，这里和 Kindle 设置里的蓝牙开关是同一个。支持翻页器和蓝牙键盘。</p></div>';
+ h+='<div class="card"><div class="h">'+svg('search')+'设备<span class="sp"></span><button class="btn sm pri" data-bt="scan"'+(busy||!on?' disabled':'')+'>'+(run&&run.op==='scan'?'<span class="spin"></span>扫描中…':'扫描')+'</button></div>';
+ if(run){var el=Math.max(0,(BT.now-run.start)/1000),p=Math.min(95,el/run.secs*100);
+  h+='<div class="note info"><b>'+esc(btOpName(run.op))+(run.mac?' '+esc(btName(run.mac)):'')+'中…</b>（已等 '+Math.round(el)+' 秒，最多 '+run.secs+' 秒）'
+   +(run.op==='bond'?'<br>有的翻页器要先按一下键。':run.op==='connect'?'<br>没反应就按一下翻页器的键。':'')+meter(p).replace('class="meter','style="margin-top:6px" class="meter')+'</div>'}
+ else if(!on)h+='<div class="note">蓝牙没有打开：先用右上角的开关打开蓝牙。</div>';
+ h+='<h4 style="margin:12px 0 2px;font-size:13.5px;color:var(--muted)">已配对</h4>'+(paired.length?paired.map(function(d){return btDev(d,busy)}).join(''):'<p class="sub">还没有配对过的设备。</p>');
+ h+='<h4 style="margin:14px 0 2px;font-size:13.5px;color:var(--muted)">附近的设备</h4>'+(near.length?near.map(function(d){return btDev(d,busy)}).join(''):'<p class="sub">'+(run&&run.op==='scan'?'正在找…':'让翻页器进入配对模式（多数是长按开关键或配对键几秒，指示灯快闪），再点“扫描”。')+'</p>');
+ h+='</div>';
+ var cur=BT.map||'volume';
+ h+='<div class="card"><div class="h">'+svg('settings')+'翻页键'+'<span class="sp"></span><span class="sub">立即生效，不用重启</span></div>'
+  +'<div class="set"><span class="lbl">“下一页 / 上一页”发给应用的是<span class="sub">微信读书等阅读应用：在阅读设置里打开“音量键翻页”。应用不认音量键时改成“翻页键”或“方向键”。</span></span><span class="seg" id="btMap">'+BT_MAPS.map(function(m){return'<button data-v="'+m[0]+'" class="'+(cur===m[0]?'on':'')+'">'+m[1]+'</button>'}).join('')+'</span></div>'
+  +'<div class="set"><span class="lbl">方向<span class="sub">翻页器的两个键翻反了就选“反过来”</span></span><span class="seg" id="btSwap"><button data-v="0" class="'+(BT.swap?'':'on')+'">正常</button><button data-v="1" class="'+(BT.swap?'on':'')+'">反过来</button></span></div>';
+ var used=(BT.devUsed||[]).join('、');
+ h+='<div class="set"><span class="lbl">按键转发<span class="sub">'+(BT.bridgeRunning?(used?'运行中，正在接收 '+esc(used):'运行中，等翻页器连上（按一下它的键）'):BT.bridge==='0'?'已关闭':'未启动（配对或连上翻页器后自动启动）')+'</span></span>'
+  +(BT.bridge==='0'?'<button class="btn sm" id="btBridgeOn">打开</button>':'')+'</div></div>';
+ setHTML('btBody',h)}
+document.addEventListener('click',function(e){var b=e.target.closest('#btBody [data-bt]');if(b&&!b.disabled){var op=b.getAttribute('data-bt'),mac=b.getAttribute('data-mac'),nm=b.getAttribute('data-name');
+  if(op==='unbond')confirmBox('取消配对？','取消和“'+esc(nm)+'”的配对？以后要用得重新配对（翻页器要再进入配对模式）。','取消配对',true).then(function(ok){if(ok)btSend(op,mac,nm)});
+  else btSend(op,mac,nm);return}
+ var s=e.target.closest('#btMap button');if(s){btSet('map',s.getAttribute('data-v'));BT.map=s.getAttribute('data-v');renderBt();return}
+ s=e.target.closest('#btSwap button');if(s){btSet('swap',s.getAttribute('data-v'));BT.swap=s.getAttribute('data-v')==='1';renderBt();return}
+ if(e.target.closest('#btBridgeOn'))btSet('bridge','auto')});
+document.addEventListener('change',function(e){if(e.target.id==='btPower'){var on=e.target.checked;e.target.disabled=true;btSend(on?'enable':'disable','','')}});
+
+/* =================================================================== 存储空间（宿主 storage.sh：/api/sys/storage、/resize、/auto；格式见 docs/host-settings.md 第 7 节） */
+var STO=null,STO_OFF=null,stoBusy=false,stoMb='';
+var STO_ERR={small:'比已用空间加安全余量还小',nospace:'Kindle 剩余空间不够（要给 Kindle 留 256 MB）',fatlimit:'Kindle 存储是 FAT 格式，单个文件最大 4 GB',toobig:'超过上限',same:'和现在一样大（差不到 16 MB）',busy:'上一次调整还没结束',battery:'电量太低，请先充电',shared:'这台机器与 Kindle 共用空间，无需调整',notool:'缺少调整工具',extend:'Kindle 存储写不进去（空间不够？）',fsck:'文件系统检查没通过','fsck-after':'文件系统检查没通过',interrupted:'上次被中断，已恢复原样',nan:'大小不对'};
+function stoErr(e){return STO_ERR[e]||e||'失败'}
+function sN(k){return +(STO&&STO['st.'+k])||0}
+function mb(n){return fmt(n*1048576)}
+function loadStorage(){api('/api/sys/storage').then(function(j){STO=j;
+  if(STO_OFF){var t=j['st.last.time']||'';if(t&&t!==STO_OFF.prev){var ok=j['st.last.result']==='ok';toast(ok?'离线调整完成：'+mb(sN('image')):'调整没有完成：'+stoErr(j['st.last.reason']),ok?'ok':'err');STO_OFF=null;clearInterval(timers.stoOff)}}
+  renderStorage()}).catch(function(){if(!STO)setHTML('stoBody',errBox('读取不到存储信息','loadStorage()'))})}
+function stoLast(){var r=STO['st.last.result'];if(!r)return'';var op=STO['st.last.op']==='grow'?'扩大':STO['st.last.op']==='shrink'?'缩小':'调整',w=STO['st.last.time']||'';
+ if(r==='ok')return w+' '+op+'到 '+mb(sN('last.to'))+'，成功。';
+ if(r==='rolledback')return w+' '+op+'被中断，已恢复原样（'+mb(sN('last.to'))+'），数据没有变化。';
+ return w+' '+op+'没有完成（'+stoErr(STO['st.last.reason'])+'），数据没有变化。'}
+function stoHint(v){var img=sN('image'),min=sN('min'),max=sN('max');v=+v;
+ if(!(v>0))return['sub','输入想要的大小（MB），或点上面的常用大小。'];
+ if(Math.abs(v-img)<16)return['sub','和现在差不到 16 MB，不用调整。'];
+ if(v<min)return['err','太小：至少 '+mb(min)+'（已用空间加安全余量）。'];
+ if(v>max)return['err','太大：最多 '+mb(max)+(STO['st.cap']==='fat'?'（Kindle 存储是 FAT，单个文件最大 4 GB）':STO['st.cap']==='space'?'（受 Kindle 剩余空间限制，要给 Kindle 留 '+sN('keep')+' MB）':'')+'。'];
+ if(v>img&&STO['st.online']==='1')return['ok','扩大 '+mb(v-img)+'：在线完成，不用重启 Android。'+(STO['st.kfs']==='vfat'||STO['st.kfs']==='fat'?'FAT 上要真的写满新增空间，可能要一两分钟。':'')];
+ if(v>img)return['warn','扩大 '+mb(v-img)+'：需要重启 Android（离线调整，约几分钟）。'];
+ return['warn','缩小 '+mb(img-v)+'，这些空间还给 Kindle：需要重启 Android（离线调整，约几分钟）。']}
+function renderStorage(){var j=STO,b=$('stoBody');if(!b||!j)return;
+ if(j.ok===false&&!j['st.mode']){b.innerHTML='<div class="card">'+errBox(j.msg||'宿主没有回应（VeraDroid 宿主程序是不是旧版本？）','loadStorage()')+'</div>';return}
+ var h='',kt=sN('kindle_total');
+ if(j['st.mode']==='shared'){var ku=sN('kindle_used'),kf=sN('kindle_free');
+  h+='<div class="card"><div class="h">'+svg('drive')+'存储空间<span class="sp"></span><button class="btn sm" id="stoRef">'+svg('refresh')+'刷新</button></div>'
+   +'<div class="stat"><svg class="donut" viewBox="0 0 84 84" id="dSto"></svg><div class="legend"><span class="t">Kindle 用户存储 · 已用 '+mb(ku)+'</span><span class="sub">共 '+mb(kt)+' · 剩 '+mb(kf)+'</span><span class="sub">文件系统：'+esc(j['st.kfs']||'—')+'</span></div></div>'
+   +'<div class="note info">这台机器的 Android 与 Kindle <b>共用空间</b>：Android 直接用 Kindle 的剩余空间，没有独立的系统盘镜像，所以不需要、也不能调整大小。想腾出空间就清理书或应用数据。</div></div>';
+  b.innerHTML=h;donut($('dSto'),pct(ku,kt));return}
+ var img=sN('image'),min=sN('min'),max=sN('max'),tot=sN('total'),used=sN('used'),free=sN('free'),kfree=sN('kindle_free');
+ h+='<div class="grid"><div class="card"><div class="h">'+svg('android')+'Android 存储<span class="sp"></span><button class="btn sm" id="stoRef">'+svg('refresh')+'刷新</button></div>'
+  +'<div class="stat"><svg class="donut" viewBox="0 0 84 84" id="dSto"></svg><div class="legend"><span class="t">已用 '+mb(used)+'</span><span class="sub">可用 '+mb(free)+' · 文件系统 '+mb(tot)+'</span><span class="sub">镜像 '+mb(img)+(sN('alloc')?'（实际占用 '+mb(sN('alloc'))+'）':'')+' · '+esc(j['st.fs']||'')+'</span></div></div></div>'
+  +'<div class="card"><div class="h">'+svg('book')+'Kindle 用户存储</div><div class="stat"><svg class="donut" viewBox="0 0 84 84" id="dSto2"></svg><div class="legend"><span class="t">剩余 '+mb(kfree)+'</span><span class="sub">共 '+mb(kt)+' · 文件系统 '+esc(j['st.kfs']||'—')+'</span><span class="sub">书和 Android 镜像都在这里；缩小镜像会把空间还给 Kindle</span></div></div></div></div>';
+ if(STO_OFF)h+='<div class="note"><b>正在离线调整到 '+mb(STO_OFF.to)+'。</b>Android 会关闭、屏幕上显示进度，完成后自动重新启动（约几分钟）。这个网页会断线，重新开机后在 Kindle 上重新打开传输、输入新的 PIN，这里会显示“上次结果”。</div>';
+ var pre=[min<img?min:0,1024,1536,2048,3072,4096,6144,8192,max],seen={},ps='';
+ pre.forEach(function(v,i){if(!v||v<min||v>max||seen[v]||Math.abs(v-img)<16)return;seen[v]=1;ps+='<button class="btn sm" data-mb="'+v+'">'+(v===min?'最小 ':v===max&&i===pre.length-1?'最大 ':'')+mb(v)+'</button>'});
+ var hint=stoHint(stoMb||'');
+ h+='<div class="card"><div class="h">'+svg('settings')+'调整大小<span class="sp"></span><span class="sub">可调范围 '+mb(min)+' – '+mb(max)+'</span></div>'
+  +'<p class="sub" style="margin-top:0">现在 <b>'+mb(img)+'</b>。'+(j['st.online']==='1'?'扩大时在线完成，Android 不用停；缩小要重启 Android。':'这台机器的镜像不能在线扩大：不管扩大还是缩小都要重启 Android。')+'</p>'
+  +'<div class="presets" id="stoPre">'+(ps||'<span class="sub">没有可选的常用大小</span>')+'</div>'
+  +'<div class="btns" style="margin-top:12px"><input type="number" id="stoMb" min="'+min+'" max="'+max+'" step="64" placeholder="自定义 MB" value="'+esc(stoMb)+'" style="width:140px"'+(stoBusy||STO_OFF?' disabled':'')+'><span class="sub">MB</span><button class="btn pri" id="stoGo"'+(stoBusy||STO_OFF||j['st.busy']==='1'?' disabled':'')+'>调整</button></div>'
+  +'<div class="note'+(hint[0]==='err'?' err':hint[0]==='sub'||hint[0]==='ok'?' info':'')+'" id="stoHint">'+esc(hint[1])+'</div>'
+  +(j['st.busy']==='1'?'<div class="note">宿主正在调整，请稍等再刷新。</div>':'')+'</div>';
+ var auto=j['st.auto']!=='0';
+ h+='<div class="card"><div class="h">'+svg('zap')+'自动扩容</div><div class="set"><span class="lbl">快满时自动扩大<span class="sub">镜像里可用空间不到 200 MB、Kindle 还有地方时，每次扩大 512 MB。能在线就当场做，不能就等下次启动 Android 时做。</span></span><label class="switch"><input type="checkbox" id="stoAuto"'+(auto?' checked':'')+'><span></span></label></div>'
+  +(j['st.pending']?'<div class="note info">下次启动 VeraDroid 时会自动扩大到 '+mb(+j['st.pending'])+'。</div>':'')+'</div>';
+ var last=stoLast();
+ h+='<div class="card"><div class="h">'+svg('clipboard')+'上次结果</div>'+(last?'<p style="margin:0">'+chip(j['st.last.result']==='ok'?'ok':j['st.last.result']==='rolledback'?'warn':'err','',j['st.last.result']==='ok'?'成功':j['st.last.result']==='rolledback'?'已回退':'未完成')+' '+esc(last)+'</p>':'<p class="sub" style="margin:0">还没有调整过。</p>')+'</div>';
+ b.innerHTML=h;donut($('dSto'),pct(used,tot));donut($('dSto2'),pct(kt-kfree,kt))}
+function stoPick(v){stoMb=String(v);var i=$('stoMb');if(i)i.value=stoMb;stoHintUpd()}
+function stoHintUpd(){var h=stoHint(stoMb),e=$('stoHint');if(!e)return;e.className='note'+(h[0]==='err'?' err':h[0]==='sub'||h[0]==='ok'?' info':'');e.textContent=h[1]}
+document.addEventListener('click',function(e){
+ var p=e.target.closest('#stoPre [data-mb]');if(p){stoPick(p.getAttribute('data-mb'));return}
+ if(e.target.closest('#stoRef')){loadStorage();return}
+ if(e.target.closest('#stoGo'))stoApply()});
+document.addEventListener('input',function(e){if(e.target.id==='stoMb'){stoMb=e.target.value;stoHintUpd()}});
+document.addEventListener('change',function(e){if(e.target.id==='stoAuto'){var on=e.target.checked;post('/api/sys/storage/auto',{on:on}).then(function(j){toast(j.ok===false?(j.msg||stoErr(j.error)):on?'已打开自动扩容':'已关闭自动扩容',j.ok===false?'err':'ok');loadStorage()})}});
+function stoApply(){var v=+stoMb,img=sN('image'),min=sN('min'),max=sN('max');
+ if(!(v>0)){toast('先选一个大小，或输入 MB 数','err');return}
+ var h=stoHint(v);if(h[0]==='err'||Math.abs(v-img)<16){toast(h[1],'err');return}
+ var online=v>img&&STO['st.online']==='1';
+ var body=online?'把 Android 存储从 <b>'+mb(img)+'</b> 扩大到 <b>'+mb(v)+'</b>。<br>在线完成，不用重启 Android，几秒到一分钟（FAT 上可能更久）。'
+  :'把 Android 存储从 <b>'+mb(img)+'</b> '+(v>img?'扩大到':'缩小到')+' <b>'+mb(v)+'</b>。<br><br>Android 会<b>关闭</b>，屏幕上显示进度，完成后自动重新启动（约几分钟）。正在运行的应用会被关掉，这个网页也会断线。期间请不要关机或重启 Kindle；电量低时请先充电。书和应用数据不受影响。';
+ confirmBox('调整存储空间？',body,'调整').then(function(ok){if(!ok)return;
+  stoBusy=true;renderStorage();var done=toastWait(online?'正在扩大…（最长十几分钟，请别关页面）':'正在请求调整…');
+  post('/api/sys/storage/resize',{mb:v}).then(function(j){done();stoBusy=false;
+   if(j.ok&&j.mode==='offline'){STO_OFF={to:+j.to||v,prev:(STO&&STO['st.last.time'])||''};toast('Android 马上关闭做离线调整，完成后自动重启','ok',8000);renderStorage();every('stoOff',6000,loadStorage);return}
+   if(j.ok){toast('已调整为 '+mb(+j.image||v),'ok');stoMb='';loadStorage();return}
+   toast('没有调整：'+(j.msg||stoErr(j.error)+(j.error==='small'&&j.min?'（至少 '+mb(+j.min)+'）':j.error==='toobig'&&j.max?'（最多 '+mb(+j.max)+'）':'')),'err',8000);loadStorage()
+  }).catch(function(){done();stoBusy=false;renderStorage()})})}
+
+/* =================================================================== start */
+fillIcons();buildNav();applyTheme();try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',applyTheme)}catch(e){}
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&LOGGED&&cur==='ov')loadOv()});
+fetch('/api/state',{credentials:'same-origin'}).then(function(r){if(r.status==401){sessionExpired();return}init()}).catch(function(){sessionExpired();$('lmsg').textContent='连不上 Kindle：传输是不是关了？'});
+</script>
+</body>
+</html>

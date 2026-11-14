@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只用来在模拟器上验证方块风格首页的 AppWidgetHost：一个最小的小部件提供者。不随系统发布。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.veradroid.testwidget" android:versionCode="1" android:versionName="1">
+    <uses-sdk android:minSdkVersion="25" android:targetSdkVersion="25" />
+    <application android:label="测试小部件">
+        <receiver android:name=".TestWidget" android:label="测试小部件（时间）">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/test_widget" />
+        </receiver>
+    </application>
+</manifest>

@@ -1,0 +1,11 @@
+# COMMENT + SYNTH. Only ABS=2e18000 0 and KEY=0 come from the comment in tests/bitmask-test.sh ("5.19.5 PW6 ... pt_mt");
+# that provenance is NOT verified. I:/S:/H: are SYNTH placeholders; no PROP line because the comment gives none.
+I: Bus=0000 Vendor=0000 Product=0000 Version=0000
+N: Name="pt_mt"
+P: Phys=
+S: Sysfs=/devices/platform/SYNTH/input/input1
+U: Uniq=
+H: Handlers=event1 
+B: EV=b
+B: KEY=0
+B: ABS=2e18000 0

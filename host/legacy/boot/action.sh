@@ -1,0 +1,130 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# 手势动作：由 veradroid-input 调用。 用法：sh action.sh <名字> [参数]
+# 名字：clear（整屏刷新）invert（反色）light + / -（前光）warmth + / -（色温）panel（下拉面板）tl tr bl br（四角长按）poke（有人在用，别让 Kindle 睡）
+#       hint back（veradroid-input 自己发了返回键，这里只画提示）
+# 四角长按（G_TL/G_TR/G_BL/G_BR；左下角默认 kindle，其余 none）、双指轻点（G_TWO_TAP_ACT，默认 clear）、双指长按（G_TWO_LONG_ACT，默认 invert）能绑的动作
+# （白名单，见 run_action；docs/host-settings.md 有完整列表）：
+#   none back home panel switch kindle clear invert stop                       （原有，名字不变）
+#   frontlight lighton lightoff  前光开关 / 开 / 关      sleep  立即休眠（屏保）     restart  重启 Android
+#   screenshot  截图（存到 Android 的 Screenshots）      wifi  Wi-Fi 开关            refresh = clear，return = kindle（别名）
+#   app.<包名>  打开指定应用（例如 app.com.tencent.weread.eink）
+VD=${VD:-/mnt/base-us/veradroid}
+W=/dev/shm/veradroid
+X=$W/kfb
+SYS=/mnt/base-us/system/veradroid
+# 日志在内存盘里：不记 poke（每次触摸一条），超过 64 KB 就截掉前一半
+AL=/dev/shm/veradroid-actions.log
+if [ "$1" != poke ]; then
+    [ "$(wc -c < $AL 2>/dev/null || echo 0)" -gt 65536 ] && { tail -c 32768 $AL > $AL.tmp 2>/dev/null && mv -f $AL.tmp $AL; }
+    echo "[$(date +%T)] action $1 $2" >> $AL
+fi
+[ -f $SYS/settings.conf ] && . $SYS/settings.conf
+# 给宿主的命令（FIFO，宿主没在听也不会卡住这个脚本）
+send() { kill -0 "$(cat $W/cmd.pid 2>/dev/null)" 2>/dev/null || return 0; ( echo "$1" > $X/ctl/cmd ) & }   # 没人监听就不发，否则每个手势留下一个永远阻塞的进程
+# ---- 手势提示（docs/gesture-hint.md）：宿主自己让显示桥画一个“方块”小牌子（图标 + 粗体中文 + 英文小字），Android 卡住也看得到 ----
+# GESTURE_HINT=all（默认：每个手势都提示）| stuck（只在 Android 没有响应时提示）| off
+# POS = 牌子贴着哪条边 / 哪个角（t b l r tl tr bl br，逻辑画面的方向，旋转由显示桥处理），由下面的分派设置
+POS=t
+badge() {   # badge <毫秒> <位置> <图标> <英文小字>|<中文>[|<第二行>]
+    [ -p $X/epd.fifo ] && kill -0 "$(cat $W/epd.pid 2>/dev/null)" 2>/dev/null || return 0
+    echo "BADGE $1 $2 $3 $4" > $X/epd.fifo
+}
+hint() { [ "${GESTURE_HINT:-all}" = all ] && badge 800 "$POS" "$1" "$2"; return 0; }   # hint <图标> <文字>
+# 卡住时告诉用户怎么回 Kindle：说真的绑了“回 Kindle”的宿主手势（默认是左下角长按）
+escape_text() {
+    for c in TL:左上 TR:右上 BL:左下 BR:右下; do
+        eval "a=\${G_${c%%:*}:-none}"; [ "$c" = BL:左下 ] && a=${G_BL:-kindle}   # 左下角默认回到 Kindle（settings.sh）
+        case "$a" in kindle|return) echo "长按${c#*:}角回到 Kindle"; return ;; esac
+    done
+    case "${G_TWO_LONG:-1}:${G_TWO_LONG_ACT:-invert}" in 1:kindle|1:return) echo "两指长按回到 Kindle"; return ;; esac
+    case "${G_TWO_TAP:-1}:${G_TWO_TAP_ACT:-clear}" in 1:kindle|1:return) echo "两指轻点回到 Kindle"; return ;; esac
+    echo "Android 可能卡住了，请稍候"
+}
+# 交给桌面（VeraHome 的 HostService）处理的手势：它收到就把文件删掉。2 秒后文件还在 = Android 没接，换成“没有响应”，留 3 秒
+watch_ctl() {   # watch_ctl <ctl 里的文件名>
+    [ "${GESTURE_HINT:-all}" = off ] && return 0
+    ( sleep 2; [ -e $X/ctl/$1 ] && { echo "[$(date +%T)] no response: $1" >> $AL; badge 3000 "$POS" stuck "NO RESPONSE|没有响应|$(escape_text)"; } ) </dev/null >/dev/null 2>&1 &
+}
+# 动作名 -> 做什么
+run_action() {
+    case "$1" in
+        ''|none) ;;
+        back|home|panel|switch)
+            case "$1" in back) hint back "BACK|返回" ;; home) hint home "HOME|桌面" ;; panel) hint panel "PANEL|面板" ;; switch) hint switch "SWITCH APPS|切换" ;; esac
+            touch $X/ctl/act.$1; watch_ctl act.$1 ;;
+        kindle|return) hint kindle "KINDLE|回 Kindle"; send exit ;;
+        clear|refresh) hint clear "REFRESH|清残影"; [ -p $X/epd.fifo ] && kill -0 "$(cat $W/epd.pid 2>/dev/null)" 2>/dev/null && echo FULL > $X/epd.fifo ;;
+        invert) hint invert "INVERT|反色"; send invert ;;
+        stop) hint power "STOP|关闭 Android"; send stop ;;
+        restart) hint restart "RESTART|重启 Android"; send restart ;;
+        screenshot) hint camera "SCREENSHOT|截图"; send screenshot ;;
+        frontlight|lighton|lightoff)
+            frontlight "$1"
+            [ "$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)" = 0 ] && hint light "LIGHT|前光 关" || hint light "LIGHT|前光 开" ;;
+        sleep)
+            # 立即休眠：和按一下电源键一样交给 powerd（它进屏保时 sleep_watch 冻结 Android、画屏保）。
+            # powerButton 是 powerd 自己的“模拟电源键”属性；没有它的老固件退回 powerd_test -p
+            lipc-set-prop -i com.lab126.powerd powerButton 1 2>/dev/null || powerd_test -p >/dev/null 2>&1 ;;
+        wifi)
+            v=$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)
+            if [ "$v" = 1 ]; then hint wifi "WI-FI|Wi-Fi 关"; send "wifi 0"; else hint wifi "WI-FI|Wi-Fi 开"; send "wifi 1"; fi ;;
+        app.*)
+            # 打开指定应用：和 veradroid.sh 打开应用同一个通道（桌面的 HostService 监听 ctl/app）。包名只许普通字符
+            pkg=${1#app.}
+            case "$pkg" in ''|*[!A-Za-z0-9._]*) ;; *) hint app "OPEN APP|打开应用"; echo "$pkg" > $X/ctl/app.tmp && mv -f $X/ctl/app.tmp $X/ctl/app; watch_ctl app ;; esac ;;
+    esac
+}
+# 前光：frontlight = 开关（关之前记下亮度，开时恢复；记不到就开到一半），lighton / lightoff
+frontlight() {
+    p=com.lab126.powerd
+    cur=$(lipc-get-prop $p flIntensity 2>/dev/null); case "$cur" in ''|*[!0-9]*) return 0 ;; esac
+    case "$1" in
+        lightoff) want=off ;;
+        lighton) want=on ;;
+        *) [ "$cur" -gt 0 ] && want=off || want=on ;;
+    esac
+    if [ $want = off ]; then
+        [ "$cur" -gt 0 ] && echo "$cur" > $W/fl.saved
+        lipc-set-prop -i $p flIntensity 0
+        # PW2 / Voyage / PW3（Oasis 1 同代）：powerd 的 0 档不是关灯，最低一档还亮（KOReader：canTurnFrontlightOff = false）。
+        # 机型文件给了 FL_LIPC0_DIM=1 时再把 sysfs 亮度写 0（memory.sh 开机时写 $W/fl.conf）
+        [ -f $W/fl.conf ] && . $W/fl.conf
+        if [ "${FL_LIPC0_DIM:-0}" = 1 ] && [ -n "$FL_COLD" ]; then
+            case "$FL_COLD" in *[!A-Za-z0-9_.-]*) ;; *) echo 0 > /sys/class/backlight/$FL_COLD/brightness 2>/dev/null ;; esac
+        fi
+    else
+        [ "$cur" -gt 0 ] && return 0
+        n=$(cat $W/fl.saved 2>/dev/null)
+        case "$n" in ''|*[!0-9]*|0) max=$(lipc-get-prop $p flMaxIntensity 2>/dev/null); n=$(( ${max:-24} / 2 )) ;; esac
+        lipc-set-prop -i $p flIntensity "$n"
+    fi
+}
+step() {   # $1 = 属性 $2 = + / -  按 2 档调，范围 0..最大
+    p=com.lab126.powerd
+    cur=$(lipc-get-prop $p $1 2>/dev/null); max=$(lipc-get-prop $p flMaxIntensity 2>/dev/null)
+    [ -n "$cur" ] && [ -n "$max" ] || return
+    [ "$2" = "+" ] && n=$((cur + 2)) || n=$((cur - 2))
+    [ $n -lt 0 ] && n=0; [ $n -gt $max ] && n=$max
+    lipc-set-prop -i $p $1 $n
+    if [ "$1" = flIntensity ] && [ $n = 0 ] && [ -f $W/fl.conf ]; then
+        . $W/fl.conf
+        [ "${FL_LIPC0_DIM:-0}" = 1 ] && [ -n "$FL_COLD" ] && case "$FL_COLD" in *[!A-Za-z0-9_.-]*) ;; *) echo 0 > /sys/class/backlight/$FL_COLD/brightness 2>/dev/null ;; esac
+    fi
+    [ "$max" -gt 0 ] 2>/dev/null || return 0
+    if [ $1 = flIntensity ]; then hint light "LIGHT|亮度 $((n * 100 / max))%"; else hint warm "WARMTH|暖光 $((n * 100 / max))%"; fi
+}
+case "$1" in
+    clear)  POS=t; run_action "${G_TWO_TAP_ACT:-clear}" ;;      # 双指轻点（veradroid-input 固定发 clear）
+    invert) POS=t; run_action "${G_TWO_LONG_ACT:-invert}" ;;    # 双指长按 2 秒（固定发 invert）
+    light)  POS=l; step flIntensity "$2" ;;                     # 左半屏上下滑
+    warmth) POS=r; step currentAmberLevel "$2" ;;               # 右半屏上下滑
+    panel)  POS=t; run_action panel ;;
+    tl) POS=tl; run_action "${G_TL:-none}" ;;
+    tr) POS=tr; run_action "${G_TR:-none}" ;;
+    bl) POS=bl; run_action "${G_BL:-kindle}" ;;                 # 默认回到 Kindle（settings.sh）
+    br) POS=br; run_action "${G_BR:-none}" ;;
+    hint)   case "$2" in back) POS=b; hint back "BACK|返回" ;; esac ;;   # 底边上滑 / 双指左右滑：返回键已经由 veradroid-input 发出
+    poke)   touch $W/lastinput 2>/dev/null   # 最近一次触摸（后台预编译据此判断“有人在用”，compile.sh）
+            lipc-set-prop -i com.lab126.powerd touchScreenSaverTimeout 1 2>/dev/null ;;
+esac

@@ -1,0 +1,253 @@
+# 容器：unshare 出 mount / UTS / IPC / net / PID 命名空间，在新命名空间里把 $R 变成根（pivot_root）并执行 /init。
+# net 命名空间里默认只有 lo（网络由 slirp4netns 另行接入，尚未实现）。
+
+# 触摸屏（fts_ts）、翻页键（kindle-input-pt）的事件节点；名字认不出来就按多点触摸的 ABS 位图找
+input_find() {   # $1 = 设备名（正则）
+    awk -v pat="$1" '/^N: Name=/ { m = ($0 ~ pat) }
+        m && /^H: Handlers=/ { for (i = 1; i <= NF; i++) if (match($i, /event[0-9]+$/)) { print "/dev/input/" substr($i, RSTART); exit } }' /proc/bus/input/devices
+}
+touch_setup() {
+    KFB_KEYS=$(input_find '"kindle-input-pt"')
+    [ -n "$KFB_KEYS" ] && chmod 666 $KFB_KEYS
+    export KFB_KEYS
+    t "pt keys=${KFB_KEYS:-none}"
+}
+
+display_prepare() {
+    rm -rf $X; mkdir -p $X/ctl
+    if [ -x "$FBINK" ]; then
+        eval "$($FBINK -e 2>/dev/null)"
+    else
+        # No FBInk (some jailbreak packages omit it): read the real framebuffer.
+        # PW5 reports virtual_size=1248 (stride) while visible modes=1236.
+        # Use the hardware stride width: FBInk/fb0 write in 1248-byte rows.
+        v=$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)
+        vw=${v%%,*}; vh=${v#*,}
+        m=$(sed -n 's/.*U:\([0-9][0-9]*\)x\([0-9][0-9]*\)p.*/\1 \2/p' /sys/class/graphics/fb0/modes 2>/dev/null | head -1)
+        mw=; mh=; [ -n "$m" ] && { set -- $m; mw=$1; mh=$2; }
+        viewWidth=${vw:-$mw}
+        viewHeight=${mh:-$vh}
+        deviceName=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0')
+        t "display: no fbink, fallback ${viewWidth:-1272}x${viewHeight:-1696}"
+    fi
+    echo "${viewWidth:-1272} ${viewHeight:-1696} ${deviceName:-PaperWhite 6}" > $X/info
+    # Hardware model detected by bootstrap; Android's ro.product.model is generic.
+    m=$(cat $SYS/model 2>/dev/null | tr -d '\r\n')
+    [ -n "$m" ] && echo "$m" > $X/model
+    chmod -R 777 $X
+}
+# 显示桥接：系统往共享缓冲 $X/fb 画、往 $X/epd.fifo 报“第几页”，桥接程序比较差异后局部刷新墨水屏
+display_start() {
+    [ -x "$VD/bin/veradroid-epd" ] || { t "display: veradroid-epd missing"; return 0; }
+    $VD/bin/veradroid-epd run $X/fb $X/epd.fifo $X/ctl --w ${viewWidth:-1272} --h ${viewHeight:-1696} --contrast ${KFB_CONTRAST:-1.3} --dither ${KFB_DITHER:-3} --flash ${KFB_FLASH:-0} --invert ${KFB_INVERT:-0} --mode ${KFB_MODE:-0} --settle ${KFB_SETTLE:-120} --anim-mode ${KFB_ANIM_MODE:-1} --anim-dir ${KFB_ANIM_DIR:-2} --anim-steps ${KFB_ANIM_STEPS:-12} --anim-min ${KFB_ANIM_MIN:-60} >$W/epd.log 2>&1 &
+    echo $! > $W/epd.pid
+    usleep 500000
+    t "display: bridge pid $(cat $W/epd.pid)"
+}
+display_stop() { alive $W/epd.pid && kill "$(cat $W/epd.pid)" 2>/dev/null; rm -f $W/epd.pid; }
+
+# 宿主命名空间（chroot）模式：3.0 内核（PW2 / PW3 / Oasis 1/2 / Voyage / 入门款 2014、2016）没有任何命名空间。
+# Android 直接 chroot 进 $R，和 Kindle 共用进程、挂载和网络。保护 Kindle 的手段：
+#  - /dev/vdchroot 标记：系统里的 android_reboot 看到它就不调用 reboot() / remount_ro（small-patches.py）；
+#  - /proc/sys 整个只读（包括 net：这里的 net 就是 Kindle 的）；没有 slirp，Android 暂时没有网络；
+#  - 容器的进程按“根目录是 $R”识别（冻结 / 停止都用它），挂载在 stop.sh 里由深到浅逐个卸掉。
+hostns() { [ ! -e /proc/self/ns/pid ]; }
+chroot_pids() { # 根目录是 $R 的进程
+    for d in /proc/[0-9]*; do
+        [ "$(readlink $d/root 2>/dev/null)" = "$R" ] && echo ${d#/proc/}
+    done
+}
+container_start() {
+    if hostns; then
+        freezer_setup
+        setsid sh $VD/boot/veradroid.sh --in-chroot "$KFB_TOUCH" "$KFB_KEYS_VIRT" "$KFB_KEYS" </dev/null >>$LOG 2>&1 &
+        P=$!                                      # exec 链（sh -> chroot -> /init）保持同一个 PID
+        echo $P > $W/pid
+        echo chroot > $W/mode
+        t "container started (host namespaces, chroot): init=$P"
+        return 0
+    fi
+    # 本进程先进 freezer 组再 fork，容器的进程都在组里；fork 完回到根组
+    freezer_setup && freezer_enter
+    unshare -m -u -i -n -p -f -- sh $VD/boot/veradroid.sh --in-ns "$KFB_TOUCH" "$KFB_KEYS_VIRT" "$KFB_KEYS" </dev/null >>$LOG 2>&1 &
+    UPID=$!
+    [ -d $FZ ] && freezer_leave
+    P=
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        read -r P _ < /proc/$UPID/task/$UPID/children 2>/dev/null
+        [ -n "$P" ] && break
+        usleep 200000
+    done
+    [ -n "$P" ] || { t "container did not start"; return 1; }
+    echo $P > $W/pid
+    echo $UPID > $W/unshare.pid
+    t "container started: unshare=$UPID init=$P"
+}
+
+
+# 确保容器根下的 /dev/binder 是可打开的字符设备。init 偶发把 tmpfs 盖在节点上，
+# 或 bind 失败时只剩普通文件 → 早期服务 SIGABRT（Binder driver could not be opened）。
+
+binder_repair() {
+    # Prefer repairing inside the live container mount namespace. Doing
+    # mount --bind on the host path $R/dev/binder leaves a nested mount under
+    # $SYS that stop/storage_umount must clear, or Kindle userstore unmount fails.
+    p=$(cat $W/pid 2>/dev/null)
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null && [ -d /proc/$p/ns/mnt ]; then
+        nsenter -t "$p" -m -- /bin/sh -c '
+            target=/dev/binder
+            if [ -d "$target" ]; then umount "$target" 2>/dev/null; rmdir "$target" 2>/dev/null; fi
+            if [ -c "$target" ] && [ -e /dev/vndbinder ]; then chmod 666 "$target" 2>/dev/null; exit 0; fi
+            # Inside the container ns, /dev/vndbinder is the host bind (or missing).
+            if [ -e /dev/vndbinder ]; then
+                chmod 666 /dev/vndbinder 2>/dev/null
+                rm -f "$target" 2>/dev/null
+                touch "$target"
+                mount --bind /dev/vndbinder "$target" || exit 1
+                chmod 666 "$target" 2>/dev/null
+                [ -c "$target" ] || exit 1
+                exit 0
+            fi
+            exit 1
+        ' && return 0
+        # fall through to host-path repair if nsenter path failed
+    fi
+    target=$R/dev/binder
+    mkdir -p $R/dev
+    if [ -d "$target" ]; then
+        umount "$target" 2>/dev/null || true
+        rmdir "$target" 2>/dev/null || true
+    fi
+    if [ -c "$target" ] && [ -e /dev/vndbinder ]; then
+        chmod 666 "$target" 2>/dev/null || true
+        return 0
+    fi
+    rm -f "$target" 2>/dev/null || true
+    if [ -e /dev/vndbinder ]; then
+        chmod 666 /dev/vndbinder
+        touch "$target"
+        mount --bind /dev/vndbinder "$target" || return 1
+        chmod 666 "$target" 2>/dev/null || true
+        [ -c "$target" ] || return 1
+        return 0
+    fi
+    return 1
+}
+
+# 在新命名空间里执行（由 veradroid.sh --in-ns 调用）
+run_in_ns() {
+    TOUCH=$1 KEYS=$2 PTKEYS=$3
+    # HOSTNS=1：由 veradroid.sh --in-chroot 调用（没有命名空间，挂载直接做在宿主上，stop.sh 负责卸掉）
+    [ -z "$HOSTNS" ] && mount --make-rprivate / 2>/dev/null
+    mount --bind $R $R || exit 1                       # pivot_root 要求新根是挂载点
+    DEMO=; [ -f $R/.demo ] && DEMO=1
+    [ -z "$DEMO" ] && mount -o remount,ro,bind $R
+    mount -t tmpfs -o nosuid,mode=755 tmpfs $R/dev || exit 1
+    for n in null zero full tty random urandom kmsg fuse; do
+        [ -e /dev/$n ] && touch $R/dev/$n && mount --bind /dev/$n $R/dev/$n
+    done
+    # Kindle 自己用 /dev/binder，系统借没人用的 /dev/vndbinder。
+    # 没有可用 binder 时 Android 会在开机前几秒连环 SIGABRT（Abort: Binder driver could not be opened）
+    # ——用户日志 PW5/KT5 低内存机；必须保证容器里真有可打开的 /dev/binder，否则直接失败。
+    binder_ok=
+    if [ -e /dev/vndbinder ]; then
+        chmod 666 /dev/vndbinder
+        touch $R/dev/binder
+        if mount --bind /dev/vndbinder $R/dev/binder; then binder_ok=1; fi
+    fi
+    # binderfs 回退（部分 5.x 内核）：单独实例，不跟 Kindle 的 /dev/binder 抢。
+    if [ -z "$binder_ok" ] && grep -qw binder /proc/filesystems 2>/dev/null; then
+        mkdir -p $R/dev/binderfs
+        if mount -t binder binder $R/dev/binderfs 2>/dev/null; then
+            # binderfs 默认节点名 binder、hwbinder、vndbinder
+            if [ -e $R/dev/binderfs/binder ]; then
+                ln -sf binderfs/binder $R/dev/binder
+                binder_ok=1
+            fi
+        fi
+    fi
+    if [ -z "$binder_ok" ] || [ ! -e $R/dev/binder ]; then
+        echo "veradroid: no binder device for Android (need /dev/vndbinder or binderfs)" >&2
+        exit 1
+    fi
+    chmod 666 $R/dev/binder 2>/dev/null || true
+    # Final: must be a char device, not a plain file/dir covered by tmpfs.
+    if [ ! -c $R/dev/binder ]; then
+        binder_repair || { echo "veradroid: binder node is not a char device" >&2; exit 1; }
+    fi
+    [ -z "$HOSTNS" ] && [ -e /dev/net/tun ] && { touch $R/dev/tun; mount --bind /dev/net/tun $R/dev/tun; }
+    [ -n "$HOSTNS" ] && touch $R/dev/vdchroot      # 系统里的 android_reboot 看到它就不碰 Kindle（见上面 hostns 的说明）
+    mkdir -p $R/dev/socket $R/dev/input $R/dev/kfb $R/dev/pts $R/dev/__properties__
+    # 内核 < 3.17 没有 memfd：ashmem 退回到这块 tmpfs 上的已删除文件（libcutils/ashmem-dev.c、vdshim.c）
+    mkdir -p $R/dev/vdshm && chmod 1777 $R/dev/vdshm
+    [ -n "$TOUCH" ] && { touch $R/dev/input/event0; mount --bind "$TOUCH" $R/dev/input/event0; }
+    [ -n "$KEYS" ]  && { touch $R/dev/input/event1; mount --bind "$KEYS" $R/dev/input/event1; }
+    [ -n "$PTKEYS" ] && { touch $R/dev/input/event2; mount --bind "$PTKEYS" $R/dev/input/event2; }   # Kindle 的翻页键 kindle-input-pt
+    [ -n "$KFB_BTKEYS" ] && [ -c "$KFB_BTKEYS" ] && { touch $R/dev/input/event3; mount --bind "$KFB_BTKEYS" $R/dev/input/event3; }   # 蓝牙翻页器桥 veradroid-btkeys（bt.sh）
+    mount --bind $X $R/dev/kfb
+    # 墨水屏：系统里的显示后端直接写 Kindle 的帧缓冲、发刷新
+    [ -e /dev/fb0 ] && { touch $R/dev/epd $R/dev/fb0; mount --bind /dev/fb0 $R/dev/epd; mount --bind /dev/fb0 $R/dev/fb0; }   # FBInk 认 /dev/fb0，系统里的显示后端用 /dev/epd
+    mount -t devpts -o mode=620,ptmxmode=666,newinstance devpts $R/dev/pts && ln -s pts/ptmx $R/dev/ptmx
+
+    mount -t proc proc $R/proc || exit 1
+    [ -f $W/cmdline ] && mount --bind $W/cmdline $R/proc/cmdline
+    # /proc/sys 是整个内核的，不是命名空间的：Android 的 init 会往里写一大批参数（调度、内存、pid_max……），不能让它改 Kindle。
+    # 整个只读；net 是 net 命名空间自己的，放开；init 开机必须写 mmap 随机化位数（写不了它就停），只放开这一个。
+    if [ -z "$DEMO" ]; then
+        [ -z "$HOSTNS" ] && mount --bind $R/proc/sys/net $R/proc/sys/net    # chroot 模式下 net 就是 Kindle 的：一起只读
+        mount --rbind $R/proc/sys $R/proc/sys && mount -o remount,ro,bind $R/proc/sys
+        f=vm/mmap_rnd_compat_bits; [ -e /proc/sys/$f ] || f=vm/mmap_rnd_bits
+        # 4.5 以前的内核（PW4 / Oasis 3 / 3.0 机型）没有这个设置；系统的 init 已打补丁，文件不存在时跳过
+        if [ -e /proc/sys/$f ]; then
+            mount --bind /proc/sys/$f $R/proc/sys/$f && mount -o remount,rw,bind $R/proc/sys/$f || { echo "cannot open $f"; exit 1; }
+        fi
+        for f in sysrq-trigger cpu/alignment; do
+            [ -e "$R/proc/$f" ] && mount --bind "$R/proc/$f" "$R/proc/$f" && mount -o remount,ro,bind "$R/proc/$f"
+        done
+    fi
+    mount -t sysfs -o ro sysfs $R/sys || exit 1
+    # 内核编进了 SELinux 但没加载策略：系统绝不能碰宿主的 SELinux，盖一层只读空目录
+    for d in sys/fs/selinux sys/fs/bpf sys/fs/pstore sys/kernel/tracing sys/kernel/debug; do
+        [ -d $R/$d ] && mount -t tmpfs -o ro,size=4k tmpfs $R/$d
+    done
+
+    if [ -n "$DEMO" ]; then
+        # 演示根：借宿主的 busybox、库、FBInk 和字体（只读）
+        for d in bin lib usr/lib; do mkdir -p $R/$d; mount --bind /$d $R/$d; mount -o remount,ro,bind $R/$d; done
+        mkdir -p $R/opt $R/fonts $R/tmp
+        touch $R/opt/fbink; mount --bind "$FBINK" $R/opt/fbink
+        mount --bind /usr/java/lib/fonts $R/fonts
+    else
+        mkdir -p $SYS/data && mount --bind $SYS/data $R/data && mount -o remount,bind,nosuid,nodev,noatime $R/data
+        mkdir -p $R/data/cache                       # 根里的 /cache 是指向 /data/cache 的符号链接
+        # 存储：Android 里的 /sdcard 和 /storage/emulated/0 都指向 data/media/0（没有 sdcard 守护进程，直接绑）；
+        # Kindle 自己的书库（documents）也绑进来，传书网页上传到“Kindle 书库”就直接出现在 Kindle 里。
+        mkdir -p $R/data/media/0/Books $R/data/media/0/KindleLibrary $R/data/local/tmp
+        chmod 777 $R/data/media $R/data/media/0 $R/data/media/0/Books $R/data/media/0/KindleLibrary $R/data/local/tmp 2>/dev/null
+        [ -d /mnt/base-us/documents ] && mount --bind /mnt/base-us/documents $R/data/media/0/KindleLibrary
+        # Kindle 自带字体（宋体/黑体/Bookerly 等）只读绑进 Android，阅读器可以直接选，不复制、不打包
+        mkdir -p $R/data/media/0/KindleFonts $R/data/media/0/Fonts
+        [ -d /usr/java/lib/fonts ] && mount --bind /usr/java/lib/fonts $R/data/media/0/KindleFonts
+        [ -d $VD/fonts ] && mount --bind $VD/fonts $R/data/media/0/Fonts
+        chmod 777 $R/data/media/0/Fonts 2>/dev/null
+        # /sdcard -> /storage/self/primary -> /storage/emulated/0. vold/FUSE
+        # replaces /storage/emulated and filters by sdcard_rw group; KOReader
+        # then gets EACCES on books. Drop that FUSE view and bind the ext4
+        # media directory directly, so normal app permissions apply.
+        umount -l $R/storage/emulated 2>/dev/null
+        mkdir -p $R/storage/emulated/0
+        mount --bind $R/data/media/0 $R/storage/emulated/0
+    fi
+    # 新根是只读的，put_old 必须是根里已有的目录：Android 的根里有个空的 /mnt，旧根临时挂在那儿，由 pivot_init（静态）卸掉。
+    # Android 的 init 第一阶段会加载 SELinux 策略（对宿主内核的操作！）并重新挂 /dev。必须直接走第二阶段：
+    # 它不加载策略，用我们准备好的 /dev。演示系统的 init 是普通脚本。
+    if [ -n "$DEMO" ]; then
+        mkdir -p $R/old
+        cd $R && pivot_root . old && cd / && umount -l /old && rmdir /old 2>/dev/null
+        exec /init
+    fi
+    if [ -n "$HOSTNS" ]; then
+        cd $R && exec chroot $R /init --second-stage
+    fi
+    exec $VD/bin/pivot_init $R mnt /init --second-stage
+}

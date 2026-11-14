@@ -1,0 +1,24 @@
+# Cross compiler for the host programs on old Kindles (3.0.35 kernel: PW2 / PW3 / Oasis 1/2 / Voyage / basic 2014-2016).
+# Ubuntu 16.04's glibc (vdcross) needs kernel >= 3.2: its static binaries crash at startup on 3.0.35
+# (seen on the PW3 emulator). Ubuntu 14.04's glibc 2.19 is built for kernel >= 2.6.32, but its gcc 4.8 is too
+# old for FBInk (__auto_type). So: gcc 5 from 16.04, C library (headers, crt, libc.a) from 14.04.
+FROM ubuntu:14.04 AS oldlibc
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends libc6-dev-armhf-cross linux-libc-dev-armhf-cross \
+ && rm -rf /var/lib/apt/lists/*
+
+FROM ubuntu:16.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf libc6-dev-armhf-cross make file \
+ && rm -rf /var/lib/apt/lists/*
+RUN rm -rf /usr/arm-linux-gnueabihf/include /usr/arm-linux-gnueabihf/lib
+COPY --from=oldlibc /usr/arm-linux-gnueabihf/include /usr/arm-linux-gnueabihf/include
+COPY --from=oldlibc /usr/arm-linux-gnueabihf/lib /usr/arm-linux-gnueabihf/lib
+
+# Host programs for the legacy bundle (run in this image, --cpus=4 --memory=4g):
+#   veradroid-epd: arm-linux-gnueabihf-gcc -O2 -static -I FBInk display/epd.c FBInk/Release/libfbink.a -lm
+#   fbink (CLI, splash screen): apply tools/cross/fbink-state-dump.patch to FBInk (fbink -e segfaults without it on
+#     non-Kobo builds: one argument short in fbink_state_dump), then
+#     make kindle CROSS_TC=arm-linux-gnueabihf   (the final link fails on libgcc_s; link it statically by hand:)
+#     arm-linux-gnueabihf-gcc -static -O2 -o fbink Release/fbink_cmd.o Release/libfbink.a -lm
+#   The bundle's own fbink is armhf + dynamic: PW2/PW3 firmware is armel, it does not start there ("not found").

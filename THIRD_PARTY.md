@@ -1,0 +1,119 @@
+# 第三方组件
+
+本文列出 VeraDroid 的安装包和本仓库里带有、链接或分发的第三方组件，以及它们的许可和源码获取方式。
+VeraDroid 自己的代码是 GPL-3.0-or-later（见 `LICENSE`）。
+本仓库只含源码：预编译二进制、APK、字体和系统镜像不入库，下表“在哪里”一栏指安装包里的位置（安装包版本：PW6 0.92 / k49 1.00 / legacy 0.8.5）。
+
+标注“未确认”的条目是维护者还没核实的信息，不要当作结论。发现错误请提 issue。
+
+## 一览
+
+| 组件 | 版本 | 许可 | 在哪里 | 形式 |
+|---|---|---|---|---|
+| FBInk | v1.25.0-543-g886f25f + 本地补丁 | GPL-3.0-or-later | `bin/fbink`；静态链接进 `veradroid-epd` | 静态二进制 |
+| slirp4netns | v1.3.7 | GPL-2.0-or-later | `bin/slirp4netns`（来源见 `third_party/README.md`） | 官方静态二进制，未修改 |
+| GNU C 库（glibc） | 2.23（Ubuntu 16.04）/ 2.19（Ubuntu 14.04） | LGPL-2.1-or-later | 静态链接进全部自编宿主程序 | 静态链接 |
+| GCC 运行库（libgcc） | GCC 5.4 / 4.8 | GPL-3.0-or-later + GCC 运行库例外 | 同上 | 静态链接 |
+| AOSP | android-7.1.1_r61 | 主要是 Apache-2.0，另有多种许可 | `rootfs.tar.gz`、`libandroid_runtime.so` | 编译产物（带本项目补丁） |
+| Mozilla 根证书 | 构建时的版本 | MPL-2.0 | 补进 rootfs 的 `/system/etc/security/cacerts` | 数据文件 |
+| 霞鹜文楷 LXGW WenKai | 1.510 | SIL OFL 1.1 | `fonts/LXGWWenKai-Regular.ttf`（构建时从上游下载） | 字体文件，未修改 |
+| pinyin-data、phrase-pinyin-data、jieba 词频 | 构建时的版本 | MIT | `android/packages/VeraIME/assets/pinyin.tsv` | 提取后的数据 |
+| Dropbear SSH | 2026.92（KOReader 构建） | MIT 式（含少量其他宽松许可） | 单独发布的 SSH 调试包 | 预编译二进制 |
+| e2fsprogs（e2fsck、resize2fs） | 1.47.1 | GPL-2.0-only（库部分 LGPL-2.1 / BSD / MIT） | `bin/e2fsck`、`bin/resize2fs`（调整系统镜像大小） | 官方源码 tarball 的静态编译，未修改；构建脚本 `tools/cross/build-e2fs.sh` |
+| Linux binder 驱动及其头文件 | AOSP `kernel/common` `deprecated/android-3.0`；NXP `rel_imx_3.0.35_4.1.0_ga_caf` | GPL-2.0-only | 老机型的外挂内核模块（由 `tools/kmod/` 构建，未入库） | 内核模块 |
+
+不随安装包分发、只在开发时使用的：eink-emulator（QEMU，测试用）、Docker 构建镜像里的 Ubuntu 软件包（以各自的许可为准）。
+
+**busybox**：本项目不带 busybox。宿主脚本使用 Kindle 固件自带的 busybox / 系统工具；Android 一侧是 AOSP 自带的 toybox 和 mksh。
+
+## 详细说明
+
+### FBInk（GPL-3.0-or-later）
+
+- 上游：https://github.com/NiLuJe/FBInk ，提交 `886f25f`（`v1.25.0-543-g886f25f`）。
+- 本地补丁：`patches/fbink-state-dump-args.patch`。上游 `fbink_state_dump()` 在非 Kobo 构建上少传一个参数，`fbink -e` 在 Kindle 上会段错误；补丁补上这个参数。
+- 用法：独立的 `fbink` 静态二进制（开机画面、状态文字），以及 `display/epd.c` 静态链接 `libfbink.a`（编译时 `MINIMAL=1 IMAGE=1 DRAW=1`）。
+  因此 `veradroid-epd` 整体按 GPL-3.0-or-later 分发。
+- FBInk 源码里自带了一些第三方代码（图像解码、字体等），许可见 FBInk 仓库里的说明文件；本项目没有逐个核对，属于**未确认**。
+- 对应源码：上游提交 + 本仓库的补丁 + `display/epd.c`。
+
+### slirp4netns（GPL-2.0-or-later）
+
+- 来源：https://github.com/rootless-containers/slirp4netns/releases/tag/v1.3.7 官方发布的 armv7l 静态二进制，未修改。
+  SHA-256 `91b54c16e093208b40e93f8e13bcbaf932016b800895f245c1f62bd711c753f5`（见 `third_party/README.md`）。
+- 对应源码：https://github.com/rootless-containers/slirp4netns/archive/refs/tags/v1.3.7.tar.gz
+- 这个静态二进制还包含 libslirp（BSD-3-Clause）以及上游构建时静态链接的其他库（据上游的构建脚本应包括 glib、libcap、libseccomp 等，
+  多为 LGPL-2.1-or-later）。具体清单以上游的发布构建脚本为准，本项目**未逐个确认**。
+
+### glibc 和 GCC 运行库
+
+宿主程序（`veradroid-epd`、`veradroid-input`、`pivot_init`、`slirpctl`、`vdlmk`、`vdshutwatch`、`vdxattr`、蓝牙相关小程序）用 Ubuntu 的交叉工具链
+静态编译：新机型是 Ubuntu 16.04 的 GCC 5.4 + glibc 2.23，老机型是 `tools/cross/Dockerfile.legacy`（GCC 5 + Ubuntu 14.04 的 glibc 2.19）；
+部分程序由 GCC 4.8 编译（二进制里的编译器标记）。glibc 是 LGPL-2.1-or-later：因为本项目全部源码公开，用户可以用自己修改过的 glibc 重新链接。
+glibc 源码可从 Ubuntu 的源码包获取（`apt-get source glibc`，对应发行版本）或 https://www.gnu.org/software/libc/ 。
+
+### AOSP 7.1.1（Apache-2.0 等）
+
+- 基础：`android-7.1.1_r61`，https://android.googlesource.com/ （`repo init -b android-7.1.1_r61`）。
+- 本项目的改动全部在 `android/`：设备配置 `android/device/veradroid/`、整文件覆盖 `android/overlay/`（沿用被覆盖文件原来的许可，例如
+  `gralloc/framebuffer.cpp` 是 Apache-2.0）、精确字符串替换的小补丁 `android/small-patches.py`。
+- 系统镜像（安装包里的 `rootfs.tar.gz`）和 `libandroid_runtime.so` 是由上述源码编译出的。AOSP 由许多项目组成，许可各不相同，
+  其中有 GPL / LGPL 的组件（例如 iptables 等用户态工具，以构建产物里的 `NOTICE` 文件为准，**未逐个确认**）。
+  分发系统镜像时，源码提供方式是：AOSP 上游标签 + 本仓库 `android/` 下的全部补丁。
+- 镜像使用 AOSP 自带的测试签名密钥（`build/target/product/security/`），见 `SECURITY.md`。
+- rootfs 里额外加入了当前的 Mozilla 根证书（MPL-2.0），因为 2016 年的根证书已过期或缺失。来源和时间点由构建者决定（`android/mk-rootfs.sh` 读取 `cacerts-extra/`）。
+
+### 霞鹜文楷（SIL OFL 1.1）
+
+- 上游：https://github.com/lxgw/LxgwWenKai ，字体内名称表写明版本 1.510（2025-01-16）。它基于 Klee One（同为 OFL 1.1）。
+- 许可文本：`fonts/OFL.txt`（安装包里在 `fonts/OFL.txt`）。字体未修改，按 OFL 要求和许可文本一起分发；本仓库不带字体文件本身，构建时从上游下载。
+
+### VeraIME 拼音数据（MIT）
+
+`android/packages/VeraIME/assets/pinyin.tsv` 由 `tools/gen_dict.py` 从以下 MIT 项目提取字、词、拼音和词频生成，说明见 `assets/NOTICE-pinyin.txt`：
+
+- https://github.com/mozillazg/pinyin-data
+- https://github.com/mozillazg/phrase-pinyin-data
+- https://github.com/fxsjy/jieba
+
+MIT 许可要求保留版权声明：发布 APK 时应把这三个项目的 LICENSE 文本放进 `NOTICE-pinyin.txt` 或单独的文件（目前只列了项目地址，待补全）。
+
+### Dropbear（MIT 式）
+
+- SSH 调试包里的 `dropbear` 是 KOReader 为 Kindle 构建的版本（二进制标识 `dropbear_2026.92 (KOReader)`），动态链接。
+- 上游：https://github.com/mkj/dropbear （许可见其 `LICENSE`：主体 MIT 式，部分文件来自 libtomcrypt / libtommath 等，属公有领域或宽松许可）；
+  KOReader 的构建方式见 https://github.com/koreader/koreader-base 。
+- 只在调试用的 SSH 包里，不在主安装包里；本仓库不带这个二进制。
+
+### 老机型的内核模块（GPL-2.0-only）
+
+`tools/kmod/build-binder.sh`、`build.sh` 用 AOSP `kernel/common` 的 binder 驱动、NXP i.MX 内核头文件和 kernel.org 源码，为没有 binder / tun / uinput
+的 Kindle 内核编外挂模块。这些模块和 `tools/kmod/vd_compat.h`、`vd_uaccess.h`（编进模块的胶水代码）都受内核的 GPL-2.0-only 约束；
+因此这两个头文件没有加本项目的 GPL-3.0 标识，按 GPL-2.0-only 提供。编出的 `.ko` 未入库。
+
+### e2fsprogs（GPL-2.0-only）
+
+- 上游：https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.1/e2fsprogs-1.47.1.tar.gz ，未打补丁。
+- 构建：`tools/cross/build-e2fs.sh`（Docker 交叉编译镜像 `vdcross-legacy:gcc5-glibc219`，静态链接，`-Os`）。脚本会打印 tarball 的 SHA-256。
+- 对应源码 = 上面的 tarball + 这个构建脚本。
+
+### 自编的 hwcomposer 和系统库
+
+- 安装包里的 `bin/hwcomposer.kindle.so` 由 `android/hwcomposer/hwc_kindle.c` 编出（本项目自己的代码）；
+  `libandroid_runtime.so` 是 AOSP 7.1.1 的 `libandroid_runtime` 加本项目补丁（`android/overlay/`、`android/small-patches.py`）。
+- 不包含亚马逊的任何文件：仓库里没有亚马逊固件、内核镜像、内核模块（`.ko`）或从固件里提取的库。
+  需要亚马逊内核 GPL 源码的步骤（`tools/kmod/build-*.sh`）要求使用者自己下载 `Kindle_src_*.tar.gz`。
+
+## GPL 组件的源码提供方式
+
+本项目分发的 GPL 二进制有 FBInk、显示桥 `veradroid-epd`、slirp4netns、e2fsprogs，以及（老机型的）内核模块；系统镜像里另有 AOSP 自带的 GPL 用户态组件。
+做法：
+
+1. 每个发布的安装包都对应一个公开的 git 标签，本仓库包含全部自有源码、构建脚本和补丁。
+2. 上游源码地址和精确版本写在本文里；发布页面同时给出这些链接。
+3. 如果上游地址失效，维护者需要在发布页面附上对应源码的归档（GPL-3.0 第 6 条、GPL-2.0 第 3 条）。
+
+## 其他资源
+
+- `host/*/boot/poems.txt`：开机画面显示的古诗文名句，作者均为古代人物，属公有领域。
+- 界面图标由 `VeraHome` 的 `Icons.java` 用代码绘制，不含第三方图标。

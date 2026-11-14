@@ -1,0 +1,286 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+package com.veradroid.home;
+
+import android.app.ActivityManager;
+import android.app.ActivityManagerNative;
+import android.app.ITaskStackListener;
+import android.app.Service;
+import android.content.Context;
+import android.content.Intent;
+import android.hardware.input.InputManager;
+import android.os.FileObserver;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.SystemClock;
+import android.view.InputEvent;
+import android.view.KeyEvent;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.lang.reflect.Method;
+import java.util.List;
+
+/**
+ * Always-on listener for what the host sends: "open this app" (ctl/app) and gesture actions (ctl/act.panel, act.home,
+ * act.switch, act.back). Uses inotify, so it costs nothing while idle (no polling).
+ */
+public class HostService extends Service {
+    private final Handler handler = new Handler();
+    private CtlWatch.Listener observer;
+
+    @Override public IBinder onBind(Intent i) { return null; }
+
+    @Override public int onStartCommand(Intent i, int flags, int startId) { return START_STICKY; }
+
+    @Override public void onCreate() {
+        super.onCreate();
+        observer = new CtlWatch.Listener() {
+            @Override public void onCtl(final String path) {
+                if (path == null) return;
+                handler.post(new Runnable() { @Override public void run() { handle(path); } });
+            }
+        };
+        CtlWatch.add(observer);
+        handler.post(new Runnable() { @Override public void run() { handle("app"); } });
+        // 宿主在桌面起来之前就写好的提示（开机时 apps 文件夹里的 APK 装不上）
+        handler.post(new Runnable() { @Override public void run() {
+            String[] l = new File(HostLink.CTL).list();
+            if (l != null) for (String n : l) if (n.startsWith("notice.")) handle(n);
+        } });
+        // 锁屏密码（LockScreen）：USB 上放了重置文件就先清掉，再按需盖上锁屏（开机这一次）
+        handler.post(new Runnable() { @Override public void run() { handle("lock.reset"); LockScreen.show(HostService.this); } });
+        watchForeground();
+        try {
+            android.content.IntentFilter f = new android.content.IntentFilter(Intent.ACTION_CLOSE_SYSTEM_DIALOGS);
+            f.addAction(Intent.ACTION_SCREEN_OFF);
+            registerReceiver(panelCloser, f);
+        } catch (Throwable t) { android.util.Log.w("VeraHome", "panel closer: " + t); }
+    }
+
+    // 前台应用的包名写到 /dev/kfb/fg，宿主的 veradroid-input 据此在某些应用里关掉“底边上划返回”（微信读书上划 = 工具栏）。
+    // 用 TaskStackListener（任务栈一变就通知），不轮询。
+    private String lastFg = null, lastFgAct = null;
+    static volatile String fgAct;   // 现在前台的 activity（不算 PanelActivity），Panel 打开时记下
+    // HOME 键（系统发 CLOSE_SYSTEM_DIALOGS，reason=homekey / recentapps）和屏幕关掉：收起下拉面板
+    private final android.content.BroadcastReceiver panelCloser = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            if (Panel.isOpen()) { android.util.Log.i("VeraHome", "panel: " + i.getAction() + " " + i.getStringExtra("reason") + " - closing"); Panel.close(); }
+        }
+    };
+    private final Runnable fgCheck = new Runnable() { @Override public void run() { writeForeground(); } };
+    private final Runnable fgCheckLate = new Runnable() { @Override public void run() { writeForeground(); } };
+    // 冷启动很慢的应用（模拟器上微信读书 / EinkBro 要 5–15 秒才画出第一屏）：1.5 秒时栈顶还是上一个，之后系统不一定再通知，
+    // 后台保留应用就一直看不到它到了前台（0.91 门禁：连开三个应用，一次清理都没触发）。再在 5 秒、15 秒各看一次。
+    private final Runnable fgCheck5 = new Runnable() { @Override public void run() { writeForeground(); } };
+    private final Runnable fgCheck15 = new Runnable() { @Override public void run() { writeForeground(); } };
+    // 兜底：任务栈通知在模拟器上会漏（连开三个应用，有的那次一次通知都没收到，后台保留应用就没动作）。
+    // 每 10 秒看一眼栈顶（一次 getRunningTasks(1)，没变就什么都不做）。
+    private final Runnable fgPoll = new Runnable() { @Override public void run() { writeForeground(); handler.postDelayed(this, 10000); } };
+    private void watchForeground() {
+        try {
+            ActivityManagerNative.getDefault().registerTaskStackListener(new ITaskStackListener.Stub() {
+                @Override public void onTaskStackChanged() {
+                    handler.removeCallbacks(fgCheck); handler.postDelayed(fgCheck, 30);
+                    // 启动慢的应用：30 ms 时栈顶有时还是上一个，之后不一定再有变化通知——1.5 秒后再看一次（只在栈变过以后，不是轮询）
+                    handler.removeCallbacks(fgCheckLate); handler.postDelayed(fgCheckLate, 1500);
+                    handler.removeCallbacks(fgCheck5); handler.postDelayed(fgCheck5, 5000);
+                    handler.removeCallbacks(fgCheck15); handler.postDelayed(fgCheck15, 15000);
+                }
+                @Override public void onActivityPinned() { }
+                @Override public void onPinnedActivityRestartAttempt() { }
+                @Override public void onPinnedStackAnimationEnded() { }
+                @Override public void onActivityForcedResizable(String packageName, int taskId) { }
+                @Override public void onActivityDismissingDockedStack() { }
+            });
+        } catch (Throwable t) { android.util.Log.w("VeraHome", "foreground listener: " + t); }
+        handler.post(fgCheck);
+        handler.postDelayed(fgPoll, 10000);
+    }
+    private void writeForeground() {
+        String pkg = "", cls = "";
+        try {
+            List<ActivityManager.RunningTaskInfo> l = ((ActivityManager) getSystemService(Context.ACTIVITY_SERVICE)).getRunningTasks(1);
+            if (l != null && !l.isEmpty() && l.get(0).topActivity != null) {
+                pkg = l.get(0).topActivity.getPackageName();
+                cls = l.get(0).topActivity.getClassName();
+            }
+        } catch (Throwable ignored) { }
+        // 每个应用单独的字号：前台应用（或我们自己的哪个页面）变了才看一次；AppFont 只在值真的变了时才写设置
+        if (!(pkg + "/" + cls).equals(lastFgAct)) {
+            lastFgAct = pkg + "/" + cls; AppFont.forForeground(this, pkg, cls);
+            if (!cls.equals("com.veradroid.home.PanelActivity")) fgAct = lastFgAct;
+            Panel.onForeground(lastFgAct);   // 下拉面板：前台换了 activity 就收起
+        }
+        if (pkg.equals(lastFg)) return;
+        Cleaner.onForeground(this, pkg);   // 后台保留应用：用户应用到了前台，3 秒后按设置清掉多出来的
+        try {
+            File tmp = new File(HostLink.KFB + "fg.tmp");
+            FileWriter w = new FileWriter(tmp);
+            w.write(pkg + "\n");
+            w.close();
+            if (tmp.renameTo(new File(HostLink.KFB + "fg"))) lastFg = pkg;
+        } catch (Exception ignored) { }
+    }
+
+    @Override public void onDestroy() {
+        try { unregisterReceiver(panelCloser); } catch (Throwable ignored) { }
+        if (observer != null) CtlWatch.remove(observer);
+        super.onDestroy();
+    }
+
+    private void handle(String name) {
+        File f = new File(HostLink.CTL + name);
+        if (!f.exists()) return;
+        if (name.equals("app")) {
+            String want = null;
+            try { BufferedReader r = new BufferedReader(new FileReader(f)); want = r.readLine(); r.close(); } catch (Exception ignored) { }
+            f.delete();
+            if (want == null) return;
+            want = want.trim();
+            if (want.length() == 0) return;
+            if (want.equals("home")) { goHome(false); return; }
+            applyAppDisplay(want);
+            AppFont.forForeground(this, want, null);   // 启动前就换好字号，免得应用画完一遍再重排一遍
+            HostLink.cmd("appdirs " + want);
+            Intent i = getPackageManager().getLaunchIntentForPackage(want);
+            if (i != null) startActivity(i);
+        } else if (name.equals("storage.notice")) {
+            // 宿主调整了存储空间（自动扩容、离线调整的结果、断电后的收尾）：告诉用户一声（boot/lib/storage.sh 的 st_notify）
+            String l = null;
+            try { BufferedReader r = new BufferedReader(new FileReader(f)); l = r.readLine(); r.close(); } catch (Exception ignored) { }
+            f.delete();
+            String msg = storageNotice(l);
+            if (msg != null) VeraToast.show(this, msg);
+        } else if (name.startsWith("notice.")) {
+            if (name.endsWith(".tmp")) return;
+            String title = null; StringBuilder body = new StringBuilder();
+            try {
+                BufferedReader r = new BufferedReader(new FileReader(f));
+                title = r.readLine();
+                String line;
+                while ((line = r.readLine()) != null && body.length() < 1000) { if (body.length() > 0) body.append('\n'); body.append(line); }
+                r.close();
+            } catch (Exception ignored) { }
+            f.delete();
+            if (title == null || title.trim().length() == 0) return;
+            notice(title.trim(), body.toString().trim());
+        } else if (name.equals("lock.reset")) {
+            f.delete();
+            if (LockScreen.enabled(this)) { LockScreen.clear(this); VeraToast.show(this, "锁屏密码已清除"); }
+        } else if (name.startsWith("act.")) {
+            f.delete();
+            Perf.begin();   // 宿主手势到达：从这里算面板 / 切换器打开用了多久
+            String act = name.substring(4);
+            if (act.equals("lock")) { LockScreen.show(this); return; }
+            if (LockScreen.showing()) return;   // 锁着时不让手势打开面板 / 切换应用 / 回桌面（回 Kindle 由宿主自己做，不经过这里）
+            if (act.equals("panel")) { if (Panel.isOpen()) Panel.close(); else Panel.open(this); }
+            else if (Panel.isOpen() && act.equals("back")) Panel.close();
+            else if (act.equals("switch")) { Panel.close(); start(SwitcherActivity.class); }
+            else if (act.equals("home")) { Panel.close(); goHome(false); }
+            else if (act.equals("back")) key(KeyEvent.KEYCODE_BACK);
+        }
+    }
+
+    static String storageNotice(String l) {
+        if (l == null) return null;
+        String[] a = l.trim().split(" ");
+        try {
+            if (a[0].equals("grown") && a.length >= 3) return "存储空间快满了，已自动扩大到 " + StorageActivity.size(Integer.parseInt(a[2]));
+            if (a[0].equals("pending") && a.length >= 2) return "存储空间快满了，下次启动 VeraDroid 时会扩大到 " + StorageActivity.size(Integer.parseInt(a[1]));
+            if (a[0].equals("full")) return "存储空间快满了，已经不能再扩大（" + (a.length > 1 && a[1].equals("fat") ? "FAT 格式单个文件最大 4 GB" : "Kindle 没有剩余空间了") + "）。请删掉不用的应用或书。";
+            if (a[0].equals("result") && a.length >= 5) {
+                String op = a[2].equals("grow") ? "扩大" : a[2].equals("shrink") ? "缩小" : "调整";
+                if (a[1].equals("ok")) return "存储空间已" + op + "到 " + StorageActivity.size(Integer.parseInt(a[4]));
+                if (a[1].equals("rolledback")) return "存储空间" + op + "被中断，已恢复原样，数据没有变化";
+                return "存储空间没有" + op + "，数据没有变化（设置 → 设备与更新 → 存储空间 里有原因）";
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
+
+    /**
+     * 宿主的提示（ctl/notice.*：第一行标题，其余正文）：通知栏里留一条（下拉面板的“通知”能再看到），
+     * 屏幕上再弹一个框，用户点“知道了”才消失。现在只有一种：apps 文件夹里的 APK 装不上（afterboot.sh 的 apk_failed）。
+     */
+    private int noticeId = 7100;
+    private android.app.Dialog noticeDialog;
+    private android.widget.TextView noticeText;
+    private void notice(String title, String text) {
+        try {
+            android.app.Notification n = new android.app.Notification.Builder(this)
+                .setSmallIcon(android.R.drawable.stat_sys_warning)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(new android.app.Notification.BigTextStyle().bigText(text))
+                .setAutoCancel(true)
+                .build();
+            ((android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(noticeId++, n);
+        } catch (Throwable t) { android.util.Log.w("VeraHome", "notice: " + t); }
+        // 已经有一个提示框开着（开机时几个 APK 一起失败）：接在同一个框里，不叠好几层
+        String item = title + "\n" + text;
+        if (noticeDialog != null && noticeDialog.isShowing() && noticeText != null) {
+            noticeText.setText(noticeText.getText() + "\n\n" + item);
+            return;
+        }
+        try {
+            Context c = new android.view.ContextThemeWrapper(this, android.R.style.Theme_Holo_Light_NoActionBar);
+            final android.app.Dialog d = new android.app.Dialog(c);
+            d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+            android.widget.LinearLayout box = new android.widget.LinearLayout(c);
+            box.setOrientation(android.widget.LinearLayout.VERTICAL);
+            int p = Ui.dp(c, 20);
+            box.setPadding(p, p, p, p);
+            box.setBackground(Ui.frame(c, false));
+            android.widget.TextView m = Ui.text(c, item, 16, false);
+            m.setPadding(0, 0, 0, Ui.dp(c, 14));
+            box.addView(m);
+            box.addView(Ui.button(c, "知道了", 16, true, new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { try { d.dismiss(); } catch (Throwable ignored) { } }
+            }));
+            d.setContentView(box);
+            android.view.Window w = d.getWindow();
+            if (w != null) {
+                w.setType(android.view.WindowManager.LayoutParams.TYPE_SYSTEM_ALERT);
+                w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+                w.setWindowAnimations(0);
+                w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);   // 墨水屏上压暗 = 整屏闪两次
+            }
+            d.show();
+            if (w != null) w.setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.86), android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+            noticeDialog = d; noticeText = m;
+        } catch (Throwable t) { android.util.Log.w("VeraHome", "notice dialog: " + t); }
+    }
+
+    private void start(Class<?> c) {
+        Intent i = new Intent(this, c);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        startActivity(i);
+    }
+
+    private void applyAppDisplay(String pkg) {
+        String spec = Store.prefs(this, "home").getString("appdisp_" + pkg, "");
+        if (spec == null || spec.length() == 0) HostLink.cmd("appdisp home");
+        else HostLink.cmd("appdisp " + pkg + "|" + spec);
+    }
+
+    private void goHome(boolean settings) {
+        if (settings) { SettingsActivity.open(this); return; }   // 设置盖在当前应用上面，返回回到它（不切到桌面）
+        HostLink.cmd("appdisp home");
+        Intent i = new Intent(this, HomeActivity.class);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        if (settings) i.putExtra("settings", true);
+        startActivity(i);
+    }
+
+    private void key(int code) {
+        try {
+            InputManager im = (InputManager) getSystemService(Context.INPUT_SERVICE);
+            Method m = InputManager.class.getMethod("injectInputEvent", InputEvent.class, int.class);
+            long now = SystemClock.uptimeMillis();
+            m.invoke(im, new KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0), 0);
+            m.invoke(im, new KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0), 0);
+        } catch (Throwable ignored) { }
+    }
+}

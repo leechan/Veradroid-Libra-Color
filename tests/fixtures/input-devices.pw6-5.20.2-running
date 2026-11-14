@@ -1,0 +1,58 @@
+# SOURCE: MEASURED. Copied verbatim from diagnostics/results/survey-20261105-224120.txt lines 648-677
+# (`cat /proc/bus/input/devices` on the user's Kindle PW6, firmware 5.20.2, kernel 5.15.41-lab126, armv7l, 2026-11-05,
+# before VeraDroid was running). Not a public dump. Lines starting with '#' are ignored by the probe/preflight awk parser.
+I: Bus=0019 Vendor=0001 Product=0001 Version=0100
+N: Name="bd71828-pwrkey"
+P: Phys=gpio-keys/input0
+S: Sysfs=/devices/platform/10019000.i2c/i2c-1/1-004b/gpio-keys.8.auto/input/input0
+U: Uniq=
+H: Handlers=event0 ktch
+B: PROP=0
+B: EV=3
+B: KEY=100000 0 0 0
+
+I: Bus=0018 Vendor=0000 Product=0000 Version=0000
+N: Name="fts_ts"
+P: Phys=
+S: Sysfs=/devices/platform/1001e000.i2c/i2c-2/2-0038/input/input1
+U: Uniq=
+H: Handlers=event1 ktch
+B: PROP=2
+B: EV=b
+B: KEY=400 0 0 0 0 0 0 0 0 0 0
+B: ABS=2618000 0
+
+I: Bus=0006 Vendor=0001 Product=0001 Version=0001
+N: Name="kindle-input-pt"
+P: Phys=
+S: Sysfs=/devices/virtual/input/input2
+U: Uniq=
+H: Handlers=sysrq event2 ktch
+B: PROP=0
+B: EV=3
+B: KEY=ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff fffffffe
+
+# DERIVED: veradroid-touch. Bus/Vendor/Product/Version, PROP and the ABS codes (0x2f 0x30 0x35 0x36 0x39) were measured with
+# EVIOCGID/EVIOCGPROP/EVIOCGABS on event3 (2026-11-06); handler event3 and sysfs input131 from input.log/dmesg; EV/KEY from input/vinput.c.
+I: Bus=0006 Vendor=1d6b Product=0001 Version=0001
+N: Name="veradroid-touch"
+P: Phys=
+S: Sysfs=/devices/virtual/input/input131
+U: Uniq=
+H: Handlers=event3 
+B: PROP=2
+B: EV=b
+B: KEY=400 0 0 0 0 0 0 0 0 0 0
+B: ABS=2618000 0
+
+# DERIVED: veradroid-keys. Handler event4 from input.log; IDs and KEY bits (BACK HOME MENU VOLUMEUP VOLUMEDOWN POWER) from
+# input/vinput.c. The input number 132 is SYNTH (not recorded).
+I: Bus=0006 Vendor=1d6b Product=0002 Version=0001
+N: Name="veradroid-keys"
+P: Phys=
+S: Sysfs=/devices/virtual/input/input132
+U: Uniq=
+H: Handlers=event4 
+B: PROP=0
+B: EV=3
+B: KEY=40000800 1c0040 0 0 0

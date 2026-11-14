@@ -1,0 +1,17 @@
+{
+  "manifest_version": 2,
+  "id": "veradroid-cs",
+  "name": "VeraDroid Colorsoft (experimental)",
+  "author": "VeraDroid",
+  "description": "Host-layer profile only; eink-emulator shows Android zygote failure on PW5. Not bootable yet; development/logs only.",
+  "version": [
+    0,
+    1,
+    2
+  ],
+  "dependencies": [],
+  "supported_platforms": [
+    "kindlehf",
+    "kindlepw2"
+  ]
+}

@@ -1,0 +1,7 @@
+VeraIME 的拼音字词数据来自以下 MIT 许可项目，构建时只提取字/词与拼音、词频：
+
+- pinyin-data          https://github.com/mozillazg/pinyin-data
+- phrase-pinyin-data   https://github.com/mozillazg/phrase-pinyin-data
+- jieba                https://github.com/fxsjy/jieba
+
+重新生成 assets/pinyin.tsv:  python3 tools/gen_dict.py

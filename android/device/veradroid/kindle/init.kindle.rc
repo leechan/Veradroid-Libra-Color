@@ -1,0 +1,84 @@
+# VeraDroid: device-specific init. /dev, /proc, /sys are prepared by the host before init starts.
+# Slim product variants add init.kindle.slim.rc (see slim/). The file does not exist in the normal image: init logs
+# "could not import file" once and carries on.
+import /init.kindle.slim.rc
+
+on fs
+    # no fstab: the call fails, but it is also what makes init load the service definitions in /system/etc/init
+    mount_all /fstab.kindle
+
+on early-init
+    # Heap values are model-specific in build.prop. Do not override them here:
+    # PW6 needs 256m growth / 512m max for large reader apps; only the 4.9
+    # 512MB-RAM rootfs (PW5/KT5/KT6) lowers these.
+    # no boot animation: it only burns CPU while the system is starting; the host draws the splash screen instead
+    setprop debug.sf.nobootanimation 1
+    # every process gets the ashmem shim (see shim/vdshim.c): apps that open /dev/ashmem themselves work on this kernel
+    export LD_PRELOAD /system/lib/libvdshim.so
+
+on init
+    # the container has no uevents and /dev is prepared by the host
+    stop ueventd
+
+on early-boot
+    # no vold / no file-based encryption: device-protected storage (user_de) is the same place as the normal app data
+    rmdir /data/user_de/0
+    symlink /data/data /data/user_de/0
+    mkdir /data/system_ce/0 0770 system system
+    mkdir /data/system_de/0 0770 system system
+    # nothing to do for ashmem (memfd based), binder is bind-mounted by the host
+    chmod 0666 /dev/binder
+
+on boot
+    # shared storage: there is no sdcard daemon, so /sdcard simply is /data/media/0, and the system app that receives
+    # uploads (and the apps that read them) must be able to get into it - init creates both directories as 0770 media_rw
+    chmod 0777 /data/media
+    chmod 0777 /data/media/0
+    mkdir /storage/self 0755 root root
+    symlink /data/media/0 /storage/self/primary
+    # host <-> system control channel (see boot/lib/container.sh)
+    chmod 0777 /dev/kfb
+
+on post-fs-data
+    # no vold and no fstab: init never decides "not encrypted" by itself, so do it here. This starts the main and late_start
+    # service classes (zygote, surfaceflinger, ...).
+    # persist.* props (time zone ...) are normally loaded when vold decrypts /data; here nothing does, so do it ourselves
+    load_persist_props
+    setprop vold.post_fs_data_done 1
+    trigger nonencrypted
+
+# Daemons we do not want on an e-ink reader. (audioserver must stay: system_server's AudioService blocks forever without it.)
+# They are installed (a stock image has them) but must never start:
+# overriding the service with "disabled" keeps class main from starting them.
+service cameraserver /system/bin/cameraserver
+    class main
+    user cameraserver
+    group audio camera input drmrpc
+    disabled
+
+service drm /system/bin/drmserver
+    class main
+    user drm
+    group drm system inet drmrpc sdcard_r
+    disabled
+
+service media /system/bin/mediaserver
+    class main
+    user media
+    group audio camera inet net_bt net_bt_admin net_bw_acct drmrpc mediadrm
+    disabled
+
+service perfprofd /system/xbin/perfprofd
+    class late_start
+    user root
+    disabled
+
+# E-ink reader: the host (veradroid) owns sleeping, so Android must never fall asleep on its own.
+# A sleeping Android (wakefulness=Asleep) makes InputDispatcher drop every touch event.
+service vd_setup /system/bin/sh -c "chmod 0777 /data/media /data/media/0; settings put system screen_off_timeout 2147483647; settings put system sound_effects_enabled 0; settings put global stay_on_while_plugged_in 0; settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0; settings put global captive_portal_server connect.rom.miui.com; settings put global captive_portal_use_https 0; settings put secure enabled_notification_listeners com.veradroid.home/com.veradroid.home.NotifService; input keyevent KEYCODE_WAKEUP"
+    user root
+    oneshot
+    disabled
+
+on property:sys.boot_completed=1
+    start vd_setup

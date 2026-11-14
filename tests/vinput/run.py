@@ -120,7 +120,7 @@ def scenario(name):
 
 EXPECT = {   # name -> (actions in the log, keys, touch reaches Android)
     'tap': ([], [], True), 'swipe': ([], [], True), 'vswipe': ([], [], True), 'edge_tap': ([], [], True),
-    'edge_back': ([], [KEY_BACK], False), 'edge_back_slow': ([], [KEY_BACK], 'cancel'), 'edge_panel': (['panel'], [], False),
+    'edge_back': (['hint back'], [KEY_BACK], False), 'edge_back_slow': (['hint back'], [KEY_BACK], 'cancel'), 'edge_panel': (['panel'], [], False),
     'corner': (['tl'], [], 'cancel'),
     'corner_strip_tl': (['tl'], [], 'cancel'), 'corner_strip_tr': (['tr'], [], 'cancel'),
     'corner_strip_bl': (['bl'], [], 'cancel'), 'corner_strip_br': (['br'], [], 'cancel'),
@@ -128,7 +128,7 @@ EXPECT = {   # name -> (actions in the log, keys, touch reaches Android)
     'corner_swipe_back': (['hint back'], [KEY_BACK], False), 'corner_swipe_panel': (['panel'], [], False),
     'corner_strip_tap': ([], [], True), 'strip_long': ([], [], True),
     'two_tap': (['clear'], [], False), 'two_stagger': (['clear'], [], False), 'two_long': (['invert'], [], False),
-    'two_back': ([], [KEY_BACK], False), 'pinch': ([], [], True), 'pinch_lift': ([], [], True), 'two_light': (['light +'], [], False), 'two_warmth': (['warmth -'], [], False),
+    'two_back': (['hint back'], [KEY_BACK], False), 'pinch': ([], [], True), 'pinch_lift': ([], [], True), 'two_light': (['light +'], [], False), 'two_warmth': (['warmth -'], [], False),
 }
 ONE = ['tap', 'swipe', 'vswipe', 'edge_tap', 'edge_back', 'edge_back_slow', 'edge_panel', 'corner',
        'corner_strip_tl', 'corner_strip_tr', 'corner_strip_bl', 'corner_strip_br', 'corner_strip_moving',

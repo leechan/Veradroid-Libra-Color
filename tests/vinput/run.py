@@ -125,7 +125,7 @@ EXPECT = {   # name -> (actions in the log, keys, touch reaches Android)
     'corner_strip_tl': (['tl'], [], 'cancel'), 'corner_strip_tr': (['tr'], [], 'cancel'),
     'corner_strip_bl': (['bl'], [], 'cancel'), 'corner_strip_br': (['br'], [], 'cancel'),
     'corner_strip_moving': (['bl'], [], 'cancel'),
-    'corner_swipe_back': ([], [KEY_BACK], False), 'corner_swipe_panel': (['panel'], [], False),
+    'corner_swipe_back': (['hint back'], [KEY_BACK], False), 'corner_swipe_panel': (['panel'], [], False),
     'corner_strip_tap': ([], [], True), 'strip_long': ([], [], True),
     'two_tap': (['clear'], [], False), 'two_stagger': (['clear'], [], False), 'two_long': (['invert'], [], False),
     'two_back': ([], [KEY_BACK], False), 'pinch': ([], [], True), 'pinch_lift': ([], [], True), 'two_light': (['light +'], [], False), 'two_warmth': (['warmth -'], [], False),

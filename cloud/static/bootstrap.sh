@@ -59,7 +59,7 @@ vd_phase() { echo "$1" > "$INSTALL_LOCK/phase" 2>/dev/null || true; }
 vd_phase check
 trap 'vd_cleanup' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
-# 安装 / 更新期间不让 Kindle 睡、Wi-Fi 不省电（2026-11-14 .23：桌面里点的更新解压到一半设备失联，原因没查明，先把能想到的都堵上）。
+# 安装 / 更新期间不让 Kindle 睡、Wi-Fi 不省电（2026-11-14 真机：桌面里点的更新解压到一半设备失联，原因没查明，先把能想到的都堵上）。
 # 记下原值，所有退出路径（vd_cleanup，包括 die）都恢复；值读不到就不动。
 VD_PSS0=$(lipc-get-prop com.lab126.powerd preventScreenSaver 2>/dev/null || true)
 case "$VD_PSS0" in 0) lipc-set-prop -i com.lab126.powerd preventScreenSaver 1 2>/dev/null || true ;; *) VD_PSS0= ;; esac

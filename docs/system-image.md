@@ -73,7 +73,7 @@ rootfs-k49-44053cd `f816747df6f3c012e07ef0529705ffe189d3b3e6b37c54f3b4572aafad62
 - 镜像去掉了四个系统应用，PackageManager 第一次开机会删掉它们空的数据目录（uiderrors 里 4 行 Destroying，预期）。
 - 产品指纹变了（以前所有线上镜像都是 11-06 那次编译的指纹），第一次开机走 PackageManager 的“系统升级”路径：验收里专门查了数据。
 
-## 验收（tests/emu/big-accept.sh + big-guest.sh，模拟器，2026-11-13）
+## 验收（模拟器，2026-11-13）
 
 每台：装线上版（0.88 / 0.96）→ 微信读书 + EinkBro → 书库 ≥ 20 个文件（中文名、.sdr、.sh）、/sdcard 的 Books / Download、
 五个应用数据目录里的标记文件 → 线上版自己的自动更新升到候选 → 逐项核对（文件清单 + md5、标记 + 属主、settings.conf、packages.list、android_id）

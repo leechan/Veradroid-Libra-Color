@@ -231,7 +231,7 @@ TelecomLoader、CameraService 代理、VrManager、ConsumerIr、SoundTrigger、P
 
 ### 7.2 结果：同一台 pw5-5192，LOWMEM=off + KINDLE_UI=keep 对 LOWMEM=on + KINDLE_UI=stop
 
-冷启动（`tools/slim-bench/guest-cold.sh`：每种配置重启 Android 两次、每次清缓存冷启动 3 次，共 6 次；数字是模拟器秒数，kB 换算成 MB = /1024）：
+冷启动（每种配置重启 Android 两次、每次清缓存冷启动 3 次，共 6 次；数字是模拟器秒数，kB 换算成 MB = /1024）：
 
 | pw5-5192 | LOWMEM=off, KINDLE_UI=keep | LOWMEM=on, KINDLE_UI=stop |
 |---|---|---|
@@ -281,7 +281,6 @@ TelecomLoader、CameraService 代理、VrManager、ConsumerIr、SoundTrigger、P
   上面 kt5 的 speed-profile 数据（启动 CPU −40 %）可以作为 compile.sh 在 512 MB 机型上也该开的旁证；speed 和 speed-profile 在 512 MB
   上谁更合适（speed 的 odex 更大、dex2oat 峰值约 200 MB）没有对比测。
 - `VM_WATERMARK` 实验开关（`watermark_scale_factor`，默认不动），没有测。
-- 测试脚本 `tools/slim-bench/`。
 
 ### 7.5 KINDLE_UI=stop 的边界情况（`guest-edge.sh`，每台 3 轮进出 + 3 次崩溃）
 

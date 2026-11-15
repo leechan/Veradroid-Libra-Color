@@ -11,6 +11,28 @@ STALE=; [ "$1" = "--stale" ] && STALE=1
 # 完整的 stop 和下一次启动不能叠在一起：负载高时 stop 可能跑很久，晚到的清理会删掉新一轮的 $W/fw、$W/kfb（kt5 模拟器实测）。
 # veradroid.sh 启动前会等这个 pid 结束。放在 /tmp：$W 里的东西本脚本自己会删。
 if [ -z "$STALE" ]; then echo $$ > /tmp/veradroid-stop.pid; trap 'rm -f /tmp/veradroid-stop.pid' EXIT; fi
+# 启动还没做完就叫停（KT5 用户：点了启动 8 秒左右就退出）：以前这里不管还在跑的 veradroid.sh，它照样往下把 Android 起了
+# （模拟器 kt5-5182：stop.sh 在第 8 秒、容器在第 26 秒起来），而本脚本同时在恢复 Kindle 界面——两边各做一半，回 Kindle 要十几分钟。
+# 先结束那个 veradroid.sh（只结束本脚本开始之前就在启动的那个、而且不是本脚本的祖先：veradroid.sh 自己出错时也调本脚本），
+# 再往下杀容器、恢复 Kindle 界面。它已经起来的子进程（显示桥、输入、容器……）下面照常按 pid 收拾；framework_stop 在后台
+# 停服务的那一段由 framework_start 叫停。
+if [ -z "$STALE" ]; then
+    sp=$(cat $W/starting/pid 2>/dev/null)
+    if [ -n "$sp" ] && kill -0 "$sp" 2>/dev/null && grep -q "boot/veradroid.sh" /proc/$sp/cmdline 2>/dev/null; then
+        a=$$; anc=" $$ "
+        while [ -n "$a" ] && [ "$a" -gt 1 ] 2>/dev/null; do a=$(awk '/^PPid:/ {print $2}' /proc/$a/status 2>/dev/null); anc="$anc$a "; done
+        s0=$(awk '{print $22}' /proc/$$/stat 2>/dev/null); s1=$(awk '{print $22}' /proc/$sp/stat 2>/dev/null)
+        case "$anc" in *" $sp "*) ;; *)
+            if [ -n "$s0" ] && [ -n "$s1" ] && [ "$s1" -le "$s0" ] 2>/dev/null; then
+                kill "$sp" 2>/dev/null
+                i=0; while kill -0 "$sp" 2>/dev/null && [ $i -lt 20 ]; do usleep 100000; i=$((i + 1)); done
+                kill -9 "$sp" 2>/dev/null
+                rm -f $W/starting/pid; rmdir $W/starting 2>/dev/null
+                t "stop: a start was still in progress (veradroid.sh pid $sp): ended it first" >> $LOG 2>/dev/null
+            fi ;;
+        esac
+    fi
+fi
 # --shutdown：Kindle 正在关机 / 重启（bin/vdshutwatch 调用）。停 Android、卸载系统盘，但不要再把 Kindle 界面拉起来
 SHUT=; [ "$1" = "--shutdown" ] && SHUT=1
 # 关机时 /mnt/base-us 上的日志可能来不及落盘：每一步同时写进内核日志（串口 / dmesg 里能看到）

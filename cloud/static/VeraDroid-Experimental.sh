@@ -97,7 +97,7 @@ command -v curl >/dev/null 2>&1 || fail "VeraDroid：找不到 curl，无法联�
 # 先在屏幕上把风险说清楚，要用户在 10 秒到 2 分钟之内再点一次本脚本才继续（Kindle 上没有键盘，这是最简单的“确认”）。
 # 真机验证过的实验机型（PW5 / KT5 / KT6 / Scribe，4.9 / 5.x 内核）不经过这里，流程和以前一样。
 EMU=
-case "$(uname -r)" in 3.*) EMU="3.0 内核（PW2 / PW3 / Voyage 一代）" ;; 4.1.*) EMU="4.1 内核（PW4 / 入门款 2019 / Oasis 2 / Oasis 3）" ;; esac
+case "$(uname -r)" in 3.*) EMU="3.0 内核（PW2 / PW3 / Voyage 一代）"; EMU_EN="kernel 3.0 (PW2/PW3/Voyage)" ;; 4.1.*) EMU="4.1 内核（PW4 / 入门款 2019 / Oasis 2 / Oasis 3）"; EMU_EN="kernel 4.1 (PW4/KT4/Oasis 2/Oasis 3)" ;; esac
 if [ -n "$EMU" ]; then
     CF=/mnt/base-us/veradroid-confirm
     bid=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); now=$(cut -d. -f1 /proc/uptime)
@@ -116,7 +116,11 @@ if [ -n "$EMU" ]; then
                 "这个机型只在模拟器上跑过，" "没有在真机上验证。可能无法启动；" "启动失败会自动回到 Kindle（最多约 15 分钟）。" \
                 "不会改动 Kindle 系统分区，只在用户存储里放文件。" "安装前会记下书库清单并备份小文件。" \
                 "请先用 USB 把重要的书拷到电脑！" "卸载：点书库里的“VeraDroid 卸载”。" "-------------------------------" \
-                "确认安装：10 秒后、2 分钟内再点一次本脚本。" "不想装：什么都不用做。"
+                "确认安装：10 秒后、2 分钟内再点一次本脚本。" "不想装：什么都不用做。" \
+                -- "VeraDroid: OLD Kindle model, TEST build" "$EMU_EN, firmware ${fwv:-?}" "Only tested in emulators, never on a real" \
+                "device. It may not start; a failed start" "returns to the Kindle by itself (~15 min)." "The Kindle system partition is not changed." \
+                "Copy important books to a PC (USB) first!" "-----------------------------------------" \
+                "To INSTALL: tap this script again in" "10 s .. 2 min. To cancel: do nothing."
             sleep 10; i=$((i + 1))
         done
         exit 0

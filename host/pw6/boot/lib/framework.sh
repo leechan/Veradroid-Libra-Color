@@ -142,6 +142,31 @@ fw_wait_ready() {
     return 1
 }
 
+# 停书库程序（KPPMainApp）。它收到 SIGTERM 后自己有一套退出流程，最后打 "main() returns"；之后只剩 C++ 的析构，
+# 在固件 5.19.5 上其中清理 CurlHandleContainer 时经常段错误（一台 PW6 测试机的系统日志："main() returns" → 0.4 秒后
+# "Cleaning up CurlHandleContainer" → stackdumpd "received Segmentation fault"）：stackdumpd 收集堆栈、写 core，dmcc 再打出
+# 约 3.6 MB 的 KPPMainAppV2_*_crash_*.tgz / .txt 放进书库；进程要等收集完才退出，停它要 4–6.4 秒（不崩时 0.7 秒）。
+# 不是我们停得不对（pillow / awesome 当时都还正常），是它自己退出路径上的错；5.20.2 的另一台测试机上 3.6 秒正常退出。
+# 所以：照常 `stop kppmainapp`（upstart 记下“要停”，不会 respawn），盯着系统日志，它的 "main() returns" 一出现
+# （应用层的保存 / 关闭已经做完）就直接 SIGKILL，不给它走到崩溃的那段析构；先删掉 upstart 任务的标记文件，
+# 让 KPPMainAppCrashRecovery 当成正常退出（它看标记文件判断是否崩溃循环）。日志里看不到这一行（别的固件 / 日志位置不同）
+# 就和以前一样等它自己退出，最多 10 秒。
+fw_stop_kpp() {
+    kp=$(pidof KPPMainApp 2>/dev/null | cut -d' ' -f1)
+    ff=$(sed -n 's/^env KPPMAINAPP_FLAG_FILE=//p' /etc/upstart/kppmainapp.conf 2>/dev/null | head -1)
+    ( stop kppmainapp >/dev/null 2>&1 ) & sp=$!
+    i=0; how=exit
+    while kill -0 $sp 2>/dev/null && [ $i -lt 200 ]; do
+        if [ "$how" = exit ] && [ -n "$kp" ] && kill -0 "$kp" 2>/dev/null && \
+           tail -n 40 /var/log/messages 2>/dev/null | grep -q "\[$kp\].*main() returns"; then
+            [ -n "$ff" ] && rm -f "$ff"
+            kill -9 "$kp" 2>/dev/null && how="killed after main() returned"
+        fi
+        usleep 50000; i=$((i + 1))
+    done
+    t "fw: library app stopped before pausing the window manager ($((i * 50)) ms, $how)"
+}
+
 framework_stop() {
     mkdir -p $FWD $SYS || return 1
     framework_paused && { t "kindle ui already paused"; return 0; }
@@ -160,14 +185,14 @@ framework_stop() {
     # pillow 关着或 awesome 冻着都会卡住，6 秒后被系统当成挂死（堆栈转储 + SIGILL），每进一次 Android 书库里就多一份约 3.6 MB 的
     # KPPMainAppV2_*_crash_*.tgz / .txt / .mbp1（PW6 5.19.5 真机：LOWMEM=on 测 20 分钟留下 10 份；手工复现：pillow / awesome 都正常时 `stop kppmainapp`
     # 1 秒退出、没有转储；只关 pillow 5 秒、只冻 awesome 6 秒，都有转储）。
+    # 先停它以后一台测试机上仍然每次都有转储：那是它自己退出时的段错误，见 fw_stop_kpp。
     fw_services
     fw_running > $FWD/running0          # 回来时用它找出“跟着框架一起停掉、却不会自己回来”的任务（要在先停书库之前记）
     case " $FW_SERVICES " in
         *" kppmainapp "*)
             if grep -qx kppmainapp $FWD/running0; then
-                ( stop kppmainapp >/dev/null 2>&1 ) & sp=$!
-                i=0; while kill -0 $sp 2>/dev/null && [ $i -lt 100 ]; do usleep 100000; i=$((i + 1)); done
-                t "fw: library app stopped before pausing the window manager ($((i * 100)) ms)"
+                echo kppmainapp >> $FWD/stopped     # 马上记下：启动在这之后被叫停（stop.sh 结束 veradroid.sh）时也要把它起回来
+                fw_stop_kpp
             fi ;;
     esac
     lipc-set-prop com.lab126.pillow disableEnablePillow disable 2>/dev/null
@@ -180,23 +205,30 @@ framework_stop() {
     # 各个服务并行停（以前一个一个停，要好几秒）
     # 停服务（每个要等它真的退出，一共要好几秒）放到后台做：Android 容器不依赖它们，可以同时开始启动。
     # 恢复（framework_start）会等 stopdone 出现再往下。
-    rm -f $FWD/stopdone
+    # 中途叫停（启动才几秒、服务还在后台停的时候就退出 / 返回 Kindle）：framework_start 先写 $FWD/abort，后台这一段看到就不再
+    # 起 vdkaf、不做自检、不冻进程，直接写 stopdone 让恢复往下走。以前恢复只等 20 秒就照常往下：KT5（512 MB）上框架要停很久，
+    # 后台这一段在恢复已经把框架起回去以后才起 vdkaf（顶着 com.lab126.kaf，框架的 cvm 登记不上），自检再判“vdkaf 不行”又起一遍框架、
+    # 写 vdkaf.bad；书库一直等不到，回 Kindle 要十几分钟。
+    rm -f $FWD/stopdone $FWD/abort
     echo "$FW_MODE" > $FWD/mode
     (
         RUNNING=" $(tr '\n' ' ' < $FWD/running0) "
         for s in $FW_SERVICES; do
-            case "$RUNNING" in *" $s "*) echo $s >> $FWD/stopped; ( stop $s >/dev/null 2>&1 ) & ;; esac
+            case "$RUNNING" in *" $s "*) grep -qx $s $FWD/stopped || echo $s >> $FWD/stopped; ( stop $s >/dev/null 2>&1 ) & ;; esac
         done
         wait
         fw_clear_restart_counters
-        if [ "$FW_MODE" = stop ]; then
-            i=0; while pidof cvm >/dev/null 2>&1 && [ $i -lt 20 ]; do usleep 250000; i=$((i + 1)); done
+        if [ "$FW_MODE" = stop ] && [ ! -f $FWD/abort ]; then
+            i=0; while pidof cvm >/dev/null 2>&1 && [ $i -lt 20 ] && [ ! -f $FWD/abort ]; do usleep 250000; i=$((i + 1)); done
+        fi
+        if [ "$FW_MODE" = stop ] && [ ! -f $FWD/abort ]; then
             vdkaf_start
             # 自检：最多等 12 秒（vdkaf 自己会等框架把名字让出来）。答不上来（比如这个固件的 liblipc 不一样、进程起不来）
             # 就把框架起回去并记下来——宁可不省内存，也不能让电源键失灵。模式记成 stopfail：返回时照样要把跟着框架停掉的任务起回去。
             i=0; ok=
             while [ $i -lt 12 ]; do
                 [ "$(lipc-get-prop com.lab126.kaf frameworkStarted 2>/dev/null)" = 1 ] && kill -0 "$(cat $W/vdkaf.pid 2>/dev/null)" 2>/dev/null && { ok=1; break; }
+                [ -f $FWD/abort ] && { ok=abort; break; }     # 正在恢复：自检没意义，更不能记 vdkaf.bad
                 sleep 1; i=$((i + 1))
             done
             if [ -z "$ok" ]; then
@@ -207,9 +239,10 @@ framework_stop() {
                 start framework >/dev/null 2>&1
             fi
         fi
-        [ "$FW_MODE" = freeze ] && fw_freeze
+        [ "$FW_MODE" = freeze ] && [ ! -f $FWD/abort ] && fw_freeze
         touch $FWD/stopdone
     ) &
+    echo $! > $FWD/stopper
     case "$FW_MODE" in
         stop) t "kindle ui stopped (java framework + library app; services are being stopped in the background)" ;;
         freeze) t "kindle ui paused, background processes frozen (services are being stopped in the background)" ;;
@@ -288,7 +321,18 @@ launcher_ensure() {
 
 framework_start() {
     framework_paused || { t "kindle ui not paused"; return 0; }
-    i=0; while [ ! -f $FWD/stopdone ] && [ $i -lt 100 ]; do usleep 200000; i=$((i + 1)); done   # 后台停服务还没做完就等一下
+    # 后台停服务还没做完：叫它别再往下做（不起 vdkaf、不自检、不冻），等它收尾；还在等某个服务退出的话最多等 20 秒，
+    # 过了就把那一段杀掉再往下（它不能在我们恢复之后再动 Kindle 的东西）
+    if [ ! -f $FWD/stopdone ] && [ -f $FWD/stopper ]; then   # 没有 stopper：后台那一段还没起（启动在那之前被叫停），不用等
+        touch $FWD/abort
+        i=0; while [ ! -f $FWD/stopdone ] && [ $i -lt 100 ]; do usleep 200000; i=$((i + 1)); done
+        if [ -f $FWD/stopdone ]; then t "fw: early return: background service stop wound up after $((i * 200)) ms" >> $LOG 2>/dev/null
+        else
+            sp=$(cat $FWD/stopper 2>/dev/null)
+            [ -n "$sp" ] && kill "$sp" 2>/dev/null
+            t "fw: early return: background service stop still busy after 20 s ($(cat $FWD/stopped 2>/dev/null | tr '\n' ' ')): ended it" >> $LOG 2>/dev/null
+        fi
+    fi
     set -- $(cat $FWD/geom 2>/dev/null)
     if [ -f $SYS/kindle-screen.raw ] && [ -n "$1" ]; then
         dd if=$SYS/kindle-screen.raw of=/dev/fb0 bs=$1 seek=$2 count=$3 2>/dev/null
@@ -320,6 +364,7 @@ framework_start() {
         # 框架要重新启动（冷启动约一分钟）：先告诉用户在等什么，不然屏幕上是停之前存下的那一帧，点了没反应
         fw_wait_screen || splash "正在恢复 Kindle 界面，大约需要一分钟…" 36
         vdkaf_stop
+        killall vdkaf 2>/dev/null      # 漏记 pid 的（被叫停的后台那一段刚起的）也不能留：它顶着 com.lab126.kaf，框架就登记不上
         # 框架先起（别的任务有些要等它），再起其余的
         grep -qx framework $FWD/stopped 2>/dev/null && start framework >/dev/null 2>&1
     fi

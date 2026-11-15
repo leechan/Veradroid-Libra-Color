@@ -1732,7 +1732,9 @@ if [ "${VD_FACTORY:-0}" != "1" ]; then
             else
                 show "检测到 VeraDroid $cur_ver，服务器最新 $latest_ver，开始升级…"
                 if apply_patch; then remove_installer_later; exit 0; fi
-                show "增量补丁不可用/失败，回退整包"
+                # apply_patch 是旧的“补丁包”方式，服务器现在不发（没有 patch_url）：那时什么也不说——后面的增量更新（parts）
+                # 才是现在的方式，以前这里总报“增量补丁不可用/失败，回退整包”，紧接着增量更新却成功了，看着像失败
+                [ -n "$LATEST_PATCH_URL" ] && show "补丁包没装上，改用下面的方式更新"
             fi
         elif [ -z "$latest_ver" ]; then
             vp_status "state=error" "code=13" "label=暂时查不到服务器上的版本" "line2=现有的 ${cur_ver:-?} 保持不变"
@@ -1936,7 +1938,9 @@ if [ -f /var/local/cc.db ] && cp -a /var/local/cc.db /mnt/base-us/veradroid-cc.d
     for old in $(ls -t /mnt/base-us/veradroid-cc.db.* 2>/dev/null | tail -n +2); do rm -f "$old"; done
 fi
 # ---- 空间预检：在动任何东西之前（旧系统要留作回退）----
-rootfs_gz=$(wc -c < "$TMP/veradroid-pw6/rootfs.tar.gz" 2>/dev/null | tr -d ' ')
+# 增量更新（parts）时没有 rootfs.tar.gz：不能直接 `wc -c < 文件`——打不开时 sh 自己在屏幕上报 "can't open …rootfs.tar.gz"
+# （2>/dev/null 只管 wc，管不到 sh 的重定向），看着像出错了，其实下一行就用 PARTS_ROOTFS_GZ
+rootfs_gz=; [ -f "$TMP/veradroid-pw6/rootfs.tar.gz" ] && rootfs_gz=$(wc -c < "$TMP/veradroid-pw6/rootfs.tar.gz" | tr -d ' ')
 [ -n "$PARTS" ] && rootfs_gz=$PARTS_ROOTFS_GZ
 need_mb=$(( ${rootfs_gz:-150000000} * 3 / 1048576 + 200 ))
 if [ "$LOOP" = 1 ]; then free_mb=$(df -m "$SYS" | awk 'NR==2{print $4}')

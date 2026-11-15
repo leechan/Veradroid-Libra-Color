@@ -74,8 +74,11 @@ done
 while grep -q " $R " /proc/mounts; do umount -l $R || break; done
 freezer_cleanup
 kmsg "container mounts released"
-[ -n "$STALE" ] && { rm -rf $W/kfb; storage_umount; exit 0; }
+# the Kindle's own /mnt/base-us loop back to buffered I/O also on a stale-state stop (a crashed run must not leave it in
+# direct mode: the next start would see dio=1 already, not record it, and never restore it)
+[ -n "$STALE" ] && { loopdio_restore 2>/dev/null || true; rm -rf $W/kfb; storage_umount; exit 0; }
 readahead_restore 2>/dev/null || true
+loopdio_restore 2>/dev/null || true
 zram_restore
 wifi_ps_restore
 rm -f $W/cmdline $W/power.fifo

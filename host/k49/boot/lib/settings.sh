@@ -26,8 +26,14 @@ settings_defaults() {
     KFB_CLEAN=0            # 显示：快刷（DU，黑白两级）之后画面静止这么多毫秒，把快刷过的区域用 16 级灰度补刷一遍（字的边缘、图片变细腻；不闪）。0 = 不补
     KFB_REAGL_MIN=85       # 显示（均衡刷新方式）：一帧里变化面积达到屏幕的百分之多少就用 REAGL（16 级灰、清残影、约 205 ms）而不是 DU（黑白两级、约 134 ms、
                            # 盖住原来的文字时会透出残影——下拉面板上的“底下那页的影子”就是这个）。85 = 以前的规则（只有接近整屏才用 REAGL）
-    KFB_HWC=0              # 系统合成：1 = 用 hwcomposer.kindle（bin/ 里带着，开机时装进系统），每帧省 30–60 ms；0 = 原来的软件 GLES 合成。重启 Android 生效
+    KFB_HWC=1              # 系统合成：1 = 用 hwcomposer.kindle（bin/ 里带着，开机时装进系统），每帧省 30–60 ms；0 = 原来的软件 GLES 合成。重启 Android 生效
+                           # 0.93 / 1.01 起所有机型默认 1（docs/framework-project.md §9.9）
     KFB_HZ=30              # KFB_HWC=1 时的界面帧率 30 或 60（60 时触摸到出帧平均少等约 20 ms，动画多画一倍的帧）。重启 Android 生效
+    KFB_ONEPAGE=0          # framework 项目：1 = 系统合成（KFB_HWC=1）时共享缓冲只用一页（省一页 RGBX，PW6 约 8.6 MB）。要 project/framework 的镜像
+                           # 512 MB 机型默认 1（settings_load 里按内存设）；1 GB 机型上对话框淡入淡出多刷约一倍，默认 0
+    KFB_RGB565=0           # framework 项目：1 = 不透明的应用窗口用 RGB565 缓冲（每块缓冲省一半）。要 project/framework 的镜像
+                           # 512 MB 机型默认 1（settings_load 里按内存设）；1 GB 机型上多花一点 CPU（测试机实测），默认 0
+    VD_AUDIO=0             # framework 项目：0 = 不起 audioserver（应用的声音调用直接返回错误；镜像里本来就没有音频 HAL）。要 project/framework 的镜像。0.93 / 1.01 起默认 0
     KFB_ANIM_MODE=1        # 显示：翻页动画 0 关 1 跟随手势 2 左 3 右 4 上 5 下
     KFB_ANIM_DIR=2         # 动画方向：0 下 1 上 2 左 3 右（翻下一页通常用左）
     KFB_ANIM_STEPS=12      # 动画步数：越大越慢越细腻（MTK 驱动要求 <= 刷新区域宽/高）
@@ -86,8 +92,11 @@ settings_load() {
     settings_defaults
     # First-install default only.  It must be applied before settings.conf:
     # otherwise every settings_apply() reset the user's animation choice to 0.
+    # Scribe（ks / ks2）：models/ks.conf 想关动画，但安装器从来不拷 models/（$VD/models 不存在），那份覆盖从没生效过：
+    # Scribe 上一直是“跟随手势”，每次整页变化（点开应用、换页、桌面换页）都让控制器把 1860x2480 整屏滑进来，比 PW6 多一倍多的像素。
+    # 和 PW6 / KT 一样默认关；想要的话面板 / 设置里照样能开（settings.conf 里有就按用户的）。
     case "$(cat "$SYS/model" 2>/dev/null)" in
-        kt5|kt6|pw6|cs) KFB_ANIM_MODE=0 ;;
+        kt5|kt6|pw6|cs|ks|ks2) KFB_ANIM_MODE=0 ;;
     esac
     # PW5（MT8110，FBInk 认作 Bellatrix，不是 Bellatrix4）：文字发虚。和 PW6 不同的地方在面板这一侧——显示桥送出去的 8 位灰度
     # 与 Android 画的逐像素一致（pw5-5192 模拟器：1236x1648 一比一，/dev/fb0 = 对比度曲线(kfb)，没有缩放）：
@@ -97,7 +106,13 @@ settings_load() {
     # 只是默认值：用户在面板 / 设置里改过的（settings.conf 里有）照旧。
     case "$(cat "$SYS/model" 2>/dev/null)" in
         pw5) KFB_DITHER=0; KFB_REAGL_MIN=50; KFB_CLEAN=600 ;;
+        # Scribe（barolo / MT8113 Bellatrix3，也不是 Bellatrix4）：同一个 FBInk 行为。用户反馈（KS1，1.00）“有些应用里的菜单很糊”：
+        # 菜单 / 弹窗只占屏幕一小块 → DU（两级）+ Y4 抖动，没有补刷。和 PW5 同样的三项默认值。
+        ks|ks2) KFB_DITHER=0; KFB_REAGL_MIN=50; KFB_CLEAN=600 ;;
     esac
+    # 512 MB 机型（实际内存 < 700 MB，和 lowmem_ram 一样，不看 LOWMEM 开关）：一页共享缓冲 + RGB565 窗口缓冲默认开（省 ~8 + ~8 MB）。
+    # 只是默认值：机型文件和 settings.conf 照样能改（docs/framework-project.md §9.9）。
+    if lowmem_ram; then KFB_ONEPAGE=1; KFB_RGB565=1; fi
     # Optional per-model overlay (models/<id>.conf). User settings.conf still wins.
     m=$(cat "$SYS/model" 2>/dev/null)
     if [ -n "$m" ] && [ -f "$VD/models/$m.conf" ]; then

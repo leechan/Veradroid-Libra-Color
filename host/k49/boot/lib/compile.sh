@@ -72,6 +72,7 @@ compile_needed() { # pkg [force]
     # 同一个安装失败过两次就不再自动试（命令 compile <包> 仍然会强制编）
     nf=$(grep -c "^$1 $(app_dir "$1") fail" $CLOG 2>/dev/null); [ "${nf:-0}" -ge 2 ] && return 1
     grep -q "^$1 $(app_dir "$1") capped" $CLOG 2>/dev/null && return 1
+    grep -q "^$1 $(app_dir "$1") timeout" $CLOG 2>/dev/null && return 1
     return 0
 }
 
@@ -96,10 +97,15 @@ compile_enqueue() { # pkg [force]
 # 这里问 Android 自己的判断（dumpsys package dexopt，一次约 0.3 s），每次开机每个包最多因此重编一次。
 compile_stale_pkgs() {
     [ -f $W/frozen ] || [ -f $W/saver_frozen ] && return 0
+    # dumpsys 按 120 列折行（长包名的 "status=kOatUpToDate]" 会断成 "kOatUpToD" + 下一行 "ate]"），odex 坏掉 / 半截时
+    # 只有 "status: invalid[]"、没有 "status="（pw5-5182 模拟器：一次失败的 speed 编译留下 71 MB 开头全零的 odex，
+    # 以前这里看不出来，微信读书一直从 apk 解释执行）。所以把一个 path 之后到下一个 path / 包头为止的文字去掉空白拼起来再判断。
     adb_sh "dumpsys package dexopt" 2>/dev/null | tr -d '\r' | awk '
-        /path: \/data\/app\// { p = $2; sub(/^\/data\/app\//, "", p); sub(/-[0-9]+\/.*$/, "", p); next }
-        /path:/ { p = "" }
-        /status=/ && p != "" { if ($0 !~ /status=kOatUpToDate/) print p; p = "" }' | sort -u
+        function flush() { if (p != "" && b != "" && b !~ /status=kOatUpToDate/) print p; p = ""; b = "" }
+        /path: \/data\/app\// { flush(); p = $2; sub(/^\/data\/app\//, "", p); sub(/-[0-9]+\/.*$/, "", p); next }
+        /path:/ || /^ *\[/ { flush(); next }
+        p != "" { l = $0; gsub(/[ \t]/, "", l); b = b l }
+        END { flush() }' | sort -u
 }
 compile_scan() { # 所有还没编好的数据区应用排队
     [ -n "$(compile_mode)" ] || return 0
@@ -292,9 +298,13 @@ compile_babysit() { # cmd 的 pid [包]
             t "compile: device in use and only $(mem_avail_mb) MB available, stopping dexopt of $2 (will retry when idle)"
             echo busy > $W/compile.abort; compile_preempt_pkg "$2"; killed=1
         fi
-        # 自己的超时（dex2oat 自带的 9.5 分钟看门狗在 nice 19 下太短，已用 --no-watch-dog 关掉）：默认 40 分钟
-        if [ $(( $(cut -d. -f1 /proc/uptime) - t0 )) -ge ${COMPILE_MAX_S:-2400} ] && [ -z "$killed" ]; then
-            t "compile: still running after ${COMPILE_MAX_S:-2400}s, aborting dex2oat"
+        # 自己的超时（dex2oat 自带的 9.5 分钟看门狗已用 --no-watch-dog 关掉）：默认 540 秒，必须小于 PackageManager 的 10 分钟看门狗。
+        # 一次编译期间 PackageManager 一直拿着安装锁（mInstallLock）；这时它自己的线程上任何要这把锁的事（Android 里的安装 / 卸载 /
+        # 清数据 / 查应用大小、装完的收尾 rmPackageDir）都排在后面，排满 10 分钟 system_server 就被自己的 Watchdog 杀掉、软重启
+        # （pw5-5182 模拟器两次："Blocked in handler on PackageManager"，PackageManager 线程停在 InstallerConnection 上，
+        # 持锁的正是微信读书 653 / 679 秒的 speed 编译；用户看到的是用着应用突然回到开机画面）。以前默认 40 分钟。
+        if [ $(( $(cut -d. -f1 /proc/uptime) - t0 )) -ge ${COMPILE_MAX_S:-540} ] && [ -z "$killed" ]; then
+            t "compile: still running after ${COMPILE_MAX_S:-540}s, aborting dex2oat"
             for p in $(pgrep dex2oat 2>/dev/null); do kill -9 "$p" 2>/dev/null; done; killed=1; echo timeout > $W/compile.abort
         fi
         for p in $(pgrep dex2oat 2>/dev/null); do
@@ -341,6 +351,9 @@ compile_one() { # pkg mode force
     if [ "$ab" = install ]; then r=aborted   # 给安装让路：compile_release 会重新排队，不算失败
     # 到了前台 / 用户在用且内存紧：不算失败，重新排队（前台时跳过，空闲时再编）
     elif [ "$ab" = foreground ] || [ "$ab" = busy ]; then r=aborted
+    # 超过 COMPILE_MAX_S 被停：这台机器上这个过滤器编不完（512 MB 机型上微信读书的 speed），同一个安装不再自动试（compile_needed），
+    # 下面马上补 interpret-only（两分钟左右），不让应用停在没有 odex、从 apk 解释执行的状态
+    elif [ "$ab" = timeout ]; then r=timeout
     # PackageManager 不在（Android 正在停 / system_server 重启）：不是这个包编不了，不能记成失败——
     # 同一个安装记满两次 fail 以后再也不会自动编（pw5-5182 实测：停 Android 那一刻两个包各记了一次 "Can't find service: package"）
     elif grep -q "Can't find service" $W/compile.out || ! alive $W/pid; then r=aborted
@@ -353,7 +366,7 @@ compile_one() { # pkg mode force
     # 失败时 installd 已经删掉了原来的 odex（pw6-5195 实测：interpret-only 的 odex 没了，应用只能从 apk 里边校验边解释）。
     # 马上（用原来的 dex2oat 参数，线程数仍按上面限制：kt6-5192 上不限时这一步 dex2oat 峰值 150 MB）补一个 interpret-only，
     # 至少回到安装时的状态。也在 babysit 下跑（nice 19、内存保护）。
-    if [ $r = fail ] && [ -z "$f" ] && ! compile_held; then
+    if { [ $r = fail ] || [ $r = timeout ]; } && [ -z "$f" ] && ! compile_held; then
         adb_sh "cmd package compile -m interpret-only -f $pkg" >/dev/null 2>&1 &
         compile_babysit $!
         t "compile: $pkg restored to $(odex_filter "$pkg")"

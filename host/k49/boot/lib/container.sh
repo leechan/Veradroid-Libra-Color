@@ -54,6 +54,10 @@ hwc_prepare() {
     fi
     if [ "$KFB_HWC" = 1 ] && [ -f "$R/system/lib/hw/hwcomposer.kindle.so" ]; then rm -f $X/hwc.off; else touch $X/hwc.off; fi
     case "$KFB_HZ" in 60) echo 60 > $X/hz ;; *) echo 30 > $X/hz ;; esac
+    # framework 项目（docs/framework-project.md）：只有 project/framework 分支的镜像认这些开关文件，老镜像看不见它们
+    if [ "$KFB_HWC" = 1 ] && [ "${KFB_ONEPAGE:-0}" = 1 ]; then touch $X/onepage; else rm -f $X/onepage; fi
+    if [ "${KFB_RGB565:-0}" = 1 ]; then touch $X/rgb565; else rm -f $X/rgb565; fi
+    if [ "${VD_AUDIO:-1}" = 0 ]; then touch $X/noaudio; else rm -f $X/noaudio; fi
 }
 # 屏幕旋转 KFB_ROTATE=0|90|180|270（docs/rotation.md）：Android 永远正着画，显示桥（veradroid-epd）转画面，
 # 触摸前端（veradroid-input）转坐标和边缘手势区。0 时两个程序的命令行和以前完全一样。

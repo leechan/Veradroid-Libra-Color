@@ -10,6 +10,9 @@
 另外构建机源码树里有两处只在树里、不在 git 里的补丁（zygote 的 fd 白名单、installd 在没有 SELinux 时不因 getfilecon 失败），
 已搬进 small-patches.py；源码树的 `packages/apps/Android.mk` 还带着蓝牙分支的东西，镜像改用 git 里的 `android/packages/apps-Android.mk`。
 
+> 2026-11-14：按硬件类别编的镜像（pw6 / k49-512 / k49-1g / a7-512 / a9-512 / a9-256，`build_rootfs.sh class <类别>`、
+> 一个类别一个包、安装器按类别选）见 `docs/per-model-images.md`。下面是家族镜像（仍然打，作回退和版本比较用）。
+
 ## 两种镜像（pack.sh 打的就这两种）
 
 | 镜像 | 产品 | binder | 给谁 |

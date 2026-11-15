@@ -10,23 +10,94 @@ LOG=/mnt/us/veradroid-install.log
 if : >>"$LOG" 2>/dev/null; then exec >>"$LOG" 2>&1; fi   # 写不了日志也要继续，不能让 exec 失败直接退出
 echo "==== $(date) offline install: \$0=$0 uid=$(id -u 2>/dev/null) fw=$(cat /etc/prettyversion.txt 2>/dev/null | head -1)"
 rm -f /tmp/vd-progress.on
-# 安装器画了整屏进度画面（/tmp/vd-progress.on）时不再用 eips 往上写字：出错原因和代码已经在画面上
-msg() { echo "$*"; [ -f /tmp/vd-progress.on ] || eips 1 2 "$*" >/dev/null 2>&1 || true; }
-fail() { msg "$*"; [ -f /tmp/vd-progress.on ] || eips 1 4 "日志：veradroid-install.log" >/dev/null 2>&1 || true; sleep 10; exit 1; }
+# ---- 屏幕上的说明 ----
+# eips 只有 ASCII 字形（中文它画不出来），以前 msg / fail 用 eips 写中文，屏幕上什么都没有，用户看到的就是“点了闪退”
+# （Scribe 用户：拿错了离线包，安装器在屏幕上什么都没说就退了）。现在：fbink + Kindle 自带的中文字体能刷出来就写中文，
+# 刷不出来（没有能用的 fbink、Scribe 上旧 FBInk 不认识机型、驱动拒绝刷新）就用 eips 写英文。
+# screen 中文行… [-- 英文行…]：整屏显示；没给英文行时 eips 只能写出中文行里的 ASCII 部分
+screen() {
+    zh=; en=; sec=zh
+    for l in "$@"; do
+        if [ "$l" = -- ]; then sec=en; continue; fi
+        if [ $sec = zh ]; then zh="$zh$l
+"; else en="$en$l
+"; fi
+    done
+    eips -c >/dev/null 2>&1 || true
+    fb=; for c in "$(command -v fbink 2>/dev/null)" /var/local/kmc/bin/fbink /mnt/us/libkh/bin/fbink /mnt/us/koreader/fbink /mnt/base-us/veradroid/bin/fbink; do
+        [ -n "$c" ] && [ -x "$c" ] && "$c" -e >/dev/null 2>&1 && fb=$c && break   # 每个候选真的跑一次（KT6 上越狱自带的那个会段错误）
+    done
+    ft=; for c in /usr/java/lib/fonts/STHeitiMedium.ttf /usr/java/lib/fonts/STSongMedium.ttf /usr/java/lib/fonts/MYingHeiSMedium.ttf; do [ -f "$c" ] && ft=$c && break; done
+    if [ -n "$fb" ] && [ -n "$ft" ]; then
+        sw=$("$fb" -e 2>/dev/null | tr ';' '\n' | sed -n 's/^viewWidth=//p' | head -1)
+        case "$sw" in ''|*[!0-9]*) sw=1272 ;; esac
+        px=$((26 * sw / 1272)); [ $px -ge 20 ] || px=20   # 字号随屏宽（Scribe 1860 宽，PW6 的 26 px 在上面太小）
+        # FBInk 不认识这台机器（Scribe 上越狱带的旧 FBInk、模拟器）时它用 i.MX 的刷新命令，驱动拒绝（"MXCFB_SEND_UPDATE: ..."），
+        # 返回值却是 0，屏幕上什么都没有（scr-ks 模拟器实测）：看它的报错，有就当画不出来，改用 eips
+        if fe=$("$fb" -q -c -t regular="$ft",px=$px,top=$((40 * sw / 1272)),left=30,right=30 "$zh" 2>&1 >/dev/null); then
+            case "$fe" in
+                *Unidentified*|*SEND_UPDATE*|*rror*|*ailed*)
+                    echo "screen: fbink cannot refresh here ($(printf '%s' "$fe" | head -2 | tr '\n' ' ')), eips"
+                    eips -c >/dev/null 2>&1 || true ;;   # fbink 写进了帧缓冲但没刷出来：先清掉，免得 eips 刷新时带出半截中文
+                *) return 0 ;;
+            esac
+        fi
+    fi
+    [ -n "$en" ] || en=$(printf '%s' "$zh" | tr -cd '\n -~')
+    r=2; printf '%s' "$en" | while IFS= read -r l; do eips 1 $r "$l" >/dev/null 2>&1 || true; r=$((r + 2)); done
+}
+# 安装器画了整屏进度画面（/tmp/vd-progress.on）时不再往上写字：出错原因和代码已经在画面上
+msg() { echo "$*"; }
+# fail 中文原因 [英文原因]：在屏幕上停够时间（书库界面会盖住，30 秒里重画几次）再退出
+fail() {
+    echo "$1"
+    if [ ! -f /tmp/vd-progress.on ]; then
+        i=0; while [ $i -lt 3 ]; do
+            screen "VeraDroid 离线安装：没有安装" "" "$1" "" "什么都没有改动。日志：veradroid-install.log" \
+                -- "VeraDroid offline install: NOT installed" "" "${2:-Error, see veradroid-install.log}" "" "Nothing was changed."
+            sleep 10; i=$((i + 1))
+        done
+    fi
+    exit 1
+}
 # 有的固件用 sh -c 之类的方式启动，$0 不是脚本路径：退回到 documents
 HERE=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
 case "$HERE" in ''|/|/bin|/usr/bin|/tmp) HERE=/mnt/us/documents ;; esac
 ls "$HERE"/veradroid-*-*.tar.gz >/dev/null 2>&1 || HERE=/mnt/us/documents
 echo "HERE=$HERE"
-[ "$(id -u 2>/dev/null)" = 0 ] || fail "需要 root 权限运行（当前 uid=$(id -u)），请确认越狱已生效"
+[ "$(id -u 2>/dev/null)" = 0 ] || fail "需要 root 权限运行（当前 uid=$(id -u)），请确认越狱已生效" "Needs root (uid=$(id -u)). Is the jailbreak active?"
+# ---- 这台 Kindle 该用哪个离线包（按内核，和 bootstrap.sh 的检查一样）----
+#   5.x 内核（PW6 / Colorsoft）          veradroid-pw6-<版本>.tar.gz     VeraDroid-Offline.zip
+#   4.9 内核（PW5 / KT5 / KT6 / Scribe）  veradroid-k49-<版本>.tar.gz     VeraDroid-Offline-Experimental.zip
+#   3.0 / 4.1 内核（老机型）              veradroid-legacy-<版本>.tar.gz  VeraDroid-Offline-Legacy.zip
+# 拿错了包以前的样子：PW6 包在 Scribe 上被 bootstrap 的“实验机型”检查拒绝，原因用 eips 写中文 = 屏幕上什么都没有；
+# 老机型包在 Scribe 上什么都不拦（包里也有 bin/vdlmk），会把 3.0 内核的系统装上去。现在在这里就停下，屏幕上写清楚该用哪个 zip。
+fbw=$(cut -d, -f1 /sys/class/graphics/fb0/virtual_size 2>/dev/null)
+case "$(uname -r)" in
+    3.*|4.1.*) WANT=legacy; WANTZ=VeraDroid-Offline-Legacy.zip; DEV="老机型（$(uname -r | cut -d. -f1-2) 内核）"; DEVEN="older Kindle (kernel $(uname -r | cut -d. -f1-2))" ;;
+    4.*) WANT=k49; WANTZ=VeraDroid-Offline-Experimental.zip
+         case "$fbw" in 1860|1872|2480) DEV="Kindle Scribe"; DEVEN="Kindle Scribe" ;;
+             *) DEV="实验机型（PW5 / 入门款 2022、2024 / Scribe）"; DEVEN="PW5 / Kindle 2022, 2024 / Scribe" ;; esac ;;
+    *) WANT=pw6; WANTZ=VeraDroid-Offline.zip; DEV="PaperWhite 6 / Colorsoft"; DEVEN="PaperWhite 6 / Colorsoft" ;;
+esac
+echo "device: $DEVEN, kernel $(uname -r), fb width ${fbw:-?}: needs veradroid-$WANT-*.tar.gz ($WANTZ)"
 B=
-# 离线包：PW6 是 veradroid-pw6-<版本>.tar.gz，实验机型（PW5/KT5/KT6，4.9 内核）是 veradroid-k49-<版本>.tar.gz
-# 3.0 / 4.1 内核的老机型只能用 legacy 包：documents 里同时有别的包时也先挑它
-case "$(uname -r)" in 3.*|4.1.*) for f in "$HERE"/veradroid-legacy-*.tar.gz; do [ -f "$f" ] && B=$f && break; done ;; esac
-[ -n "$B" ] || for f in "$HERE"/veradroid-pw6-*.tar.gz "$HERE"/veradroid-k49-*.tar.gz "$HERE"/veradroid-legacy-*.tar.gz; do
-    [ -f "$f" ] && B=$f && break
-done
-[ -n "$B" ] || fail "缺少安装包（veradroid-…tar.gz），请把离线包里的文件全部放进 documents"
+for f in "$HERE"/veradroid-$WANT-*.tar.gz; do [ -f "$f" ] && B=$f && break; done
+if [ -z "$B" ]; then
+    other=; for f in "$HERE"/veradroid-pw6-*.tar.gz "$HERE"/veradroid-k49-*.tar.gz "$HERE"/veradroid-legacy-*.tar.gz; do [ -f "$f" ] && other=$(basename "$f") && break; done
+    if [ -n "$other" ]; then
+        case "$other" in veradroid-pw6-*) oz=VeraDroid-Offline.zip ;; veradroid-k49-*) oz=VeraDroid-Offline-Experimental.zip ;; *) oz=VeraDroid-Offline-Legacy.zip ;; esac
+        echo "wrong offline package: $other (from $oz); this device needs $WANTZ"
+        i=0; while [ $i -lt 4 ]; do   # 书库界面可能会盖住：40 秒里重画几次
+            screen "VeraDroid 离线安装：离线包拿错了" "" "这台 Kindle：$DEV" "documents 里的是：$other" "（来自 $oz，不是给这台机器的）" "" \
+                "请到官网下载：$WANTZ" "解压后把里面的 3 个文件放进 documents，" "删掉 $other，再点“VeraDroid 离线安装”。" "" "什么都没有改动。" \
+                -- "VeraDroid: WRONG OFFLINE PACKAGE" "" "This Kindle: $DEVEN" "Found: $other" "(from $oz)" "" "Download $WANTZ" "from the VeraDroid website, copy its 3 files" "into documents, delete $other, tap again." "" "Nothing was changed."
+            sleep 10; i=$((i + 1))
+        done
+        exit 1
+    fi
+    fail "缺少安装包（veradroid-$WANT-…tar.gz）：请把 $WANTZ 里的文件全部放进 documents" "Missing veradroid-$WANT-*.tar.gz. Copy all files of $WANTZ into documents."
+fi
 VER=$(basename "$B" .tar.gz); VER=${VER##*-}
 case "$B" in *veradroid-k49-*) export VD_EXPERIMENTAL=1 ;; esac   # 实验机型离线包
 # 老机型（3.0 / 4.1 内核）离线包：veradroid-legacy-<版本>.tar.gz，只在模拟器上验证过，和联网安装一样先警告、再点一次确认
@@ -36,14 +107,6 @@ case "$B" in *veradroid-legacy-*) export VD_EXPERIMENTAL=1; VER=$(basename "$B" 
 # 真机验证过的实验机型（PW5 / KT5 / KT6 / Scribe，4.9 / 5.x 内核）不经过这里，流程和以前一样。
 EMU=
 case "$(uname -r)" in 3.*) EMU="3.0 内核（PW2 / PW3 / Voyage 一代）" ;; 4.1.*) EMU="4.1 内核（PW4 / 入门款 2019 / Oasis 2 / Oasis 3）" ;; esac
-screen() { # 多行文字，整屏显示。优先 fbink + Kindle 自带中文字体，没有就逐行 eips
-    eips -c >/dev/null 2>&1 || true
-    fb=; for c in "$(command -v fbink 2>/dev/null)" /var/local/kmc/bin/fbink /mnt/us/libkh/bin/fbink /mnt/us/koreader/fbink; do [ -n "$c" ] && [ -x "$c" ] && fb=$c && break; done
-    ft=; for c in /usr/java/lib/fonts/STHeitiMedium.ttf /usr/java/lib/fonts/STSongMedium.ttf /usr/java/lib/fonts/MYingHeiSMedium.ttf; do [ -f "$c" ] && ft=$c && break; done
-    txt=$(printf '%s\n' "$@")
-    if [ -n "$fb" ] && [ -n "$ft" ] && "$fb" -q -c -t regular="$ft",px=26,top=40,left=30,right=30 "$txt" >/dev/null 2>&1; then return 0; fi
-    r=1; for l in "$@"; do eips 1 $r "$l" >/dev/null 2>&1 || true; r=$((r + 2)); done
-}
 if [ -n "$EMU" ]; then
     CF=/mnt/base-us/veradroid-confirm
     bid=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); now=$(cut -d. -f1 /proc/uptime)
@@ -69,10 +132,13 @@ if [ -n "$EMU" ]; then
     fi
 fi
 
-[ -f "$HERE/bootstrap.sh" ] || fail "缺少 bootstrap.sh，请把离线包里的文件全部放进 documents"
+[ -f "$HERE/bootstrap.sh" ] || fail "缺少 bootstrap.sh，请把 $WANTZ 里的文件全部放进 documents" "Missing bootstrap.sh. Copy all files of $WANTZ into documents."
 msg "VeraDroid：使用离线整包安装…"
 VD_BUNDLE="$B" VD_OFFLINE_BUNDLE="$B" VD_INSTALLER="$0" VD_HELPER="$HERE/bootstrap.sh" VD_VERSION="$VER" sh "$HERE/bootstrap.sh"
 rc=$?
 echo "bootstrap rc=$rc"
-[ "$rc" = 0 ] || fail "安装失败（代码 $rc）"
+# 安装器在进度画面出现之前就停下（机型 / 分辨率 / 固件检查）时，原因只在日志里：把它的最后一句话也写到屏幕上
+why=; whyen=; [ -f "$LOG" ] && why=$(tail -n 20 "$LOG" 2>/dev/null | grep -v -e '^bootstrap rc=' -e '^EN: ' -e '^[[:space:]]*$' | tail -1 | cut -c1-120)
+[ -f "$LOG" ] && whyen=$(tail -n 20 "$LOG" 2>/dev/null | sed -n 's/^EN: //p' | tail -1 | cut -c1-120)   # 安装器给 eips 留的英文原因
+[ "$rc" = 0 ] || fail "安装失败（代码 $rc）${why:+：$why}" "${whyen:-Install failed (code $rc). See veradroid-install.log}"
 exit 0

@@ -26,8 +26,14 @@ settings_defaults() {
     KFB_CLEAN=0            # 显示：快刷（DU，黑白两级）之后画面静止这么多毫秒，把快刷过的区域用 16 级灰度补刷一遍（字的边缘、图片变细腻；不闪）。0 = 不补
     KFB_REAGL_MIN=85       # 显示（均衡刷新方式）：一帧里变化面积达到屏幕的百分之多少就用 REAGL（16 级灰、清残影、约 205 ms）而不是 DU（黑白两级、约 134 ms、
                            # 盖住原来的文字时会透出残影——下拉面板上的“底下那页的影子”就是这个）。85 = 以前的规则（只有接近整屏才用 REAGL）
-    KFB_HWC=0              # 系统合成：1 = 用 hwcomposer.kindle（bin/ 里带着，开机时装进系统），每帧省 30–60 ms；0 = 原来的软件 GLES 合成。重启 Android 生效
+    KFB_HWC=1              # 系统合成：1 = 用 hwcomposer.kindle（bin/ 里带着，开机时装进系统），每帧省 30–60 ms；0 = 原来的软件 GLES 合成。重启 Android 生效
+                           # 0.93 / 1.01 起所有机型默认 1（docs/framework-project.md §9.9）
     KFB_HZ=30              # KFB_HWC=1 时的界面帧率 30 或 60（60 时触摸到出帧平均少等约 20 ms，动画多画一倍的帧）。重启 Android 生效
+    KFB_ONEPAGE=0          # framework 项目：1 = 系统合成（KFB_HWC=1）时共享缓冲只用一页（省一页 RGBX，PW6 约 8.6 MB）。要 project/framework 的镜像
+                           # 512 MB 机型默认 1（settings_load 里按内存设）；1 GB 机型上对话框淡入淡出多刷约一倍，默认 0
+    KFB_RGB565=0           # framework 项目：1 = 不透明的应用窗口用 RGB565 缓冲（每块缓冲省一半）。要 project/framework 的镜像
+                           # 512 MB 机型默认 1（settings_load 里按内存设）；1 GB 机型上多花一点 CPU（测试机实测），默认 0
+    VD_AUDIO=0             # framework 项目：0 = 不起 audioserver（应用的声音调用直接返回错误；镜像里本来就没有音频 HAL）。要 project/framework 的镜像。0.93 / 1.01 起默认 0
     KFB_ANIM_MODE=1        # 显示：翻页动画 0 关 1 跟随手势 2 左 3 右 4 上 5 下
     KFB_ANIM_DIR=2         # 动画方向：0 下 1 上 2 左 3 右（翻下一页通常用左）
     KFB_ANIM_STEPS=12      # 动画步数：越大越慢越细腻（MTK 驱动要求 <= 刷新区域宽/高）
@@ -89,6 +95,9 @@ settings_load() {
     case "$(cat "$SYS/model" 2>/dev/null)" in
         kt5|kt6|pw6|cs) KFB_ANIM_MODE=0 ;;
     esac
+    # 512 MB 机型（实际内存 < 700 MB，和 lowmem_ram 一样，不看 LOWMEM 开关）：一页共享缓冲 + RGB565 窗口缓冲默认开（省 ~8 + ~8 MB）。
+    # 只是默认值：机型文件和 settings.conf 照样能改（docs/framework-project.md §9.9）。
+    if lowmem_ram; then KFB_ONEPAGE=1; KFB_RGB565=1; fi
     # Optional per-model overlay (models/<id>.conf). User settings.conf still wins.
     m=$(cat "$SYS/model" 2>/dev/null)
     if [ -n "$m" ] && [ -f "$VD/models/$m.conf" ]; then

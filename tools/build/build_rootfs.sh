@@ -1,7 +1,15 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build the Android system images (rootfs.tar.gz) from this checkout.
-#   AOSP_WORK=<dir> sh tools/build/build_rootfs.sh prepare|sync|pw6|k49|repack <flavour>|all
+# Rebuild the Android system images (rootfs.tar.gz) that pack.sh ships, from a git checkout .
+#   build_rootfs.sh prepare|sync|pw6|k49|all            family images (one per binder ABI, releases up to PW6 0.90 / k49 0.98)
+#   build_rootfs.sh class <class>                         per-class image (docs/per-model-images.md):
+#        pw6 | k49-512 | k49-1g | a7-512 | a9-512 | a9-256   -> rootfs-<class>-<git>.tar.gz
+#   build_rootfs.sh repack-class <class>                  pack the last build of that class again
+#   Family pw6 and class pw6 of one revision have the same output name (rootfs-pw6-<git>): give them different DEST.
+# Paths can be overridden (e.g. for a second build host): VD_AOSP, VD_LOCK, WORK, DEST, VD_CPUS, VD_JOBS, VD_MEM, VD_MEMSWAP.
+# Parallel builds (one per out dir): VD_CNAME=<container name>, VD_LOCK=<lock per out dir>, VD_NOSYNC=1 (run 'sync' once before
+# starting them: a sync while another build compiles from the same tree removes and re-copies VeraIME / VeraHome under it).
+# The k49 family build edits device/veradroid/kindle/BoardConfig.mk (shared with class pw6 / family pw6): give it its own VD_SRC.
 #
 # Flavours:
 #   pw6  product veradroid_kindle (Cortex-A53, 64-bit binder = binder protocol 8, Kindle 5.15 kernels)
@@ -19,10 +27,11 @@
 # Builds run in the docker image vdaosp:7.1 (tools/build/Dockerfile.aosp).
 # WORK=<git checkout> (default: this repository).  Output: $DEST/rootfs-<flavour>-<git>.tar.gz (+ .sha256)
 set -eu
-: "${AOSP_WORK:?set AOSP_WORK to the build work directory (see the header of this script)}"
-if [ -z "${VD_BUILD_LOCKED:-}" ] && command -v flock >/dev/null; then VD_BUILD_LOCKED=1 exec flock "$AOSP_WORK/.build.lock" sh "$0" "$@"; fi
-A=$AOSP_WORK; WORK=${WORK:-$(cd "$(dirname "$0")/../.." && pwd)}
-SRC=$A/src-big; O64=$A/out-big; O32=$A/out-big32; DEST=${DEST:-$A/rootfs}
+A=${VD_AOSP:-$AOSP_WORK}
+if [ -z "${VD_HOME_LOCKED:-}" ]; then VD_HOME_LOCKED=1 exec flock "${VD_LOCK:-$A/.build_home.lock}" sh "$0" "$@"; fi
+WORK=${WORK:-${VD_BUILD:-$HOME/veradroid-build}/work}
+# VD_SRC: another source tree (e.g. an overlay over src-big holding one branch's patches); VD_O64 / VD_O32: family out dirs
+SRC=${VD_SRC:-$A/src-big}; O64=${VD_O64:-$A/out-big}; O32=${VD_O32:-$A/out-big32}; DEST=${DEST:-${VD_BUILD:-$HOME/veradroid-build}/big/rootfs}
 REV=$(git -C "$WORK" rev-parse --short HEAD)
 BC=$SRC/device/veradroid/kindle/BoardConfig.mk
 # veradroid_kindle_slim = veradroid_kindle + slim.mk (trimmed preloaded-classes / boot image classes, no media helper
@@ -37,7 +46,6 @@ prepare() {
 sync_src() {
     # device config, source overlays, VeraHome dir, small patches (apply-patches.sh), then what apply-patches does not do
     sh "$WORK/android/apply-patches.sh" "$SRC" | grep -v '^already\|^overlay:' || true
-    rm -rf "$SRC/device/veradroid/kindle32"; cp -R "$WORK/android/device/veradroid/kindle32" "$SRC/device/veradroid/kindle32"
     chmod 644 "$SRC/device/veradroid/kindle/init.kindle.rc"
     # packages/apps/Android.mk defines VeraHome (manifest = packages/apps/AndroidManifest.xml) and includes VeraIME.
     # Ours (android/packages/apps-Android.mk); the stock one would also pull in Bluetooth (not shipped).
@@ -56,16 +64,26 @@ sync_src() {
     grep -q 'config_enableWallpaperService">false' "$SRC/device/veradroid/kindle/overlay/frameworks/base/core/res/res/values/config.xml"
     echo "synced $REV into $SRC"
 }
-build() { # out-dir log
-    docker ps --format '{{.Names}}' | grep -q '^vdbuild' && { echo "another vdbuild container is running" >&2; exit 1; }
-    docker run --rm --name vdbuild-big \
-        --tmpfs /aosp/out/target/product/kindle/dex_bootjars:rw,exec,size=3g,uid=1000,gid=1000,mode=0755 \
-        --cpus=6 --memory=14g --memory-swap=18g \
+build() { # out-dir log [device]
+    DEV=${3:-kindle}
+    # the --tmpfs below would make the product dir as root when it does not exist yet (a new device): the build runs as uid 1000
+    [ -d "$1/target/product/$DEV" ] || { mkdir -p "$1/target/product/$DEV"; chown 1000:1000 "$1/target" "$1/target/product" "$1/target/product/$DEV"; }
+    # VD_CNAME: own container name for parallel builds (each with its own out dir, VD_LOCK and VD_NOSYNC; the PC host).
+    # Without it: the old rule, no other vdbuild* container at all (shared out / src trees).
+    CN=${VD_CNAME:-vdbuild-big}
+    if [ -z "${VD_CNAME:-}" ]; then
+        docker ps --format '{{.Names}}' | grep -q '^vdbuild' && { echo "another vdbuild container is running" >&2; exit 1; }
+    else
+        docker ps --format '{{.Names}}' | grep -qx "$CN" && { echo "$CN is already running" >&2; exit 1; }
+    fi
+    docker run --rm --name "$CN" \
+        --tmpfs /aosp/out/target/product/$DEV/dex_bootjars:rw,exec,size=3g,uid=1000,gid=1000,mode=0755 \
+        --cpus=${VD_CPUS:-6} --memory=${VD_MEM:-14g} --memory-swap=${VD_MEMSWAP:-18g} \
         -v "$SRC":/aosp/src -v "$1":/aosp/out -v "$A/ccache":/aosp/ccache \
         -e USER=builder -e OUT_DIR=/aosp/out -e USE_CCACHE=1 -e CCACHE_DIR=/aosp/ccache -e CCACHE_MAXSIZE=30G \
-        -e ANDROID_JACK_VM_ARGS='-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx3g' \
-        -e PRODUCT=$PRODUCT vdaosp:7.1 bash -c 'cd /aosp/src && source build/envsetup.sh >/dev/null && lunch $PRODUCT-userdebug >/dev/null &&
-            P=/aosp/out/target/product/kindle && rm -rf $P/system $P/root $P/data $P/obj/PACKAGING $P/*.img $P/installed-files*.txt && nice -n 12 make -j6 systemimage ramdisk; echo BUILD-EXIT=$?' > "$2" 2>&1
+        -e ANDROID_JACK_VM_ARGS='-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx'"${VD_JACK_XMX:-3g}" \
+        -e PRODUCT=$PRODUCT -e DEV=$DEV -e VD_JOBS=${VD_JOBS:-6} vdaosp:7.1 bash -c 'cd /aosp/src && source build/envsetup.sh >/dev/null && lunch $PRODUCT-userdebug >/dev/null &&
+            P=/aosp/out/target/product/$DEV && rm -rf $P/system $P/root $P/data $P/obj/PACKAGING $P/*.img $P/installed-files*.txt && nice -n 12 make -j$VD_JOBS systemimage ramdisk; echo BUILD-EXIT=$?' > "$2" 2>&1
     tail -1 "$2" | grep -q 'BUILD-EXIT=0' || { tail -30 "$2"; exit 1; }
 }
 pack() { # flavour product-dir
@@ -85,7 +103,7 @@ pack() { # flavour product-dir
     # the security-relevant files keep their usual modes
     [ "$(stat -c %a "$ST/init.kindle.rc")" = 644 ] || { echo "init.kindle.rc is not 644" >&2; exit 1; }
     [ "$(find "$ST" ! -type l \( -perm -o+w -o -perm -g+w \) | wc -l)" = 0 ] || { echo "group/world writable files in the image" >&2; exit 1; }
-    if [ "$1" = k49 ]; then
+    if [ "$1" = k49 ] && [ -z "${CLASS:-}" ]; then
         # k49 heap defaults (512 MB class)
         sed -i 's/^on early-init$/on early-init\n    setprop dalvik.vm.heapsize 256m\n    setprop dalvik.vm.heapgrowthlimit 128m\n    setprop dalvik.vm.heapstartsize 4m/' "$ST/init.kindle.rc"
         printf '\n# PW5: 512 MB RAM; keep ART under the kernel/32-bit address-space limit\ndalvik.vm.heapstartsize=4m\ndalvik.vm.heapgrowthlimit=128m\ndalvik.vm.heapsize=256m\ndalvik.vm.heaptargetutilization=0.75\ndalvik.vm.heapminfree=512k\ndalvik.vm.heapmaxfree=8m\n' >> "$ST/system/build.prop"
@@ -105,6 +123,14 @@ pack() { # flavour product-dir
     # the bundle ships these exact files: the installer keeps the image's odex when they match
     cp "$ST/system/priv-app/VeraHome/VeraHome.apk" "$DEST/VeraHome-$1-$REV.apk"; cp "$ST/system/app/VeraIME/VeraIME.apk" "$DEST/VeraIME-$1-$REV.apk"
     cp "$ST/system/lib/libandroid_runtime.so" "$DEST/libandroid_runtime-$1-$REV.so"
+    if [ -n "${CLASS:-}" ]; then
+        # a class image must say what it was built for (lib/props.sh / bootstrap.sh check it against the device)
+        bp=$ST/system/build.prop
+        grep -qx "ro.vd.class=$CLASS" "$bp" || { echo "image $1 is not class $CLASS" >&2; exit 1; }
+        grep -qx "dalvik.vm.isa.arm.variant=$CPU" "$bp" || { echo "image $1 is not built for $CPU" >&2; exit 1; }
+        grep -qx "ro.product.device=$DEV" "$bp" || { echo "image $1 is not device $DEV" >&2; exit 1; }
+        grep -qx "ro.vd.slim=1" "$bp" || { echo "image $1 is not slim" >&2; exit 1; }
+    fi
     echo "ro.vd.image=$1-$REV" >> "$ST/system/build.prop"
     t=$DEST/rootfs-$1-$REV.tar.gz
     nice -n 12 tar --owner=0 --group=0 --numeric-owner -czf "$t.partial" -C "$ST" . && mv "$t.partial" "$t"
@@ -115,16 +141,36 @@ pack() { # flavour product-dir
 case "${1:-all}" in
     prepare) prepare ;;
     sync) sync_src ;;
-    pw6) sync_src; build "$O64" "$A/log/build-big-pw6.log"; pack pw6 "$O64/target/product/kindle" ;;
+    pw6) [ -n "${VD_NOSYNC:-}" ] || sync_src; build "$O64" "$A/log/build-big-pw6.log"; pack pw6 "$O64/target/product/kindle" ;;
     repack) # repack pw6|k49: pack the image again from the last build of that flavour (no compile)
         case "${2:-}" in pw6) pack pw6 "$O64/target/product/kindle" ;; k49) pack k49 "$O32/target/product/kindle" ;; *) exit 2 ;; esac ;;
     k49)
         [ -d "$O32" ] || nice -n 15 cp -a --reflink=auto "$O64" "$O32"
-        sync_src
+        [ -n "${VD_NOSYNC:-}" ] || sync_src
         trap 'sed -i "s/^TARGET_USES_64_BIT_BINDER := false # k49$/TARGET_USES_64_BIT_BINDER := true/" "$BC"' EXIT
         sed -i 's/^TARGET_USES_64_BIT_BINDER := true$/TARGET_USES_64_BIT_BINDER := false # k49/' "$BC"
         grep -q 'BINDER := false # k49' "$BC"
         build "$O32" "$A/log/build-big-k49.log"; pack k49 "$O32/target/product/kindle" ;;
     all) prepare; sh "$0" pw6; sh "$0" k49 ;;
-    *) echo "usage: prepare|sync|pw6|k49|all" >&2; exit 2 ;;
+    class|repack-class)
+        CLASS=${2:?class}
+        case "$CLASS" in    # product device cpu-variant
+            pw6)     set -- "$1" veradroid_pw6     kindle     cortex-a53 ;;
+            k49-512) set -- "$1" veradroid_k49_512 kindle_k49 cortex-a53 ;;
+            k49-1g)  set -- "$1" veradroid_k49_1g  kindle_k49 cortex-a53 ;;
+            a7-512)  set -- "$1" veradroid_a7_512  kindle_a7  cortex-a7 ;;
+            a9-512)  set -- "$1" veradroid_a9_512  kindle32   cortex-a9 ;;
+            a9-256)  set -- "$1" veradroid_a9_256  kindle32   cortex-a9 ;;
+            *) echo "unknown class $CLASS" >&2; exit 2 ;;
+        esac
+        PRODUCT=$2; DEV=$3; CPU=$4; OC=$A/out-c-$CLASS
+        # seed a new out dir from the last family build (host tools, target/common Java intermediates, ccache-warm objects;
+        # the build container runs as uid 1000, so an empty dir made here would not even be writable)
+        if [ ! -d "$OC" ]; then
+            SEED=$O64; [ "$DEV" = kindle32 ] && [ -d "$A/out-legacy" ] && SEED=$A/out-legacy
+            nice -n 15 cp -a --reflink=auto "$SEED" "$OC.partial" && mv "$OC.partial" "$OC"
+        fi
+        if [ "$1" = class ]; then [ -n "${VD_NOSYNC:-}" ] || sync_src; build "$OC" "$A/log/build-class-$CLASS.log" "$DEV"; fi
+        pack "$CLASS" "$OC/target/product/$DEV" ;;
+    *) echo "usage: prepare|sync|pw6|k49|all|class <c>|repack-class <c>" >&2; exit 2 ;;
 esac

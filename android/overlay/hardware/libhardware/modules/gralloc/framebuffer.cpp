@@ -73,6 +73,11 @@ struct fb_context_t {
 #define KFB_FILE "/dev/kfb/fb"
 #define KFB_INFO "/dev/kfb/info"
 #define KFB_FIFO "/dev/kfb/epd.fifo"
+/* framework project (docs/framework-project.md): when the host creates this file, both framebuffer "pages" handed to
+   SurfaceFlinger are page 0 of /dev/kfb/fb (gralloc.cpp does not step to the next page, see KFB_FLAG_ONEPAGE). SurfaceFlinger
+   then draws straight into the picture the bridge reads and page 1 is never touched (tmpfs: no memory). */
+#define KFB_ONEPAGE "/dev/kfb/onepage"
+#define KFB_FLAG_ONEPAGE 0x00010000   /* private_module_t::flags, read by gralloc.cpp (android/fw-patches.py) */
 static bool g_kfb = false;
 static int g_kfb_fifo = -1;
 
@@ -208,7 +213,8 @@ int mapFrameBufferLocked(struct private_module_t* module)
         if (ftruncate(vfd, need) < 0 && errno != EPERM && errno != EINVAL)
             ALOGW("ftruncate(%s) failed: %s", KFB_FILE, strerror(errno));
 
-        module->flags = PAGE_FLIP;
+        const bool onepage = access(KFB_ONEPAGE, F_OK) == 0;
+        module->flags = PAGE_FLIP | (onepage ? KFB_FLAG_ONEPAGE : 0);
         module->info = vinfo;
         module->finfo = vfinfo;
         module->xdpi = 300.0f;
@@ -224,9 +230,10 @@ int mapFrameBufferLocked(struct private_module_t* module)
             return -errno;
         }
         module->framebuffer->base = intptr_t(vaddr);
-        memset(vaddr, 0xff, vbSize);    // white
+        // white; with one page only page 0 is touched (and ever used)
+        memset(vaddr, 0xff, onepage ? (size_t)vfinfo.line_length * h : vbSize);
         g_kfb = true;
-        ALOGI("using virtual e-ink framebuffer %s: %dx%d, %d pages", KFB_FILE, w, h, NUM_BUFFERS);
+        ALOGI("using virtual e-ink framebuffer %s: %dx%d, %d pages%s", KFB_FILE, w, h, NUM_BUFFERS, onepage ? " (one page: both are page 0)" : "");
         return 0;
     }
 

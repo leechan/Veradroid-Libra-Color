@@ -166,7 +166,7 @@ framework_stop() {
         *" kppmainapp "*)
             if grep -qx kppmainapp $FWD/running0; then
                 ( stop kppmainapp >/dev/null 2>&1 ) & sp=$!
-                i=0; while kill -0 $sp 2>/dev/null && [ $i -lt 40 ]; do usleep 100000; i=$((i + 1)); done
+                i=0; while kill -0 $sp 2>/dev/null && [ $i -lt 100 ]; do usleep 100000; i=$((i + 1)); done
                 t "fw: library app stopped before pausing the window manager ($((i * 100)) ms)"
             fi ;;
     esac
@@ -231,6 +231,34 @@ fw_clear_restart_counters() {
     # 本次开机内的重启次数在 /var/run/upstart/<服务>.restarts（超过 5 就重启整机），跨开机的重启计数在 /var/local/upstart/ 下同名文件
     # 我们主动停 / 起的每一个任务都清：固定那一批、这次实际停掉的、以及跟着框架停掉后由我们起回去的（$FWD/restored）
     for s in $FW_BASE statusbar kppmainapp framework $(cat $FWD/stopped $FWD/restored 2>/dev/null); do rm -f "/var/run/upstart/$s.restarts" "/var/local/upstart/$s.restarts" 2>/dev/null; done
+}
+
+# Kindle 自己的崩溃记录（*_crash_*.tgz / .txt / .mbp1，每份约 3.6 MB）会写进书库 documents：VeraDroid 停 / 恢复 Kindle 界面时
+# 书库程序等系统进程偶尔被当成挂死（一台测试机：从 11-13 到 11-15 攒了 40 份 KPPMainAppV2_*）。它们不是用户的书，却占空间、出现在书库里。
+# 回到 Kindle 时挪到 veradroid/kindle-crash/（只留最近 6 份），连同索引服务给它们建的 .sdr 目录。
+# 只认 Kindle 自己的命名：<进程>_<pid>_<版本>_crash_<月>_<日>_<时.分.秒>_<年>.<tgz|txt|mbp1>
+# （例：KPPMainAppV2_25595_058-juno_1905_sangria_bellatrix4-479431_crash_Nov_15_19.22.27_2026.tgz）。
+# 用户自己名字里带 “_crash_” 的书 / 笔记（my_crash_course.txt）绝不碰：挪走后这里只留 6 份，旧的会被删。
+fw_is_crash_dump() { # basename
+    echo "$1" | grep -qE '^[A-Za-z][A-Za-z0-9.-]*_[0-9]+_[^/]*_crash_[A-Z][a-z][a-z]_[0-9]{1,2}_[0-9]{2}\.[0-9]{2}\.[0-9]{2}_[0-9]{4}\.(tgz|txt|mbp1|sdr)$'
+}
+fw_tidy_crash() {
+    D=/mnt/base-us/documents; K=/mnt/base-us/veradroid/kindle-crash; n=0
+    for f in $D/*_crash_*.tgz $D/*_crash_*.txt $D/*_crash_*.mbp1; do
+        [ -f "$f" ] || continue
+        fw_is_crash_dump "${f##*/}" || continue
+        mkdir -p $K 2>/dev/null || return 0
+        mv -f "$f" $K/ 2>/dev/null && n=$((n + 1))
+        b=${f%.*}; [ -d "$b.sdr" ] && rm -rf "$b.sdr"
+    done
+    for s in $D/*_crash_*.sdr; do
+        [ -d "$s" ] || continue; fw_is_crash_dump "${s##*/}" || continue; b=${s%.sdr}
+        [ -e "$b.tgz" ] || [ -e "$b.txt" ] || [ -e "$b.mbp1" ] || rm -rf "$s"
+    done
+    [ -d $K ] && ls -t $K 2>/dev/null | tail -n +7 | while read -r x; do rm -f "$K/$x"; done
+    # 书库里已经有它们的条目：挪走以后让索引服务整库重扫一次，不然书库里留着打不开的空条目
+    [ $n -gt 0 ] && { t "fw: moved $n Kindle crash file(s) out of documents to $K"; lipc-set-prop com.lab126.scanner doFullScan 1 2>/dev/null; }
+    return 0
 }
 
 launcher_ensure() {
@@ -334,7 +362,7 @@ framework_start() {
     rm -rf $FWD
     # Android 运行期间 Kindle 的索引服务是停的：这期间传进 documents 的书，回来以后要让它整库重扫一次才会出现在书库里
     dm0=$(cat $W/docs.mtime 2>/dev/null); dm1=$(stat -c %Y /mnt/base-us/documents 2>/dev/null); rm -f $W/docs.mtime
-    ( sleep 10; launcher_ensure
+    ( sleep 10; launcher_ensure; fw_tidy_crash
       if [ -n "$dm0" ] && [ -n "$dm1" ] && [ "$dm0" != "$dm1" ]; then lipc-set-prop com.lab126.scanner doFullScan 1 2>/dev/null; fi ) >/dev/null 2>&1 &
     t "kindle ui resumed"
 }

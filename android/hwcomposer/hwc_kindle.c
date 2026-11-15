@@ -17,6 +17,10 @@
  *
  * Switches (files in /dev/kfb, written by the host):
  *   hwc.off    at open: refuse to load -> SurfaceFlinger uses the framebuffer HAL as before
+ *   onepage    at open (framework project, docs/framework-project.md): the patched gralloc gives SurfaceFlinger two
+ *              framebuffer "pages" that are the same memory (page 0 of /dev/kfb/fb). GLES frames are then drawn straight
+ *              into the picture the bridge reads, overlay frames are written there too, and page 1 is never touched
+ *              (tmpfs: it costs no memory). No page sync is needed when switching between GLES and overlay frames.
  *   hwc.gles   checked at run time: never take overlays (GLES composition, only vsync and posting come from here)
  *   hz         refresh rate for vsync, 10..60
  *
@@ -48,6 +52,7 @@
 #define KFB_GLES "/dev/kfb/hwc.gles"
 #define KFB_HZ   "/dev/kfb/hz"
 #define KFB_PAGE "/dev/kfb/page"
+#define KFB_ONEPAGE "/dev/kfb/onepage"
 
 /* the default gralloc's private_handle_t (gralloc_priv.h), C view */
 struct vd_handle {
@@ -82,6 +87,7 @@ struct ctx {
     pthread_mutex_t lock;
     pthread_cond_t cond;
     int vsync_on;
+    int onepage;              /* /dev/kfb/onepage: both framebuffer pages are page 0 (see the header) */
     unsigned long n_ovl, n_gles, n_sync, n_same;
     uint32_t *rowbuf;         /* one composed row */
     long last_us, max_us;
@@ -117,8 +123,8 @@ static void notify(struct ctx *c, int page, int y0, int y1)
 
 static size_t page_round(size_t v) { return (v + 4095) & ~(size_t)4095; }
 
-/* can we copy this layer ourselves? fills the buffer stride (pixels) */
-static int layer_ok(const struct ctx *c, const hwc_layer_1_t *l, int *stride)
+/* can we copy this layer ourselves? fills the buffer stride (pixels); *bpp = 4 (RGBA / RGBX 8888) or 2 (RGB 565) */
+static int layer_ok2(const struct ctx *c, const hwc_layer_1_t *l, int *stride, int *bpp)
 {
     if (l->flags & HWC_SKIP_LAYER) return 0;
     if (l->compositionType == HWC_BACKGROUND || l->compositionType == HWC_SIDEBAND) return 0;
@@ -135,10 +141,25 @@ static int layer_ok(const struct ctx *c, const hwc_layer_1_t *l, int *stride)
        align(h, 2) * align(w, 2) * 4 + 4 bytes, rounded up to a page */
     if (s->left != 0 || s->top != 0) return 0;
     int st = (s->right + 1) & ~1, bh = (s->bottom + 1) & ~1;
-    if (page_round((size_t)bh * st * 4 + 4) != (size_t)h->size) return 0;
+    int b;
+    if (page_round((size_t)bh * st * 4 + 4) == (size_t)h->size) b = 4;
+    else if (page_round((size_t)bh * st * 2 + 4) == (size_t)h->size && l->blending == HWC_BLENDING_NONE) b = 2;   /* 565: opaque */
+    else return 0;
     (void)c;
     *stride = st;
+    if (bpp) *bpp = b;
     return 1;
+}
+static int layer_ok(const struct ctx *c, const hwc_layer_1_t *l, int *stride) { int b; return layer_ok2(c, l, stride, &b); }
+
+static inline void row565(uint32_t *d, const uint16_t *s, int w)
+{
+    for (int x = 0; x < w; x++) {
+        uint32_t p = s[x];
+        uint32_t r = (p >> 11) & 31, g = (p >> 5) & 63, b = p & 31;
+        r = (r << 3) | (r >> 2); g = (g << 2) | (g >> 4); b = (b << 3) | (b >> 2);
+        d[x] = 0xff000000u | (b << 16) | (g << 8) | r;          /* bytes R, G, B, X */
+    }
 }
 
 static inline uint32_t blend_px(uint32_t s, uint32_t d)
@@ -152,7 +173,7 @@ static inline uint32_t blend_px(uint32_t s, uint32_t d)
 }
 
 /* put the part of one layer that lies on output row y into the row buffer (the lower layers are already in it) */
-static void row_layer(const struct ctx *c, uint32_t *row, const hwc_layer_1_t *l, int stride, int y)
+static void row_layer(const struct ctx *c, uint32_t *row, const hwc_layer_1_t *l, int stride, int bpp, int y)
 {
     const struct vd_handle *h = (const struct vd_handle *)l->handle;
     int dx = l->displayFrame.left, dy = l->displayFrame.top;
@@ -161,8 +182,9 @@ static void row_layer(const struct ctx *c, uint32_t *row, const hwc_layer_1_t *l
     if (dx < 0) { sx = -dx; w += dx; dx = 0; }
     if (dx + w > c->w) w = c->w - dx;
     if (w <= 0) return;
-    const uint32_t *s = (const uint32_t *)((const uint8_t *)(uintptr_t)h->base + ((size_t)(y - dy) * stride + sx) * 4);
     uint32_t *d = row + dx;
+    if (bpp == 2) { row565(d, (const uint16_t *)((const uint8_t *)(uintptr_t)h->base + ((size_t)(y - dy) * stride + sx) * 2), w); return; }
+    const uint32_t *s = (const uint32_t *)((const uint8_t *)(uintptr_t)h->base + ((size_t)(y - dy) * stride + sx) * 4);
     if (l->blending == HWC_BLENDING_NONE) { memcpy(d, s, (size_t)w * 4); return; }
     for (int x = 0; x < w; x++) {
         uint32_t p = s[x];
@@ -194,7 +216,7 @@ static int hwc_prepare(hwc_composer_device_1_t *dev, size_t n, hwc_display_conte
         if (l->compositionType == HWC_BACKGROUND || l->compositionType == HWC_SIDEBAND) continue;
         l->compositionType = ok ? HWC_OVERLAY : HWC_FRAMEBUFFER;
     }
-    if (!ok && c->ovl_since_gles && c->fb) {
+    if (!ok && c->ovl_since_gles && c->fb && !c->onepage) {
         /* GLES draws only what changed and takes the rest of the frame from its previous buffer: both pages must hold
            the picture that is on screen now */
         memcpy(c->fb + (size_t)(c->last_page ^ 1) * c->page_bytes, c->fb + (size_t)c->last_page * c->page_bytes, c->page_bytes);
@@ -226,16 +248,16 @@ static int hwc_set(hwc_composer_device_1_t *dev, size_t n, hwc_display_contents_
         for (size_t i = nl; i-- > 0;)
             if (covers_all(c, &list->hwLayers[i])) { first = i; break; }
         int base_full = covers_all(c, &list->hwLayers[first]);
-        int st[32];
+        int st[32], bp[32];
         size_t top = nl > 32 ? 32 : nl;       /* prepare() refused more than 32 layers */
-        for (size_t i = first; i < top; i++) { st[i] = 0; if (!layer_ok(c, &list->hwLayers[i], &st[i])) st[i] = 0; }
+        for (size_t i = first; i < top; i++) { st[i] = 0; bp[i] = 4; if (!layer_ok2(c, &list->hwLayers[i], &st[i], &bp[i])) st[i] = 0; }
         const struct vd_handle *bh = (const struct vd_handle *)list->hwLayers[first].handle;
         int bdy = list->hwLayers[first].displayFrame.top, bdx = list->hwLayers[first].displayFrame.left;
         int y0 = -1, y1 = 0;
         const size_t rb = (size_t)c->w * 4;
         for (int y = 0; y < c->h; y++) {
             const uint8_t *src;
-            int single = base_full && st[first];
+            int single = base_full && st[first] && bp[first] == 4;
             for (size_t i = first + 1; single && i < top; i++)
                 if (st[i] && y >= list->hwLayers[i].displayFrame.top && y < list->hwLayers[i].displayFrame.bottom) single = 0;
             if (single) {      /* the usual row: one opaque full-width layer, straight from its buffer */
@@ -243,7 +265,7 @@ static int hwc_set(hwc_composer_device_1_t *dev, size_t n, hwc_display_contents_
             } else {
                 memset(c->rowbuf, 0, rb);
                 for (size_t i = first; i < top; i++)
-                    if (st[i]) row_layer(c, c->rowbuf, &list->hwLayers[i], st[i], y);
+                    if (st[i]) row_layer(c, c->rowbuf, &list->hwLayers[i], st[i], bp[i], y);
                 src = (const uint8_t *)c->rowbuf;
             }
             uint8_t *d = dst + (size_t)y * rb;
@@ -315,8 +337,8 @@ static void hwc_register_procs(hwc_composer_device_1_t *dev, hwc_procs_t const *
 static void hwc_dump(hwc_composer_device_1_t *dev, char *buf, int len)
 {
     struct ctx *c = (struct ctx *)dev;
-    snprintf(buf, len, "hwc_kindle: %dx%d %ld Hz, frames written here %lu + unchanged %lu (last %ld us, max %ld us), GLES frames %lu, page syncs %lu, force_gles=%d\n",
-             c->w, c->h, 1000000000L / c->period_ns, c->n_ovl, c->n_same, c->last_us, c->max_us, c->n_gles, c->n_sync, c->force_gles);
+    snprintf(buf, len, "hwc_kindle: %dx%d %ld Hz, frames written here %lu + unchanged %lu (last %ld us, max %ld us), GLES frames %lu, page syncs %lu, force_gles=%d onepage=%d\n",
+             c->w, c->h, 1000000000L / c->period_ns, c->n_ovl, c->n_same, c->last_us, c->max_us, c->n_gles, c->n_sync, c->force_gles, c->onepage);
 }
 
 static int hwc_get_configs(hwc_composer_device_1_t *dev, int disp, uint32_t *configs, size_t *num)
@@ -376,6 +398,7 @@ static int hwc_open(const struct hw_module_t *module, const char *name, struct h
     if (c->fb == MAP_FAILED) { free(c); return -ENOMEM; }
     c->fifo = -1;
     c->page_noted = -1;
+    c->onepage = access(KFB_ONEPAGE, F_OK) == 0;
     c->rowbuf = malloc((size_t)c->w * 4);
     if (!c->rowbuf) { free(c); return -ENOMEM; }
     pthread_mutex_init(&c->lock, NULL);
@@ -394,7 +417,7 @@ static int hwc_open(const struct hw_module_t *module, const char *name, struct h
     c->dev.getDisplayConfigs = hwc_get_configs;
     c->dev.getDisplayAttributes = hwc_get_attributes;
     pthread_create(&c->vthread, NULL, vsync_thread, c);
-    ALOGI("virtual e-ink composer: %dx%d, %d Hz", c->w, c->h, hz);
+    ALOGI("virtual e-ink composer: %dx%d, %d Hz%s", c->w, c->h, hz, c->onepage ? ", one page" : "");
     *device = &c->dev.common;
     return 0;
 }

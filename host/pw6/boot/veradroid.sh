@@ -22,7 +22,7 @@ esac
 umask 022
 VD=${VD:-$(cd "$(dirname "$0")/.." && pwd)}
 . "$VD/boot/lib/common.sh"
-for m in settings memory slim props freeze framework container input network sleep status cmd watchdog afterboot splash bootwatch diagboot compile energy tz; do . "$VD/boot/lib/$m.sh"; done
+for m in settings memory slim imgclass props freeze framework container input network sleep status cmd watchdog afterboot splash bootwatch diagboot compile energy tz; do . "$VD/boot/lib/$m.sh"; done
 mkdir -p $SYS $W
 settings_load
 
@@ -203,6 +203,7 @@ rm -f $SYS/settings.app      # 上次运行时某个应用的显示参数：冷�
 # 和 k49 一致：系统盘挂不上（镜像还被上次的进程占着、正在调整大小）时说清楚原因，而不是接着报“还没有安装系统”
 storage_mount || { splash "VeraDroid：系统盘还在被上次的进程占用，请过一分钟再试" 36; sleep 5; exit 1; }
 [ -d $R ] && [ -e $R/init -o -f $R/.demo ] || { t "no system image at $R"; splash "VeraDroid：还没有安装系统" 40; sleep 5; exit 1; }
+imgclass_check || { splash "VeraDroid：系统镜像和这台 Kindle 的硬件不匹配，请重新安装" 40; sleep 5; exit 1; }
 FRAMEWORK_AFTER_SAVE='splash_begin 正在准备 3'
 framework_stop || { t "cannot pause kindle ui"; exit 1; }
 splash_update 12

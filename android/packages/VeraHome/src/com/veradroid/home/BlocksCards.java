@@ -98,13 +98,17 @@ final class BlocksCards {
             File f = new File(HostLink.KFB + "fb");
             long page = (long) w * h * 4;
             if (f.length() < page * 2) return null;
+            // framework project (KFB_ONEPAGE, docs/framework-project.md): SurfaceFlinger only ever uses page 0. Page 1 is a hole in
+            // the tmpfs file; reading it through a mapping would allocate it (about half a page of RAM with this sampling), so
+            // leave it alone: its sample stays all zero, the same on leaving and on coming back, and page 0 is picked.
+            int pages = new File(HostLink.KFB + "onepage").exists() ? 1 : 2;
             java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "r");
             try {
-                java.nio.MappedByteBuffer mb = raf.getChannel().map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, page * 2);
+                java.nio.MappedByteBuffer mb = raf.getChannel().map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, page * pages);
                 int step = Math.max(2, w / 260);
                 sampleW = w / step; sampleH = h / step;
                 byte[][] out = new byte[2][sampleW * sampleH];
-                for (int pg = 0; pg < 2; pg++) {
+                for (int pg = 0; pg < pages; pg++) {
                     for (int y = 0; y < sampleH; y++) {
                         long row = pg * page + (long) (y * step) * w * 4;
                         for (int x = 0; x < sampleW; x++) {

@@ -15,19 +15,94 @@ LOG=/mnt/us/veradroid-install.log
 if : >>"$LOG" 2>/dev/null; then exec >>"$LOG" 2>&1; fi   # 写不了日志也继续
 echo "==== $(date) online install: uid=$(id -u 2>/dev/null) fw=$(head -1 /etc/prettyversion.txt 2>/dev/null) exp=${VD_EXPERIMENTAL:-0}"
 rm -f /tmp/vd-progress.on
-# 安装器画了整屏进度画面（/tmp/vd-progress.on）时不再用 eips 往上写字：出错原因和代码已经在画面上
-say() { echo "$1"; [ -f /tmp/vd-progress.on ] || eips 1 2 "$1" >/dev/null 2>&1 || true; }
-fail() { say "$1"; [ -f /tmp/vd-progress.on ] || eips 1 4 "日志：veradroid-install.log" >/dev/null 2>&1 || true; sleep 10; exit 1; }
-[ "$(id -u 2>/dev/null)" = 0 ] || fail "VeraDroid：需要 root 权限，请确认越狱已生效"
-command -v curl >/dev/null 2>&1 || fail "VeraDroid：找不到 curl，无法联网安装；请改用离线整包"
-say "VeraDroid：正在下载安装器…"
+# ---- 屏幕上的说明 ----
+# eips 只有 ASCII 字形（中文它画不出来）：以前 say / fail 用 eips 写中文，出错时屏幕上什么都没有（Scribe 用户：“网络不行”“闪退”）。
+# 现在 fbink + Kindle 自带的中文字体能刷出来就写中文，刷不出来（没有能用的 fbink、Scribe 上旧 FBInk 不认识机型）就用 eips 写英文。
+# screen 中文行… [-- 英文行…]：整屏显示
+screen() {
+    zh=; en=; sec=zh
+    for l in "$@"; do
+        if [ "$l" = -- ]; then sec=en; continue; fi
+        if [ $sec = zh ]; then zh="$zh$l
+"; else en="$en$l
+"; fi
+    done
+    eips -c >/dev/null 2>&1 || true
+    fb=; for c in "$(command -v fbink 2>/dev/null)" /var/local/kmc/bin/fbink /mnt/us/libkh/bin/fbink /mnt/us/koreader/fbink /mnt/base-us/veradroid/bin/fbink; do
+        [ -n "$c" ] && [ -x "$c" ] && "$c" -e >/dev/null 2>&1 && fb=$c && break   # 每个候选真的跑一次（KT6 上越狱自带的那个会段错误）
+    done
+    ft=; for c in /usr/java/lib/fonts/STHeitiMedium.ttf /usr/java/lib/fonts/STSongMedium.ttf /usr/java/lib/fonts/MYingHeiSMedium.ttf; do [ -f "$c" ] && ft=$c && break; done
+    if [ -n "$fb" ] && [ -n "$ft" ]; then
+        sw=$("$fb" -e 2>/dev/null | tr ';' '\n' | sed -n 's/^viewWidth=//p' | head -1)
+        case "$sw" in ''|*[!0-9]*) sw=1272 ;; esac
+        px=$((26 * sw / 1272)); [ $px -ge 20 ] || px=20   # 字号随屏宽（Scribe 1860 宽）
+        # FBInk 不认识这台机器（Scribe 上越狱带的旧 FBInk、模拟器）时它用 i.MX 的刷新命令，驱动拒绝（"MXCFB_SEND_UPDATE: ..."），
+        # 返回值却是 0，屏幕上什么都没有（scr-ks 模拟器实测）：看它的报错，有就当画不出来，改用 eips
+        if fe=$("$fb" -q -c -t regular="$ft",px=$px,top=$((40 * sw / 1272)),left=30,right=30 "$zh" 2>&1 >/dev/null); then
+            case "$fe" in
+                *Unidentified*|*SEND_UPDATE*|*rror*|*ailed*)
+                    echo "screen: fbink cannot refresh here ($(printf '%s' "$fe" | head -2 | tr '\n' ' ')), eips"
+                    eips -c >/dev/null 2>&1 || true ;;   # fbink 写进了帧缓冲但没刷出来：先清掉，免得 eips 刷新时带出半截中文
+                *) return 0 ;;
+            esac
+        fi
+    fi
+    [ -n "$en" ] || en=$(printf '%s' "$zh" | tr -cd '\n -~')
+    r=2; printf '%s' "$en" | while IFS= read -r l; do eips 1 $r "$l" >/dev/null 2>&1 || true; r=$((r + 2)); done
+}
+# say 中文 [英文]：一行进度（只写日志 + eips 英文；整屏进度画面出来以后就不写了）
+say() { echo "$1"; [ -f /tmp/vd-progress.on ] || [ -z "${2:-}" ] || eips 1 2 "$(printf '%-50s' "$2")" >/dev/null 2>&1 || true; }
+# fail 中文原因 [英文原因]：整屏说明，书库界面会盖住，30 秒里重画几次
+fail() {
+    echo "$1"
+    if [ ! -f /tmp/vd-progress.on ]; then
+        i=0; while [ $i -lt 3 ]; do
+            screen "VeraDroid：没有安装" "" "$1" "" "日志：veradroid-install.log" -- "VeraDroid: NOT installed" "" "${2:-Error, see veradroid-install.log}"
+            sleep 10; i=$((i + 1))
+        done
+    fi
+    exit 1
+}
+# 这台机器的离线整包（按内核，和 bootstrap.sh / VeraDroid-Offline.sh 的规则一样）
+case "$(uname -r)" in 3.*|4.1.*) OZ=VeraDroid-Offline-Legacy.zip ;; 4.*) OZ=VeraDroid-Offline-Experimental.zip ;; *) OZ=VeraDroid-Offline.zip ;; esac
+# 下载安装器失败：再探一次服务器，说清楚卡在哪一步（Wi-Fi / 域名解析 / 连接 / TLS / 太慢），国内网络建议用离线整包。
+# 只连我们自己的服务器，不找第三方。设 NZ（中文原因）NE（英文原因）
+net_why() { # 第一次下载时 curl 的退出码
+    r1=$1
+    host=${BASE#*://}; host=${host%%/*}; host=${host%%:*}
+    sug="国内网络常见：可以换个网络，或改用离线整包 $OZ（官网下载，电脑拷进 documents）"
+    rt=$(awk '$2 == "00000000" && $1 != "lo" {print $1; exit}' /proc/net/route 2>/dev/null)
+    if [ -z "$rt" ]; then NZ="没连上 Wi-Fi：请在 Kindle 的设置里连上 Wi-Fi，再点一次"; NE="No Wi-Fi. Connect Wi-Fi in Kindle settings, tap again."; return; fi
+    w=$(curl -sS -o /dev/null -I --connect-timeout 10 --max-time 20 -w '%{time_namelookup} %{time_connect} %{time_appconnect} %{http_code}' "$BASE/" 2>/dev/null) && r2=0 || r2=$?
+    set -- $w; tc=${2:-0}; ta=${3:-0}
+    echo "net_why: first curl rc=$r1 probe rc=$r2 times=$w route=$rt"
+    yr=$(date +%Y 2>/dev/null)
+    case "$r2" in
+        6) NZ="域名解析失败（DNS）：Wi-Fi 连上了，但解析不了 $host。$sug"; NE="DNS failed for $host. Use $OZ (offline)." ;;
+        7) NZ="连不上服务器（连接被拒绝 / 被拦截）。$sug"; NE="Cannot connect to $host (refused/blocked). Use $OZ." ;;
+        35|51|53|54|58|59|60|64|66|77|80|83|90|91)
+            if [ "${yr:-2026}" -lt 2025 ] 2>/dev/null; then NZ="安全连接（TLS）失败：Kindle 的时间不对（现在显示 $(date '+%Y-%m-%d')）。请在 Kindle 设置里改对日期时间再点一次"; NE="TLS failed: Kindle clock is wrong ($(date +%F)). Fix date/time, tap again."
+            else NZ="安全连接（TLS）失败（curl $r2）：网络在拦截 / 篡改 HTTPS。$sug"; NE="TLS/HTTPS failed (curl $r2). Use $OZ (offline)."; fi ;;
+        28) if [ "$(awk -v t="$tc" 'BEGIN{print (t > 0)}')" = 1 ] && [ "$(awk -v t="$ta" 'BEGIN{print (t == 0)}')" = 1 ]; then
+                NZ="连上了服务器，但安全连接（TLS）握手卡住（常见于 HTTPS 被干扰）。$sug"; NE="TLS handshake stalled (HTTPS blocked?). Use $OZ."
+            else NZ="服务器 10 秒连不上（超时：被拦截或网络太差）。$sug"; NE="Connect to $host timed out. Use $OZ (offline)."; fi ;;
+        0) NZ="网络太慢或中断了（服务器能连上，但下载没完成，curl $r1）。再点一次重试；$sug"; NE="Network too slow / dropped (curl $r1). Tap again, or use $OZ." ;;
+        *) NZ="连不上服务器（curl $r2）。$sug"; NE="Cannot reach $host (curl $r2). Use $OZ (offline)." ;;
+    esac
+}
+[ "$(id -u 2>/dev/null)" = 0 ] || fail "VeraDroid：需要 root 权限，请确认越狱已生效" "Needs root. Is the jailbreak active?"
+command -v curl >/dev/null 2>&1 || fail "VeraDroid：找不到 curl，无法联网安装；请改用离线整包 $OZ" "No curl on this Kindle. Use $OZ (offline)."
+say "VeraDroid：正在下载安装器…" "VeraDroid: downloading the installer..."
 curl -fsSL --retry 3 --connect-timeout 20 "$BASE/bootstrap.sh?t=$(date +%s)" -o /tmp/vd-bootstrap.sh \
-    || fail "VeraDroid：连不上服务器，请检查 Wi-Fi；国内网络可改用离线整包"
+    || { rc=$?; say "VeraDroid：下载安装器失败（curl $rc），正在检查网络…" "Download failed (curl $rc), checking network..."; net_why $rc; fail "VeraDroid：$NZ" "$NE"; }
 VD_INSTALLER="$0" sh /tmp/vd-bootstrap.sh
 rc=$?
 rm -f /tmp/vd-bootstrap.sh
 echo "bootstrap rc=$rc"
-[ "$rc" = 0 ] || fail "VeraDroid：安装失败（代码 $rc）"
-say "VeraDroid：完成，正在启动"
+# 安装器在进度画面出现之前就停下（机型 / 分辨率 / 固件检查）时，原因只在日志里：把它的最后一句话也写到屏幕上
+why=; whyen=; [ -f "$LOG" ] && why=$(tail -n 20 "$LOG" 2>/dev/null | grep -v -e '^bootstrap rc=' -e '^EN: ' -e '^[[:space:]]*$' | tail -1 | cut -c1-120)
+[ -f "$LOG" ] && whyen=$(tail -n 20 "$LOG" 2>/dev/null | sed -n 's/^EN: //p' | tail -1 | cut -c1-120)   # 安装器给 eips 留的英文原因
+[ "$rc" = 0 ] || fail "VeraDroid：安装失败（代码 $rc）${why:+：$why}" "${whyen:-Install failed (code $rc). See veradroid-install.log}"
+say "VeraDroid：完成，正在启动" "VeraDroid: done, starting"
 exit 0
 }

@@ -1,0 +1,12 @@
+# VeraDroid memory class "1g" (MemTotal >= 700 MB: PW6, Colorsoft, Scribe 1 / 2). Include BEFORE inheriting
+# veradroid_base.mk: ro.* properties keep their first definition. Values = what the 1 GB devices ran with before
+# (veradroid_kindle.mk + host memory.sh, which leaves >= 700 MB devices alone). docs/per-model-images.md.
+PRODUCT_PROPERTY_OVERRIDES += \
+    dalvik.vm.heapstartsize=8m \
+    dalvik.vm.heapgrowthlimit=256m \
+    dalvik.vm.heapsize=512m \
+    dalvik.vm.heaptargetutilization=0.75 \
+    dalvik.vm.heapminfree=512k \
+    dalvik.vm.heapmaxfree=8m \
+    ro.config.low_ram=true \
+    ro.vd.ram=1g

@@ -47,17 +47,27 @@ final class VdHostNet {
         return v == null ? null : v[0];
     }
 
-    /** Link properties for {@code iface} as the Kindle has them now, or null (then the normal code path runs). */
+    /**
+     * Link properties for {@code iface} as the Kindle has them now, or null when the Kindle has no IPv4 address on it
+     * (yet). Address and gateway are read from the kernel (the interface itself and /proc/net/route) so they are right
+     * even when the host wrote /dev/kfb/hostnet before the Kindle's Wi-Fi was up (first real PW4: the file had only
+     * iface + dns, this returned null and the stock code ran DHCP on the Kindle's own wlan0). The file's addr / gw are
+     * the fallback, DNS always comes from the file.
+     */
     static LinkProperties linkProperties(String iface) {
         if (!enabled() || iface == null) return null;
         String[] v = read();
-        if (v == null || !iface.equals(v[0]) || v[1] == null) return null;
+        if (v == null || !iface.equals(v[0])) return null;
+        String addr = kernelAddr(iface), gw = kernelGateway(iface);
+        if (addr == null) addr = v[1];
+        if (gw == null) gw = v[2];
+        if (addr == null) return null;
         try {
             LinkProperties lp = new LinkProperties();
             lp.setInterfaceName(iface);
-            lp.addLinkAddress(new LinkAddress(v[1]));
-            if (v[2] != null) {
-                lp.addRoute(new RouteInfo((IpPrefix) null, NetworkUtils.numericToInetAddress(v[2]), iface));
+            lp.addLinkAddress(new LinkAddress(addr));
+            if (gw != null) {
+                lp.addRoute(new RouteInfo((IpPrefix) null, NetworkUtils.numericToInetAddress(gw), iface));
             }
             if (v[3] != null) {
                 for (String d : v[3].split(",")) {
@@ -70,6 +80,59 @@ final class VdHostNet {
             Log.e(TAG, "bad " + FILE + ": " + e);
             return null;
         }
+    }
+
+    /**
+     * hostnet: wait until the Kindle itself has an address on {@code iface} (its own Wi-Fi / DHCP brings it up), then
+     * return the link properties. Never null unless the provisioning thread is interrupted (link went down / stopped):
+     * in hostnet mode Android must never run DHCP or touch the Kindle's interface.
+     */
+    static LinkProperties waitForKindle(String iface) {
+        int n = 0;
+        while (!Thread.currentThread().isInterrupted()) {
+            LinkProperties lp = linkProperties(iface);
+            if (lp != null) return lp;
+            if (n++ % 20 == 0) Log.i(TAG, "waiting for the Kindle to configure " + iface + " (no DHCP from Android)");
+            try {
+                Thread.sleep(3000);
+            } catch (InterruptedException e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** First IPv4 address/prefix on the interface, or null. */
+    private static String kernelAddr(String iface) {
+        try {
+            java.net.NetworkInterface ni = java.net.NetworkInterface.getByName(iface);
+            if (ni == null) return null;
+            for (java.net.InterfaceAddress ia : ni.getInterfaceAddresses()) {
+                if (ia.getAddress() instanceof java.net.Inet4Address) {
+                    return ia.getAddress().getHostAddress() + "/" + ia.getNetworkPrefixLength();
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "kernel address of " + iface + ": " + e);
+        }
+        return null;
+    }
+
+    /** Default gateway on the interface from /proc/net/route (hex, little endian), or null. */
+    private static String kernelGateway(String iface) {
+        try (BufferedReader r = new BufferedReader(new FileReader("/proc/net/route"))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                String[] f = line.trim().split("\\s+");
+                if (f.length < 3 || !f[0].equals(iface) || !f[1].equals("00000000")) continue;
+                long g = Long.parseLong(f[2], 16);
+                if (g == 0) continue;
+                return (g & 0xff) + "." + ((g >> 8) & 0xff) + "." + ((g >> 16) & 0xff) + "." + ((g >> 24) & 0xff);
+            }
+        } catch (IOException | NumberFormatException e) {
+            Log.w(TAG, "kernel gateway of " + iface + ": " + e);
+        }
+        return null;
     }
 
     /** {iface, addr/prefix, gateway, comma-separated dns} */

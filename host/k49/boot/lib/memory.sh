@@ -176,3 +176,34 @@ readahead_restore() {
     rm -f $W/readahead.saved
     return 0
 }
+
+# 回环设备直读写（LOOP_DIO，默认 1；docs/pw5-perf.md）。512 MB 的 PW5 / KT5 / KT6 上，Android 的系统盘是 ext4 镜像（loop1），镜像文件
+# 在 vfat 的 /mnt/base-us 上，而 /mnt/base-us 本身又是 eMMC 分区上的 loop0。缓冲方式的 loop 把 Android 读过的每一页在页缓存里
+# 存三份（ext4 的文件页、vfat 上镜像文件的页、loop0 下面块设备的页），两个 loop 内核线程还各拷一遍。PW5 模拟器（5.18.2，0.93/1.01
+# 候选）实测微信读书从桌面冷启动：显示出来要 76–90 s，90 秒内读盘 0.75–1 GB、workingset_refault 19–26 万页、直接内存规整 1.4–1.8 万次；
+# 两个 loop 都开直读写以后 17 s 左右，读盘、重新缺页、规整都降到原来的 1/4 到 1/10。内核 4.4 起才有（4.1 / 3.0 的老机型没有，自动跳过）。
+# 镜像的 loop 停止时会摘掉，不用恢复；/mnt/base-us 的 loop 是 Kindle 自己的：记下来，stop 时改回缓冲方式。
+loopdio_set() { # loopN 0|1
+    f=/sys/block/$1/loop/dio
+    [ -r "$f" ] || return 1
+    [ "$(cat "$f")" = "$2" ] && return 0
+    "$VD/bin/vdloopdio" "$(loop_dev $1)" $2 2>>$LOG
+}
+loopdio_on() {
+    [ "${LOOP_DIO:-1}" = 1 ] && [ -x "$VD/bin/vdloopdio" ] || return 0
+    d=$(awk '$2 == "/mnt/base-us" {print $1}' /proc/mounts | tail -1)
+    n=$(echo "${d##*/}" | sed 's/^loop//')
+    case "$d" in /dev/loop*)
+        if [ -n "$n" ] && [ "$(cat /sys/block/loop$n/loop/dio 2>/dev/null)" = 0 ] && loopdio_set loop$n 1; then
+            echo loop$n > $W/loopdio.base; t "loop dio: /mnt/base-us (loop$n) direct"
+        fi ;;
+    esac
+    for l in $(img_loops); do loopdio_set $l 1 && t "loop dio: system image ($l) direct"; done
+    return 0
+}
+loopdio_restore() {
+    [ -f $W/loopdio.base ] || return 0
+    l=$(cat $W/loopdio.base); rm -f $W/loopdio.base
+    [ -x "$VD/bin/vdloopdio" ] && loopdio_set $l 0 && t "loop dio: /mnt/base-us ($l) back to buffered"
+    return 0
+}

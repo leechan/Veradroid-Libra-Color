@@ -48,7 +48,11 @@ while :; do
         4.*) meta="$BASE/static/bootstrap-k49.json?t=$(date +%s)" ;;
         *) meta="$BASE/api/bootstrap" ;;
     esac
-    json=$(curl_do -fsSL --max-time 20 "$meta" 2>/dev/null) || { sleep 3600; continue; }
+    # 装的是按类别编的系统（bootstrap 记在 $VD/image-class）：先看那个类别的版本，服务器上没有再看通用的
+    ic=$(cat "$VD/image-class" 2>/dev/null)
+    json=
+    [ -n "$ic" ] && json=$(curl_do -fsSL --max-time 20 "$BASE/static/bootstrap-$ic.json?t=$(date +%s)" 2>/dev/null)
+    [ -n "$json" ] || json=$(curl_do -fsSL --max-time 20 "$meta" 2>/dev/null) || { sleep 3600; continue; }
     # 版本号有 "version":"x" 和 "version": "x" 两种写法
     new=$(printf '%s' "$json" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')
     # 安装时记录的实验机型：更新时沿用，否则 bootstrap 会拒绝（要求 VD_EXPERIMENTAL=1）

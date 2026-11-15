@@ -237,7 +237,9 @@ def main():
                 check(o['acts'] == [] and o['keys'] == [], f'{name}: the old binary fired nothing here ({o["acts"]}) -- the intended change')
             elif proto == 'B' and base:
                 o = run(base, shim, proto, name)
-                same = [e[2:] for e in o['touch']] == [e[2:] for e in r['touch']] and o['keys'] == r['keys'] and o['acts'] == r['acts']
+                # 'hint ...' actions (the on-screen gesture hint) came after the base binary on purpose: not compared
+                nohint = lambda a: [x for x in a if not x.startswith('hint ')]
+                same = [e[2:] for e in o['touch']] == [e[2:] for e in r['touch']] and o['keys'] == r['keys'] and nohint(o['acts']) == nohint(r['acts'])
                 check(same, f'{name}: identical to the old binary ({len(r["touch"])} touch events)')
             if '-k' not in sys.argv:
                 subprocess.call(['rm', '-rf', r['dir']])

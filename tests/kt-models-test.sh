@@ -21,7 +21,7 @@ need "$B" 'MODEL=\$\{VD_MODEL:-\$\{detected:-\$guessed\}\}' 'VD_MODEL still wins
 need "$B" "logon .\*fscrypt:" 'fscrypt v1 key detection'
 need "$B" '4\.\*\) grep -q' 'fscrypt loop only on 4.x kernels'
 need "$B" '/dev/loop/\[0-9\]\*' 'bootstrap /dev/loop/N fallback'
-need "$B" '4\.\*\) meta="\$BASE/static/bootstrap-k49.json' 'online install on 4.x kernels uses the k49 bundle'
+need "$B" '4\.\*) echo "\$BASE/static/bootstrap-k49.json' 'online install on 4.x kernels uses the k49 family bundle (family_meta, when there is no class meta)'
 for m in pw5 kt5 kt6; do
     need "$REPO/kpm/pkg/veradroid-$m/install.sh" "export VD_MODEL=$m" "$m KPM sets VD_MODEL"
     grep -q 'veradroid-pw6-' "$REPO/kpm/pkg/veradroid-$m/install.sh" && { echo "FAIL $m KPM hardcodes the PW6 bundle"; fail=1; }

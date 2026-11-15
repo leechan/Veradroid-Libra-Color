@@ -349,6 +349,8 @@ pw5-5192 一共 4 轮（第 1 轮 + 3 轮重复），结果一致：
 
 ## 8. 按机型（第二阶段，2026-11-13，release/big）
 
+> 2026-11-14 后续：按硬件类别各编一个产品，见 `docs/per-model-images.md`（这一节的结论大多仍成立：pw6 / k49 之间指令集没有差别；新的是 Oasis 2 / 3 的 A7 类、legacy 改用 slim 产品、512 / 256 MB 不预加载 drawable）。
+
 镜像还是只有两种（pw6 / k49，`tools/build/build_rootfs.sh`），按机型不同的东西全是数据，开机前由宿主按机型 / 内存档选：
 
 - 机制：`host/{pw6,k49}/boot/lib/props.sh` 的 `props_apply`（`slim_apply` 之后、容器启动之前）。来源（同一个键后者优先）：

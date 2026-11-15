@@ -6,8 +6,10 @@ set -e
 SRC=${1:?usage: sh apply-patches.sh /path/to/aosp}
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$SRC/device/veradroid"
-rm -rf "$SRC/device/veradroid/kindle"
-cp -R "$HERE/device/veradroid/kindle" "$SRC/device/veradroid/kindle"
+# every device of ours (kindle = PW6 board; kindle_k49 / kindle_a7 / kindle32 = the per-class boards, docs/per-model-images.md)
+for d in "$HERE"/device/veradroid/*/; do
+    d=$(basename "$d"); rm -rf "$SRC/device/veradroid/$d"; cp -R "$HERE/device/veradroid/$d" "$SRC/device/veradroid/$d"
+done
 # 自己的应用（桌面）
 rm -rf "$SRC/packages/apps/VeraHome"; cp -R "$HERE/packages/VeraHome" "$SRC/packages/apps/VeraHome"
 # 整文件覆盖
@@ -18,3 +20,5 @@ rm -rf "$SRC/packages/apps/VeraHome"; cp -R "$HERE/packages/VeraHome" "$SRC/pack
 done
 # 小补丁（用 python 做精确替换，已打过就跳过）
 python3 "$HERE/small-patches.py" "$SRC"
+# framework 项目（project/framework 分支，docs/framework-project.md）：框架源码改动，全部由 /dev/kfb 里的开关文件启用
+python3 "$HERE/fw-patches.py" "$SRC"

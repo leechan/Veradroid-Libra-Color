@@ -4,7 +4,8 @@
 
 # media.codec / media.drm / media.extractor are only reachable through mediaserver (media.player), which is already
 # disabled in init.kindle.rc: three processes (about 5.5 MB PSS) that start while zygote is fighting for the two cores.
-# audioserver is NOT here: system_server's AudioService waits forever for media.audio_policy.
+# audioserver: started by vd_audio below unless the host started Android without it (/dev/kfb/noaudio, VD_AUDIO=0; framework
+# project, docs/framework-project.md). Without that file it starts as before (libmedia of older images waits forever for it).
 service mediacodec /system/bin/mediacodec
     class main
     user mediacodec
@@ -30,4 +31,18 @@ service bootanim /system/bin/true
     user graphics
     group graphics
     disabled
+    oneshot
+
+service audioserver /system/bin/audioserver
+    class main
+    user audioserver
+    # media gid needed for /dev/fm (radio) and for /data/misc/media (tee)
+    group audio camera drmrpc inet media mediadrm net_bt net_bt_admin net_bw_acct
+    ioprio rt 4
+    writepid /dev/cpuset/foreground/tasks /dev/stune/foreground/tasks
+    disabled
+
+service vd_audio /system/bin/sh -c "[ -e /dev/kfb/noaudio ] || start audioserver"
+    class main
+    user root
     oneshot

@@ -150,7 +150,16 @@ wifi_set() { # 0|1
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; }
 # 给显示桥发命令。显示桥不在了就不写：往没有读端的 FIFO 里 echo 会永远卡在 open()，
 # 命令监听、看门狗、唤醒流程以前都可能这样被拖死（显示桥崩过：tmpfs 写满时 SIGBUS）。
-epd_send() { [ -p $X/epd.fifo ] && alive $W/epd.pid || return 1; echo "$*" > $X/epd.fifo; }
+# 给会卡住的命令加时限：timeout <秒> 命令...。busybox 1.30 以前的写法是 timeout -t <秒>；两种都不认就不限时。
+vd_timeout() {
+    vt=$1; shift
+    if [ -z "$VD_TMO" ]; then
+        if timeout 1 true 2>/dev/null; then VD_TMO=new; elif timeout -t 1 true 2>/dev/null; then VD_TMO=old; else VD_TMO=none; fi
+    fi
+    case "$VD_TMO" in new) timeout "$vt" "$@" ;; old) timeout -t "$vt" "$@" ;; *) "$@" ;; esac
+}
+# 显示桥在检查和写之间退出时，打开 FIFO 写会一直等一个读者：限 3 秒，不让调用者（sleep_watch 醒来时的 REDRAW、解冻、命令监听）卡死
+epd_send() { [ -p $X/epd.fifo ] && alive $W/epd.pid || return 1; vd_timeout 3 sh -c 'echo "$1" > "$2"' sh "$*" $X/epd.fifo; }
 # 在 Android 里执行命令的前缀：平时用 nsenter 进容器的命名空间。3.0 内核（$W/mode=chroot）没有 /proc/PID/ns，
 # nsenter 用不了：chroot 到 /proc/<容器 init>/root——这个特殊链接直接落在容器（另一个挂载命名空间）的根上，
 # 容器里的 /dev、/proc、/data 都看得到。用法：$(vd_in) /system/bin/sh -c '...'（也能放在 timeout 后面）。

@@ -64,7 +64,7 @@ for p in $ps; do kill -9 $p 2>/dev/null; done
 kmsg "helpers and container killed"
 for p in $(pgrep -f "^[^ ]*slirp4netns .*--api-socket $W/slirp.sock" 2>/dev/null); do kill $p 2>/dev/null; done
 for f in watchdog sleep lipc cmd boot slirp shutw compile jankrec; do rm -f $W/$f.pid; done
-rm -rf $W/prefault.done $W/compile.stale $W/compile.lock $W/compile.queue $W/compile.total $W/compile.index $W/booted $W/pkglist.stamp $W/wifi.rx $W/wifi.busy
+rm -rf $W/ss.pid $W/prefault.done $W/compile.stale $W/compile.lock $W/compile.queue $W/compile.total $W/compile.index $W/booted $W/pkglist.stamp $W/wifi.rx $W/wifi.busy
 input_stop
 display_stop
 # 共用网络模式下传书开着时放行过的端口（cmd.sh fwd_on）：撤掉，不让 Kindle 的防火墙一直开着这个口

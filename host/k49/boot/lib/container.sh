@@ -77,7 +77,8 @@ rot_args() {   # 给 veradroid-epd / veradroid-input 的额外参数（0 度时�
 display_start() {
     [ -x "$VD/bin/veradroid-epd" ] || { t "display: veradroid-epd missing"; return 0; }
     epd_pd=-1; case "$KFB_PWRDOWN" in ""|*[!0-9]*) ;; *) epd_pd=$KFB_PWRDOWN ;; esac   # 面板掉电延时，没设 / off = 不碰
-    $VD/bin/veradroid-epd run $X/fb $X/epd.fifo $X/ctl --w ${viewWidth:-1272} --h ${viewHeight:-1696} --contrast ${KFB_CONTRAST:-1.3} --dither ${KFB_DITHER:-3} --flash ${KFB_FLASH:-0} --invert ${KFB_INVERT:-0} --lightf ${KFB_LIGHTF:-0} --darken ${KFB_DARKEN:-0} --mode ${KFB_MODE:-0} --settle ${KFB_SETTLE:-120} --hold ${KFB_HOLD:-70} --pace ${KFB_PACE:-0} --clean ${KFB_CLEAN:-0} --reagl-min ${KFB_REAGL_MIN:-35} --anim-mode ${KFB_ANIM_MODE:-1} --anim-dir ${KFB_ANIM_DIR:-2} --anim-steps ${KFB_ANIM_STEPS:-12} --anim-min ${KFB_ANIM_MIN:-60} --pwrdown $epd_pd $(rot_args) >$W/epd.log 2>&1 &
+    : > $W/epd.log   # 追加方式打开：watchdog 的 log_cap 截短它时，显示桥接着写在新的末尾（不会留下空洞）
+    $VD/bin/veradroid-epd run $X/fb $X/epd.fifo $X/ctl --w ${viewWidth:-1272} --h ${viewHeight:-1696} --contrast ${KFB_CONTRAST:-1.3} --dither ${KFB_DITHER:-3} --flash ${KFB_FLASH:-0} --invert ${KFB_INVERT:-0} --lightf ${KFB_LIGHTF:-0} --darken ${KFB_DARKEN:-0} --mode ${KFB_MODE:-0} --settle ${KFB_SETTLE:-120} --hold ${KFB_HOLD:-70} --pace ${KFB_PACE:-0} --clean ${KFB_CLEAN:-0} --reagl-min ${KFB_REAGL_MIN:-35} --anim-mode ${KFB_ANIM_MODE:-1} --anim-dir ${KFB_ANIM_DIR:-2} --anim-steps ${KFB_ANIM_STEPS:-12} --anim-min ${KFB_ANIM_MIN:-60} --pwrdown $epd_pd $(rot_args) >>$W/epd.log 2>&1 &
     echo $! > $W/epd.pid
     rot_deg > $W/rotate
     # 以后能不能当场转 180：0 度启动时没传 --vw，可见宽 != 行宽（PW5 无 FBInk）的机器转了会偏 12 像素，只能重启
@@ -196,6 +197,26 @@ sysfont_mount() {     # 容器里（run_in_ns），/dev 的 tmpfs 建好之后�
         umount $R/dev/vdfont/system.ttf 2>/dev/null
     fi
     echo "veradroid: system font $sf_src not mounted, stock fonts" >&2
+    return 0
+}
+sysbin_wrap_mount() {   # 容器里（run_in_ns），/dev 的 tmpfs 建好之后、换根之前
+    # 两个系统程序换成 boot/ 里的小脚本（原因写在脚本里）：
+    #   dex2oat：应用自己（DexClassLoader / 插件框架）编 /data 下的代码时只做 verify-at-runtime，不用 speed；
+    #   cmd：应用自己跑的 "cmd package compile ..."（自己给自己强制重编）不执行。
+    # 真的程序复制到 /dev/vdbin（不能 bind：Android init 把根设成 shared，后面绑在 /system/bin/dex2oat 上的包装会传播到
+    # 同一个 peer 的 bind 上，包装 exec 自己死循环；测试机实测）。SYSBIN_WRAP=off 关掉。
+    [ "${SYSBIN_WRAP:-on}" = off ] && return 0
+    for sw_n in dex2oat cmd; do
+        [ -f $VD/boot/$sw_n-wrap.sh ] && [ -x $R/system/bin/$sw_n ] || continue
+        mkdir -p $R/dev/vdbin || return 0
+        if cp $R/system/bin/$sw_n $R/dev/vdbin/$sw_n && cp $VD/boot/$sw_n-wrap.sh $R/dev/vdbin/$sw_n-wrap &&
+            chmod 755 $R/dev/vdbin/$sw_n $R/dev/vdbin/$sw_n-wrap &&
+            mount --bind $R/dev/vdbin/$sw_n-wrap $R/system/bin/$sw_n; then :
+        else
+            rm -f $R/dev/vdbin/$sw_n $R/dev/vdbin/$sw_n-wrap
+            echo "veradroid: $sw_n wrapper not mounted" >&2
+        fi
+    done
     return 0
 }
 container_start() {
@@ -396,6 +417,7 @@ run_in_ns() {
         [ -d $VD/fonts ] && mount --bind $VD/fonts $R/data/media/0/Fonts
         chmod 777 $R/data/media/0/Fonts 2>/dev/null
         sysfont_mount        # 系统字体（SYSTEM_FONT）：上面 sysfont_prepare 准备好的才绑
+        sysbin_wrap_mount    # dex2oat / cmd 的包装（boot/*-wrap.sh）
         # /sdcard -> /storage/self/primary -> /storage/emulated/0. vold/FUSE
         # replaces /storage/emulated and filters by sdcard_rw group; KOReader
         # then gets EACCES on books. Drop that FUSE view and bind the ext4

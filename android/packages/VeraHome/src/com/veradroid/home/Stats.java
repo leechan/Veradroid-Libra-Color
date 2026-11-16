@@ -159,4 +159,70 @@ final class Stats {
         } catch (Throwable ignored) { }
         return n;
     }
+
+    // ------------------------------------------------------------------ pruning
+    // 两个偏好文件以前只增不删：reader 每打开过一本书留下十来个键（p: t: s: c: o: e: ch: st: fl: r: bm: d:），书删了也还在；
+    // usage_stats 每天 5 个 batt.<日期>.* 和 2 个 read.<日期>.*。SharedPreferences 每次 apply() 都整份重写文件，Activity 的
+    // onPause / onStop 和服务启动还要等这些写完：文件越大，翻页存进度、离开阅读器 / 主页时卡得越久。一天最多清一次，在后台线程：
+    //  - batt.<日期>.*、read.<日期>.* 只留最近 62 天（只用到今天的电量和最近 31 天的阅读时长；累计数在 read.total.* 里，不动）；
+    //  - reader 里书已经不在的那些键：路径是绝对路径、文件不存在，而且它所在的文件夹在、不是空的（书库没挂上时挂载点是空的，
+    //    那时什么都不删），并且 60 天没打开过。还在的书的进度一个键都不动。
+    private static final String READER_PFX[] = { "p:", "t:", "s:", "c:", "o:", "e:", "ch:", "st:", "fl:", "r:", "bm:", "d:" };
+
+    static void pruneAsync(final Context c) {
+        final Context a = c.getApplicationContext() != null ? c.getApplicationContext() : c;
+        new Thread(new Runnable() { @Override public void run() {
+            try { prune(a); } catch (Throwable t) { android.util.Log.w("VeraHome", "prefs prune failed", t); }
+        } }, "prefs-prune").start();
+    }
+
+    static synchronized void prune(Context c) {
+        SharedPreferences sp = p(c);
+        String today = day();
+        if (today.equals(sp.getString("__pruned", ""))) return;
+        long t0 = android.os.SystemClock.uptimeMillis();
+        String cut = new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date(System.currentTimeMillis() - 62L * 86400000L));
+        SharedPreferences.Editor e = sp.edit();
+        int nu = 0;
+        for (String k : new java.util.ArrayList<String>(sp.getAll().keySet())) {
+            if (!(k.startsWith("batt.") || k.startsWith("read."))) continue;
+            int a = k.indexOf('.') + 1, b = k.indexOf('.', a);
+            if (b - a != 8) continue;                               // read.total.* 等不是日期的不动
+            String d = k.substring(a, b);
+            if (d.compareTo(cut) < 0) { e.remove(k); nu++; }
+        }
+        e.putString("__pruned", today).apply();
+
+        SharedPreferences rp = Store.prefs(c, "reader");
+        java.util.Map<String, ?> all = rp.getAll();
+        java.util.Map<String, java.util.List<String>> byPath = new java.util.HashMap<String, java.util.List<String>>();
+        for (String k : all.keySet())
+            for (String px : READER_PFX)
+                if (k.startsWith(px)) {
+                    String path = k.substring(px.length());
+                    java.util.List<String> l = byPath.get(path);
+                    if (l == null) { l = new java.util.ArrayList<String>(); byPath.put(path, l); }
+                    l.add(k);
+                    break;
+                }
+        long old = System.currentTimeMillis() - 60L * 86400000L;
+        SharedPreferences.Editor re = rp.edit();
+        int nb = 0, nk = 0;
+        for (java.util.Map.Entry<String, java.util.List<String>> en : byPath.entrySet()) {
+            String path = en.getKey();
+            if (!path.startsWith("/")) continue;
+            java.io.File f = new java.io.File(path);
+            if (f.exists()) continue;
+            java.io.File dir = f.getParentFile();
+            String[] sib = dir == null ? null : dir.list();
+            if (sib == null || sib.length == 0) continue;            // 文件夹不在 / 是空的（书库没挂上）：不能断定书没了
+            Object r = all.get("r:" + path);
+            if (r instanceof Long && (Long) r > old) continue;        // 最近读过：可能只是暂时挪开了
+            for (String k : en.getValue()) { re.remove(k); nk++; }
+            nb++;
+        }
+        if (nk > 0) re.apply();
+        android.util.Log.i("VeraHome", "prefs prune: " + nu + " old daily stats keys, " + nb + " missing books (" + nk + " keys), "
+            + (android.os.SystemClock.uptimeMillis() - t0) + " ms");
+    }
 }

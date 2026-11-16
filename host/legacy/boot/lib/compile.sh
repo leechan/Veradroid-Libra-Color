@@ -336,8 +336,18 @@ compile_one() { # pkg mode force
     # 马上（用原来的 dex2oat 参数，线程数仍按上面限制：kt6-5192 上不限时这一步 dex2oat 峰值 150 MB）补一个 interpret-only，
     # 至少回到安装时的状态。也在 babysit 下跑（nice 19、内存保护）。
     if [ $r = fail ] && [ -z "$f" ] && ! compile_held; then
-        adb_sh "cmd package compile -m interpret-only -f $pkg" >/dev/null 2>&1 &
-        compile_babysit $!
+        # speed 在这台机器上编不完（番茄免费小说 147 MB：PW6 上 speed 超过 520 秒）时，用户用过这个应用、已经有 JIT 档案的话
+        # 改编 speed-profile（只编档案里的热点方法）：一台 PW6 测试机实测番茄 194 秒编完，冷启动到主界面从约 2 分钟降到 28 秒。
+        # 没有档案（刚装好还没打开过）就和以前一样补 interpret-only。
+        cprof=$SYS/data/misc/profiles/cur/0/$pkg/primary.prof
+        if [ $r = timeout ] && [ -s "$cprof" ] && [ "${COMPILE_PROFILE_FALLBACK:-on}" != off ]; then
+            adb_sh "cmd package compile -m speed-profile -f $pkg" >/dev/null 2>&1 &
+            compile_babysit $!
+            [ "$(odex_filter "$pkg")" = speed-profile ] || { adb_sh "cmd package compile -m interpret-only -f $pkg" >/dev/null 2>&1 & compile_babysit $!; }
+        else
+            adb_sh "cmd package compile -m interpret-only -f $pkg" >/dev/null 2>&1 &
+            compile_babysit $!
+        fi
         t "compile: $pkg restored to $(odex_filter "$pkg")"
     fi
     [ -n "$thr" ] && adb_sh "setprop dalvik.vm.dex2oat-threads '$othr'" >/dev/null 2>&1

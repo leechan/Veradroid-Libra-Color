@@ -135,6 +135,22 @@ fw_wait_screen() {
 }
 framework_paused() { [ -f $FWD/paused ]; }
 
+# Kindle 自己的 /etc/upstart/chroot.conf（浏览器用的 chroot）每次 framework_ready 都把 /lib、/proc、/dev、/usr/bin/chromium、
+# /usr/lib 等重新绑到 /var/tmp/chroot 下面，可它的 chroot_umount 并不卸这几项：框架每重启一次就多叠一层。
+# KINDLE_UI=stop（512 MB 机型的默认）每次回 Kindle 都重启框架：PW5 模拟器 9 次后每项叠了 10 层，一台测试机上 75 层、/proc/mounts 570 行。
+# 框架回来后把多出来的层去掉，只留一层。只动下面没有别的挂载的那几项（/usr/lib 上还压着 pango / locale 的绑定，层次关系
+# 说不清，不碰）。
+fw_chroot_dedupe() {
+    i=0; while [ $i -lt 50 ] && initctl status chroot 2>/dev/null | grep -q "start/"; do usleep 200000; i=$((i + 1)); done
+    n=0
+    for m in $(awk '$2 ~ "^/var/tmp/chroot/" {print $2}' /proc/mounts | sort | uniq -d); do
+        awk -v d="$m/" 'index($2, d) == 1 { f = 1 } END { exit !f }' /proc/mounts && continue
+        c=$(awk -v m="$m" '$2 == m' /proc/mounts | wc -l)
+        while [ "$c" -gt 1 ]; do umount -l "$m" 2>/dev/null || break; c=$((c - 1)); n=$((n + 1)); done
+    done
+    [ $n -gt 0 ] && t "fw: dropped $n stacked binds under /var/tmp/chroot (chroot.conf re-binds them on every framework start)"
+    return 0
+}
 # 框架冷启动完成：登录服务能回答（cvm 登记了 com.lab126.amazonRegistrationService），framework_setup 也做完了（它发出 framework_ready，
 # upstart 随后起书库程序等一批任务）。最多等 FW_READY_MAX 秒（模拟器上框架冷启动约 50 秒，慢的真机更久）。
 fw_wait_ready() {
@@ -396,6 +412,7 @@ framework_start() {
             start kppmainapp >/dev/null 2>&1
         fi
         fw_restore_running
+        fw_chroot_dedupe
     else
         fw_start_many $fw_svc
     fi

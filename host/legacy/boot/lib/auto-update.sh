@@ -14,14 +14,28 @@ LOG=/mnt/base-us/veradroid-autoupdate.log
 PID=/dev/shm/veradroid/autoupdate.pid
 LOCK=/mnt/base-us/veradroid-autoupdate.lock
 [ -f "$VD/autoupdate" ] && [ "$(cat "$VD/autoupdate")" = "0" ] && exit 0
+# 只留一个实例。以前只看锁目录：锁目录没了（或者锁里的 pid 已经不是自动更新）以后，每次启动 Android 都会再起一个，
+# 旧的那些照样每 6 小时醒来一次，谁也不退出（两台 PW6 测试机上各堆了 6-7 个 sh auto-update.sh，最老的 3 天）。
+# 现在：① 锁里的 pid 必须真是一个自动更新进程（断电后 pid 会被别的进程用掉）；② 已经有别的自动更新进程在跑就不起；
+# ③ 每次睡醒先确认锁还是自己的，不是就悄悄退出（不删别人的锁），已经多出来的实例最多 6 小时内自己消失。
+au_is() { case "$(tr '\000' ' ' < /proc/$1/cmdline 2>/dev/null)" in "sh "*"/auto-update.sh "*) return 0 ;; esac; return 1; }   # 只认 "sh …/auto-update.sh"（不认 cp / grep 之类）
+au_others() {
+    for d in /proc/[0-9]*; do
+        p=${d#/proc/}; [ "$p" = "$$" ] && continue
+        au_is "$p" && [ "$(awk '{print $4}' $d/stat 2>/dev/null)" != "$$" ] && return 0   # 自己的子进程（$(...)）不算
+    done
+    return 1
+}
 if [ -d "$LOCK" ]; then
     old=$(cat "$LOCK/pid" 2>/dev/null)
-    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then exit 0; fi
+    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null && au_is "$old"; then exit 0; fi
     rm -rf "$LOCK"
 fi
+au_others && exit 0
 mkdir "$LOCK" 2>/dev/null || exit 0
 echo $$ > "$LOCK/pid"
 trap 'rm -rf "$LOCK" 2>/dev/null' EXIT
+au_mine() { [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] || { trap - EXIT; exit 0; }; }
 echo $$ > "$PID"
 # 点分版本号比较：$1 比 $2 新时返回 0（0.25 > 0.24，0.21.41 > 0.21.9）
 ver_gt() {
@@ -38,6 +52,7 @@ cur_version() {
 }
 sleep 120
 while :; do
+    au_mine
     [ -f "$VD/autoupdate" ] && [ "$(cat "$VD/autoupdate")" = "0" ] && exit 0
     cur=$(cur_version)
     # Old installs may not have a version file at all. Treat them as 0 so

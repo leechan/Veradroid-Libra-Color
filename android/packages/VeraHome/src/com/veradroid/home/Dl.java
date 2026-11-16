@@ -1,0 +1,230 @@
+package com.veradroid.home;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Fast downloads for the store (docs/download-speed.md): several Range connections at once and mirrors.
+ *  - Mirrors: base URLs from the server ("mirrors" in /api/store/apps; missing = {@link #DEF_MIRRORS}, [] = none).
+ *    A file on a mirror is base + the path of the main-site URL (e.g. https://dl.wenjin.jp/api/store/download/15).
+ *    Only the main-site URL carries the device id / token; mirrors get the bare path.
+ *  - Before each try every candidate gets a 256 KB Range request; the fastest one that answers 206 wins
+ *    (the main site also counts with a plain 200, then without segments).
+ *  - Files of 8 MB or more are split into {@link #SEGS} pieces, each on its own connection, kept in out.seg/N and
+ *    resumed from where they stopped on the next try; the pieces are joined in order when all are complete.
+ *  - The caller always checks SHA-256; on a mismatch it calls again with mirrors off.
+ */
+final class Dl {
+    static final String[] DEF_MIRRORS = {"https://dl.wenjin.jp"};
+    static final int SEGS = 4;                 // dl.wenjin.jp allows 8 connections per IP; stay well under it
+    static final long SEG_MIN = 8L << 20;
+
+    interface Progress { void on(long done, long total, boolean mirror); }
+
+    /** Candidate URLs: mirrors in order, the main site (with its query) last. */
+    static List<String> candidates(String origin, String query, List<String> mirrors) {
+        List<String> c = new ArrayList<String>();
+        String path = origin.replaceFirst("^https?://[^/]+/", "");
+        int q = path.indexOf('?'); if (q >= 0) path = path.substring(0, q);
+        if (mirrors != null) for (String m : mirrors) {
+            if (m == null || !m.startsWith("https://")) continue;
+            String name = path.substring(path.lastIndexOf('/') + 1);
+            c.add(m.contains("{name}") ? m.replace("{name}", name) : m.replaceAll("/+$", "") + "/" + path);
+        }
+        c.add(origin + (query == null || query.isEmpty() ? "" : (origin.contains("?") ? "&" : "?") + query));
+        return c;
+    }
+
+    /** {url, segments}: segments is SEGS (Range works), 1 (no Range) or 0 (nothing answered: try the main site anyway). */
+    static Object[] pick(List<String> cands) {
+        String best = null; long bestSpeed = -1; int segs = 0;
+        String main = cands.get(cands.size() - 1);
+        for (String u : cands) {
+            HttpURLConnection h = null;
+            try {
+                long t0 = System.nanoTime();
+                h = (HttpURLConnection) new URL(u).openConnection();
+                h.setConnectTimeout(8000); h.setReadTimeout(10000);
+                h.setRequestProperty("User-Agent", "VeraDroid/Store");
+                h.setRequestProperty("Range", "bytes=0-262143");
+                int code = h.getResponseCode();
+                if (code != 206 && !(code == 200 && u.equals(main))) { android.util.Log.i("VeraStore", "probe " + host(u) + " HTTP " + code); continue; }
+                InputStream in = h.getInputStream();
+                byte[] b = new byte[65536]; long n = 0; int r;
+                while (n < 262144 && (r = in.read(b)) > 0) n += r;
+                in.close();
+                long sp = n * 1000000000L / Math.max(1, System.nanoTime() - t0);
+                android.util.Log.i("VeraStore", "probe " + host(u) + " HTTP " + code + " " + (sp >> 10) + " KB/s");
+                if (sp > bestSpeed) { bestSpeed = sp; best = u; segs = code == 206 ? SEGS : 1; }
+            } catch (Exception e) {
+                android.util.Log.i("VeraStore", "probe " + host(u) + " failed: " + e);
+            } finally { if (h != null) h.disconnect(); }
+        }
+        if (best == null) return new Object[] {main, 0};
+        return new Object[] {best, segs};
+    }
+
+    static String host(String u) { try { return new URL(u).getHost(); } catch (Exception e) { return u; } }
+
+    /** Bytes already on the disk for out (the whole file plus any pieces). */
+    static long have(File out) {
+        long n = out.isFile() ? out.length() : 0;
+        File[] s = new File(out.getPath() + ".seg").listFiles();
+        if (s != null) for (File f : s) if (f.getName().matches("\\d+")) n += f.length();
+        return n;
+    }
+
+    static void clear(File out) {
+        out.delete();
+        File d = new File(out.getPath() + ".seg");
+        File[] s = d.listFiles();
+        if (s != null) for (File f : s) f.delete();
+        d.delete();
+    }
+
+    /** One try: pick a source, then download with one connection (resume) or with segments. Throws on failure; the
+     *  caller retries (pieces and partial files stay for the next try). */
+    static void fetchOnce(List<String> cands, final File out, final long size, final Progress p) throws Exception {
+        Object[] pk = pick(cands);
+        final String src = (String) pk[0];
+        int segs = (Integer) pk[1];
+        final boolean mirror = !src.equals(cands.get(cands.size() - 1));
+        File dir = new File(out.getPath() + ".seg");
+        File plan = new File(dir, "plan");
+        int planned = 0;
+        if (plan.isFile()) try { planned = Integer.parseInt(new String(read(plan), "UTF-8").trim().split(" ")[1]); } catch (Exception e) { }
+        if (planned > 1 && segs == 1) { clear(out); planned = 0; }          // the source stopped doing Range: start again whole
+        int n = planned > 1 ? planned : (segs > 1 && size >= SEG_MIN && !(out.isFile() && out.length() > 0)) ? segs : 1;
+        if (n <= 1) { single(src, out, size, p, mirror); return; }
+
+        if (!dir.isDirectory() && !dir.mkdirs()) throw new Exception("无法创建下载目录");
+        if (planned != n) { clear(out); dir.mkdirs(); write(plan, (size + " " + n).getBytes("UTF-8")); }
+        final long len = (size + n - 1) / n;
+        final Exception[] err = new Exception[1];
+        List<Thread> ts = new ArrayList<Thread>();
+        for (int i = 0; i < n; i++) {
+            final long a = i * len, b = Math.min(size, a + len) - 1;
+            final File f = new File(dir, String.valueOf(i));
+            if (f.length() > b - a + 1) f.delete();
+            if (a + f.length() > b) continue;
+            Thread t = new Thread(new Runnable() { @Override public void run() {
+                try { range(src, f, a + f.length(), b); }
+                catch (Exception e) { synchronized (err) { if (err[0] == null) err[0] = e; } }
+            }}, "StoreSeg" + i);
+            t.start(); ts.add(t);
+        }
+        boolean alive = true;
+        while (alive) {
+            alive = false;
+            for (Thread t : ts) { t.join(1000); if (t.isAlive()) { alive = true; break; } }
+            if (p != null) p.on(have(out), size, mirror);
+        }
+        for (int i = 0; i < n; i++) {
+            long a = i * len, b = Math.min(size, a + len) - 1;
+            if (new File(dir, String.valueOf(i)).length() != b - a + 1) {
+                if (err[0] != null) throw err[0];
+                throw new java.io.IOException("连接中断（" + (have(out) >> 20) + " / " + (size >> 20) + " MB）");
+            }
+        }
+        // join: append the others to piece 0, deleting each after it is appended
+        File first = new File(dir, "0");
+        FileOutputStream fo = new FileOutputStream(first, true);
+        try {
+            byte[] buf = new byte[65536]; int r;
+            for (int i = 1; i < n; i++) {
+                File f = new File(dir, String.valueOf(i));
+                InputStream in = new java.io.FileInputStream(f);
+                try { while ((r = in.read(buf)) > 0) fo.write(buf, 0, r); } finally { in.close(); }
+            }
+        } finally { fo.close(); }
+        if (first.length() != size) { clear(out); throw new Exception("文件大小不对"); }
+        out.delete();
+        if (!first.renameTo(out)) throw new Exception("无法保存下载的文件");
+        File[] rest = dir.listFiles(); if (rest != null) for (File f : rest) f.delete();
+        dir.delete();
+    }
+
+    /** Bytes from..to (inclusive) of url appended to f. */
+    private static void range(String url, File f, long from, long to) throws Exception {
+        HttpURLConnection h = (HttpURLConnection) new URL(url).openConnection();
+        try {
+            h.setConnectTimeout(20000); h.setReadTimeout(60000);
+            h.setRequestProperty("User-Agent", "VeraDroid/Store");
+            h.setRequestProperty("Range", "bytes=" + from + "-" + to);
+            int code = h.getResponseCode();
+            if (code != 206) throw new java.io.IOException("HTTP " + code);
+            InputStream in = h.getInputStream();
+            FileOutputStream fo = new FileOutputStream(f, true);
+            long left = to - from + 1;
+            try {
+                byte[] buf = new byte[65536]; int r;
+                while (left > 0 && (r = in.read(buf, 0, (int) Math.min(buf.length, left))) > 0) { fo.write(buf, 0, r); left -= r; }
+            } finally { fo.close(); in.close(); }
+            if (left > 0) throw new java.io.IOException("unexpected end of stream");
+        } finally { h.disconnect(); }
+    }
+
+    /** One connection, resuming after what out already holds. */
+    private static void single(String url, File out, long size, Progress p, boolean mirror) throws Exception {
+        long have = out.isFile() ? out.length() : 0;
+        if (size > 0 && have == size) return;
+        HttpURLConnection h = (HttpURLConnection) new URL(url).openConnection();
+        try {
+            h.setConnectTimeout(20000); h.setReadTimeout(60000);
+            h.setRequestProperty("User-Agent", "VeraDroid/Store");
+            if (have > 0) h.setRequestProperty("Range", "bytes=" + have + "-");
+            int code = h.getResponseCode();
+            if (code != 200 && code != 206) throw new HttpError(code, h);
+            boolean append = have > 0 && code == 206;
+            if (!append) have = 0;   // server ignored the Range: start again from zero
+            InputStream in = new java.io.BufferedInputStream(h.getInputStream(), 65536);
+            FileOutputStream fo = new FileOutputStream(out, append);
+            byte[] buf = new byte[65536]; int n; long done = have, last = 0;
+            try {
+                while ((n = in.read(buf)) > 0) {
+                    fo.write(buf, 0, n); done += n;
+                    long now = System.currentTimeMillis();
+                    if (p != null && now - last >= 1000) { last = now; p.on(done, size, mirror); }
+                }
+            } finally { fo.close(); in.close(); }
+            if (size > 0 && out.length() > size) { out.delete(); throw new Exception("文件大小不对"); }
+            if (size > 0 && out.length() < size) throw new java.io.IOException("连接中断（" + (out.length() >> 20) + " / " + (size >> 20) + " MB）");
+        } finally { h.disconnect(); }
+    }
+
+    /** An HTTP error status from the server; the message is its JSON "error" when it sent one. */
+    static final class HttpError extends Exception {
+        final int code;
+        HttpError(int code, HttpURLConnection h) { super(message(code, h)); this.code = code; }
+        private static String message(int code, HttpURLConnection h) {
+            try {
+                InputStream in = h.getErrorStream();
+                if (in == null) return "HTTP " + code;
+                byte[] b = readAll(in);
+                return new org.json.JSONObject(new String(b, "UTF-8")).optString("error", "HTTP " + code);
+            } catch (Exception e) { return "HTTP " + code; }
+        }
+    }
+
+    static byte[] read(File f) throws Exception {
+        InputStream in = new java.io.FileInputStream(f);
+        try { return readAll(in); } finally { in.close(); }
+    }
+    static byte[] readAll(InputStream in) throws Exception {
+        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+        byte[] b = new byte[8192]; int n;
+        while ((n = in.read(b)) > 0) bo.write(b, 0, n);
+        return bo.toByteArray();
+    }
+    static void write(File f, byte[] b) throws Exception {
+        FileOutputStream fo = new FileOutputStream(f);
+        try { fo.write(b); } finally { fo.close(); }
+    }
+
+    private Dl() { }
+}

@@ -23,6 +23,17 @@ adb_sh() {
     [ -n "$pref" ] || return 1
     $pref /system/bin/sh -c "export PATH=/system/bin:/system/xbin ANDROID_DATA=/data ANDROID_ROOT=/system; $*"
 }
+# 带时限的 adb_sh：adb_sh_t <秒> 命令。命令监听（cmd.sh）和看门狗都是一个循环一件一件做，里面同步问 Android 的地方
+# （settings put、service call、dumpsys、ndc、screencap）要等 system_server / netd / surfaceflinger 回答。它们卡住时
+# （软重启前的死锁、装大应用时 PackageManager 拿着锁、冻结中途），以前整个循环跟着永远等下去：一台测试机上把 system_server 停住，
+# 桌面发一次“应用设置”（12/24 小时制变了 → settings put）以后，面板 / 手势的“返回 Kindle”45 秒都没反应，system_server
+# 恢复后才执行。到时限就放手（Android 里那个 shell 等对方恢复后自己结束），循环接着处理下一条命令。
+adb_sh_t() {
+    tt=$1; shift
+    pref=$(vd_in) || return 1
+    [ -n "$pref" ] || return 1
+    vd_timeout "$tt" $pref /system/bin/sh -c "export PATH=/system/bin:/system/xbin ANDROID_DATA=/data ANDROID_ROOT=/system; $*"
+}
 
 # 包是否已安装：读 PackageManager 自己维护的 packages.list（宿主上直接读文件，不用为一次查询起一个 JVM）
 pkg_installed() { grep -q "^$1 " $SYS/data/system/packages.list 2>/dev/null; }
@@ -169,6 +180,25 @@ boot_data_check() {
     fi
     return 0
 }
+# Shizuku（moe.shizuku.privileged.api，用户申请 #2）：它的“启动（针对已 root 设备）”走应用自己的 su，Android 里的 su 只认
+# root / shell，应用调不动（“未授予 root 权限”）；“通过电脑 adb 启动”在 Kindle 上也没有电脑那一头。宿主本来就是 root：
+# 装了 Shizuku 就在开机完成后（和传书 / 商店装好它之后）替用户跑一次它自带的启动器 libshizuku.so，等于 root 模式启动，
+# 之后哪个应用能用 Shizuku 仍由用户在 Shizuku 里逐个授权。SHIZUKU_AUTOSTART=off 关掉。
+shizuku_start() {
+    [ "${SHIZUKU_AUTOSTART:-on}" = off ] && return 0
+    pkg_installed moe.shizuku.privileged.api || return 0
+    local sd sl
+    for sd in $SYS/data/app/moe.shizuku.privileged.api-*; do
+        for sl in lib/arm/libshizuku.so lib/armeabi-v7a/libshizuku.so lib/armeabi/libshizuku.so; do
+            [ -f "$sd/$sl" ] && { sl=${sd#$SYS}/$sl; break 2; }
+        done
+    done
+    case "$sl" in /data/app/*/libshizuku.so) ;; *) t "shizuku: starter not found"; return 0 ;; esac
+    case "$sl" in *[!A-Za-z0-9._/-]*) return 0 ;; esac
+    adb_sh 'pidof shizuku_server' >/dev/null 2>&1 && return 0
+    if adb_sh "$sl" >/dev/null 2>&1; then t "shizuku: server started (root)"; else t "shizuku: start failed"; fi
+}
+
 after_boot() {
     # Re-assert binder before waiting — covers init races that hide the node.
     binder_repair 2>/dev/null || true
@@ -377,6 +407,7 @@ RDME
     # 12 / 24 小时制跟 Kindle（tz.sh；值没变就不写）
     type time_format_apply >/dev/null 2>&1 && time_format_apply
     type tz_sync_live >/dev/null 2>&1 && tz_sync_live       # 开机前按偏移猜的时区，后台已经查到准确名字时换掉
+    shizuku_start
 }
 
 # 小内存机型（< 700 MB：PW5 / KT5 / KT6 / 老机型）：ActivityManager 按“内存 + 屏幕尺寸”给 lmkd 选杀进程的门槛，

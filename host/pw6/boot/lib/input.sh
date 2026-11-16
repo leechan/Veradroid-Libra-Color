@@ -46,7 +46,8 @@ input_touch_start() {
     # gesture_tap 上的按键（只在 devcap 允许的机器上跑）。有这个设备就交给 veradroid-input，Android 在前台时变成翻页键。
     TAPDEV=$(input_find '"gesture_tap"')
     [ -n "$TAPDEV" ] && t "input: bezel tap device $TAPDEV"
-    $VD/bin/veradroid-input $REAL $W/input.log $VD/boot/action.sh --w ${viewWidth:-1272} --h ${viewHeight:-1696} --edge 120 --window ${G_WINDOW:-40} --edge-hold 60 --edge-swipe 80 --edge-back ${KFB_EDGE_BACK:-1} --corner-ms $cm --flag $W/nogestures --inject $W/inject --gconf $W/gestures --fg $X/fg ${TAPDEV:+--tapdev $TAPDEV} $(rot_args) >$W/input.err 2>&1 &
+    : > $W/input.err   # 追加方式打开（同 epd.log：watchdog 的 log_cap 会截短它）
+    $VD/bin/veradroid-input $REAL $W/input.log $VD/boot/action.sh --w ${viewWidth:-1272} --h ${viewHeight:-1696} --edge 120 --window ${G_WINDOW:-40} --edge-hold 60 --edge-swipe 80 --edge-back ${KFB_EDGE_BACK:-1} --corner-ms $cm --flag $W/nogestures --inject $W/inject --gconf $W/gestures --fg $X/fg ${TAPDEV:+--tapdev $TAPDEV} $(rot_args) >>$W/input.err 2>&1 &
     echo $! > $W/input.pid
     i=0; while [ $i -lt 20 ]; do
         vt=$(input_sysname veradroid-touch); vk=$(input_sysname veradroid-keys)

@@ -167,7 +167,7 @@ tz_prepare() {
 tz_sync_live() {
     z=$(tz_android_name); [ -n "$z" ] || return 0
     [ "$z" = "$(cat $W/tz.android 2>/dev/null)" ] && return 0
-    adb_sh "service call alarm 3 s16 $z" >/dev/null 2>&1 && { echo "$z" > $W/tz.android; t "timezone changed on the Kindle -> $z"; }
+    adb_sh_t 20 "service call alarm 3 s16 $z" >/dev/null 2>&1 && { echo "$z" > $W/tz.android; t "timezone changed on the Kindle -> $z"; }
 }
 # 12 / 24 小时制：auto 时读 Kindle；开机完成后调用
 time_format_apply() {
@@ -176,5 +176,5 @@ time_format_apply() {
         *) v=$(lipc-get-prop com.lab126.kppsettings timeFormat 2>/dev/null); case "$v" in 12|24) ;; *) return 0 ;; esac ;;
     esac
     [ "$(cat $SYS/data/.vd-time1224 2>/dev/null)" = "$v" ] && return 0
-    adb_sh "settings put system time_12_24 $v" >/dev/null 2>&1 && echo "$v" > $SYS/data/.vd-time1224 && t "time format: ${v}h (${TIME_12_24:-auto})"
+    adb_sh_t 20 "settings put system time_12_24 $v" >/dev/null 2>&1 && echo "$v" > $SYS/data/.vd-time1224 && t "time format: ${v}h (${TIME_12_24:-auto})"
 }

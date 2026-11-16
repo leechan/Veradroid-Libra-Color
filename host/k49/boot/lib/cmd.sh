@@ -5,6 +5,8 @@
 numeric() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; }
 # 管理网页的请求（SSH、截屏、日志、占用、自动更新）：先校验来源再做，见 webadmin.sh
 [ -f "$VD/boot/lib/webadmin.sh" ] && . "$VD/boot/lib/webadmin.sh"
+# 每个应用的显示设置（前台应用 → 显示参数，三个宿主共用一份，见 appprof.sh）
+[ -f "$VD/boot/lib/appprof.sh" ] && . "$VD/boot/lib/appprof.sh"
 
 # 传书：把 Wi-Fi 上的端口转进 Android（slirp4netns 的 add_hostfwd）。只在传书开着的时候开；关了就撤掉。
 fwd_off() {
@@ -202,9 +204,13 @@ cmd_listen() {
         clear)   epd_send FULL ;;
         screenshot)
             mkdir -p $SYS/data/media/0/Screenshots
-            $(vd_in) /system/bin/screencap -p /data/media/0/Screenshots/screen-$(date +%Y%m%d-%H%M%S).png >/dev/null 2>&1 && t "screenshot saved" ;;
+            vd_timeout 30 $(vd_in) /system/bin/screencap -p /data/media/0/Screenshots/screen-$(date +%Y%m%d-%H%M%S).png >/dev/null 2>&1 && t "screenshot saved" ;;
+        fg)      type appprof_fg >/dev/null 2>&1 && appprof_fg "$a" ;;       # 前台应用变了（VeraHome 的任务栈监听），见 appprof.sh
+        appset)  type appprof_set >/dev/null 2>&1 && appprof_set "$a" ;;     # 存某个应用的显示设置：appset <pkg>|<spec>
         appdisp)
             # appdisp <pkg>|<KEY=value;...>   or appdisp home
+            # 新桌面不再发 appdisp <pkg>|...（改发 fg）；"appdisp home" 和老桌面照旧能用
+            if [ "$a" = home ] && type appprof_fg >/dev/null 2>&1; then appprof_fg home; continue; fi
             # 每个应用的显示参数单独放在 settings.app 里（settings_load 最后读它），只接受显示相关的键和数字值。
             # 以前是把原文追加进 settings.conf：那是 root 会 source 的文件，任何应用都能借这条命令在宿主上执行代码；
             # 而且每次切换应用都用旧副本盖掉 settings.conf，面板里刚改的设置会被还原。
@@ -224,6 +230,7 @@ cmd_listen() {
             epd_send SET $KFB_CONTRAST $KFB_DITHER $KFB_FLASH $KFB_INVERT $KFB_MODE $KFB_SETTLE ${KFB_LIGHTF:-0} ${KFB_DARKEN:-0}
             epd_send HOLD ${KFB_HOLD:-70}
             epd_send_smooth
+            echo "$apkg" > $W/appprof.pkg
             t "app display $apkg: $(cat $SYS/settings.app 2>/dev/null | tr '\n' ';')" ;;   # 文件不存在时 "< 文件 2>/dev/null" 的报错照样进日志（重定向从左往右）
         status)  status_write ;;
         wa)      type wa_request >/dev/null 2>&1 && wa_request "$a" ;;   # 管理网页：参数只是一个编号，真正的请求在 VeraHome 的私有目录里
@@ -307,7 +314,8 @@ cmd_listen() {
                   type vp_kvw >/dev/null 2>&1 && vp_kvw $X/ctl/apkinst.status "state=$ist" "name=$iname" "result=$r"
                   # 装好了：后台低优先级预编译（compile.sh；packages.list 变了，扫描会找到新装的包）
                   type compile_release >/dev/null 2>&1 && compile_release
-                  case "$r" in *Success*) type compile_watch >/dev/null 2>&1 && compile_watch ;; esac ) &
+                  case "$r" in *Success*) type compile_watch >/dev/null 2>&1 && compile_watch
+                      type shizuku_start >/dev/null 2>&1 && shizuku_start ;; esac ) &
             fi ;;
         netdiag) # 桌面“网络诊断”：Wi-Fi / 域名解析 / 服务器 / 速度，结果写 ctl/netdiag.status（progress.sh 的 vp_netdiag）
             type vp_netdiag >/dev/null 2>&1 && ( vp_netdiag $X/ctl/netdiag.status ) </dev/null >/dev/null 2>&1 & ;;

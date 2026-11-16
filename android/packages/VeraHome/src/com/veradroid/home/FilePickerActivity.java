@@ -118,13 +118,43 @@ public class FilePickerActivity extends Activity {
         finish();
     }
 
-    private void open(File d) {
-        if (d == null || !d.isDirectory()) return;
+    /**
+     * 目录项：isDirectory / length 在后台线程里各问一次就记下来。以前 open() 在主线程上 listFiles，排序比较时每次都
+     * isDirectory()（约 2·n·log n 次 stat），每行再 length()：KindleLibrary 是 FUSE，几千本书时主线程卡几秒到几十秒（ANR）。
+     */
+    private static final class Entry extends File {
+        final boolean dir; final long len;
+        Entry(File f) { super(f.getPath()); dir = f.isDirectory(); len = dir ? 0 : f.length(); }
+        @Override public boolean isDirectory() { return dir; }
+        @Override public long length() { return len; }
+    }
+    private int openGen;
+
+    /** 在后台读目录（每项只 stat 一次），读完回到主线程显示；期间又点了别的目录就丢掉这一次的结果。 */
+    private void open(final File d) {
+        if (d == null) return;
+        final int gen = ++openGen;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                if (!d.isDirectory()) return;
+                File[] raw = d.listFiles();
+                final File[] fs;
+                if (raw == null) fs = null;
+                else { fs = new File[raw.length]; for (int i = 0; i < raw.length; i++) fs[i] = new Entry(raw[i]); }
+                runOnUiThread(new Runnable() { @Override public void run() {
+                    if (gen != openGen || isFinishing()) return;
+                    show(d, fs);
+                } });
+            }
+        }, "filepicker-list").start();
+    }
+
+    private void show(File d, File[] listed) {
         dir = d;
         path.setText(d.getAbsolutePath());
         if (paged != null) {
             files.clear();
-            File[] fs0 = d.listFiles();
+            File[] fs0 = listed;
             if (fs0 != null) {
                 Arrays.sort(fs0, new Comparator<File>() {
                     @Override public int compare(File a, File b) {
@@ -138,7 +168,7 @@ public class FilePickerActivity extends Activity {
             return;
         }
         list.removeAllViews();
-        File[] fs = d.listFiles();
+        File[] fs = listed;
         if (fs == null) return;
         Arrays.sort(fs, new Comparator<File>() {
             @Override public int compare(File a, File b) {

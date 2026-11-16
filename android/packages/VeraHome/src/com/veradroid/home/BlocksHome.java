@@ -530,9 +530,9 @@ final class BlocksHome {
         Blocks.fast(all);
         head.addView(all);
         box.addView(head);
-        Lib.Book skip = BlocksCards.order(a).contains("continue") ? lastBook() : null;
-        List<Lib.Book> list = new ArrayList<Lib.Book>();
-        for (Lib.Book b : Lib.sorted(Lib.SORT_RECENT, Lib.FILTER_ALL, null)) { if (b != skip) list.add(b); if (list.size() == 3) break; }
+        // 刚读过的书排第一（就算“继续阅读”卡片里也是它）：以前这里把继续阅读那本拿掉、又按“上次阅读和放进来的时间哪个新”排，
+        // 读完一本回来列表看着没变，新传进来 / 被改写过的文件（比如 Kindle 书库里的状态文件）反而排在前面
+        List<Lib.Book> list = Lib.recentlyRead(3);
         if (list.isEmpty()) {
             box.addView(Blocks.empty(a, Icons.Kind.BOOK, "书库里还没有书", "用传书网页传进来，或者放进 Books 文件夹", false), Blocks.match());
             return box;

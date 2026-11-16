@@ -24,6 +24,8 @@ VD=${VD:-$(cd "$(dirname "$0")/.." && pwd)}
 . "$VD/boot/lib/common.sh"
 for m in settings memory slim imgclass freeze kmod framework container input network sleep status cmd watchdog afterboot splash bootwatch diagboot compile energy tz tester; do . "$VD/boot/lib/$m.sh"; done
 mkdir -p $SYS $W
+# 上次停在某个应用时留下的“当前应用显示参数”不带进这一次（开机时前台是桌面；appprof.sh）
+rm -f $SYS/settings.app $W/appprof.pkg
 settings_load
 
 # 第二阶段：在新命名空间里
@@ -211,6 +213,7 @@ display_prepare
 touch $X/ctl/sleep       # 开机画面期间，显示桥不画 Android 的帧（开机完成后 splash_end 放开）
 display_start
 settings_publish
+type appprof_publish >/dev/null 2>&1 && appprof_publish   # 每个应用的显示设置：合并表给桌面看（/dev/kfb/appprof）
 touch_setup
 # 找不到触摸屏就不要继续：Android 起来也操作不了，而 Kindle 界面已经停了。恢复 Kindle 界面后退出。
 input_start || { t "no usable touch screen: stopping"; log_release; sh $VD/boot/stop.sh >/dev/null 2>&1; exit 1; }

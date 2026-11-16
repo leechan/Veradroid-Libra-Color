@@ -345,13 +345,39 @@ final class BlocksSettings {
 
     /** 每个应用的显示效果：挑一个应用，进它的显示效果页（和长按应用图标 → 显示效果是同一页）。 */
     private void appDisplayPicker() {
-        final List<ResolveInfo> apps = a.appList();
+        final List<ResolveInfo> apps = new java.util.ArrayList<ResolveInfo>(a.appList());
         if (apps.isEmpty()) { VeraToast.show(a, "还没有安装应用"); return; }
-        String[] names = new String[apps.size()];
-        for (int i = 0; i < names.length; i++) names[i] = a.labelFor(apps.get(i));
+        // 新宿主（appprof.sh）：每个应用后面写上现在用的是什么；单独设置过的排在前面，最上面一项“全部恢复默认”
+        final boolean nh = AppProf.host();
+        final java.util.Map<String, String[]> t = nh ? AppProf.table() : null;
+        int users = 0;
+        if (nh) {
+            java.util.List<ResolveInfo> mine = new java.util.ArrayList<ResolveInfo>(), rest = new java.util.ArrayList<ResolveInfo>();
+            for (ResolveInfo ri : apps) (AppProf.lookup(t, ri.activityInfo.packageName)[0].startsWith("u") ? mine : rest).add(ri);
+            users = mine.size();
+            apps.clear(); apps.addAll(mine); apps.addAll(rest);
+        }
+        final int off = users > 0 ? 1 : 0;
+        String[] names = new String[apps.size() + off];
+        if (off > 0) names[0] = "全部恢复默认（" + users + " 个单独设置过的应用）";
+        for (int i = 0; i < apps.size(); i++) {
+            String n = a.labelFor(apps.get(i));
+            if (nh) {
+                String[] r = AppProf.lookup(t, apps.get(i).activityInfo.packageName);
+                if (r[0].startsWith("u")) n += "  · 已单独设置：" + AppProf.summary(r[1]);
+                else if (r[0].equals("b")) n += "  · 推荐：" + AppProf.summary(r[1]);
+            }
+            names[i + off] = n;
+        }
         new VeraDialog.Builder(a).title("哪个应用的显示效果").items(names, new VeraDialog.OnPick() {
             @Override public void onPick(int w) {
-                ResolveInfo ri = apps.get(w);
+                if (off > 0 && w == 0) {
+                    new VeraDialog.Builder(a).title("全部恢复默认").message("单独设置过的应用都回到内置推荐 / 全局设置（字号的单独设置不变）。")
+                        .negative("取消", null).positive("恢复", new Runnable() { @Override public void run() {
+                            AppProf.save("*", ""); VeraToast.show(a, "已恢复默认"); } }).show();
+                    return;
+                }
+                ResolveInfo ri = apps.get(w - off);
                 Intent i = new Intent(a, AppDisplayActivity.class);
                 i.putExtra("pkg", ri.activityInfo.packageName);
                 i.putExtra("label", a.labelFor(ri));

@@ -100,7 +100,7 @@ compile_stale_pkgs() {
     # dumpsys 按 120 列折行（长包名的 "status=kOatUpToDate]" 会断成 "kOatUpToD" + 下一行 "ate]"），odex 坏掉 / 半截时
     # 只有 "status: invalid[]"、没有 "status="（pw5-5182 模拟器：一次失败的 speed 编译留下 71 MB 开头全零的 odex，
     # 以前这里看不出来，微信读书一直从 apk 解释执行）。所以把一个 path 之后到下一个 path / 包头为止的文字去掉空白拼起来再判断。
-    adb_sh "dumpsys package dexopt" 2>/dev/null | tr -d '\r' | awk '
+    adb_sh_t 60 "dumpsys package dexopt" 2>/dev/null | tr -d '\r' | awk '
         function flush() { if (p != "" && b != "" && b !~ /status=kOatUpToDate/) print p; p = ""; b = "" }
         /path: \/data\/app\// { flush(); p = $2; sub(/^\/data\/app\//, "", p); sub(/-[0-9]+\/.*$/, "", p); next }
         /path:/ || /^ *\[/ { flush(); next }
@@ -386,8 +386,18 @@ compile_one() { # pkg mode force
     # 马上（用原来的 dex2oat 参数，线程数仍按上面限制：kt6-5192 上不限时这一步 dex2oat 峰值 150 MB）补一个 interpret-only，
     # 至少回到安装时的状态。也在 babysit 下跑（nice 19、内存保护）。
     if { [ $r = fail ] || [ $r = timeout ]; } && [ -z "$f" ] && ! compile_held; then
-        adb_sh "cmd package compile -m interpret-only -f $pkg" >/dev/null 2>&1 &
-        compile_babysit $!
+        # speed 在这台机器上编不完（番茄免费小说 147 MB：PW6 上 speed 超过 520 秒）时，用户用过这个应用、已经有 JIT 档案的话
+        # 改编 speed-profile（只编档案里的热点方法）：一台 PW6 测试机实测番茄 194 秒编完，冷启动到主界面从约 2 分钟降到 28 秒。
+        # 没有档案（刚装好还没打开过）就和以前一样补 interpret-only。
+        cprof=$SYS/data/misc/profiles/cur/0/$pkg/primary.prof
+        if [ $r = timeout ] && [ -s "$cprof" ] && [ "${COMPILE_PROFILE_FALLBACK:-on}" != off ]; then
+            adb_sh "cmd package compile -m speed-profile -f $pkg" >/dev/null 2>&1 &
+            compile_babysit $!
+            [ "$(odex_filter "$pkg")" = speed-profile ] || { adb_sh "cmd package compile -m interpret-only -f $pkg" >/dev/null 2>&1 & compile_babysit $!; }
+        else
+            adb_sh "cmd package compile -m interpret-only -f $pkg" >/dev/null 2>&1 &
+            compile_babysit $!
+        fi
         t "compile: $pkg restored to $(odex_filter "$pkg")"
     fi
     [ -n "$thr" ] && adb_sh "setprop dalvik.vm.dex2oat-threads '$othr'" >/dev/null 2>&1

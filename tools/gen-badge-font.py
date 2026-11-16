@@ -20,7 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CJK_TTC, ROBOTO = sys.argv[1], sys.argv[2]
 SC = 2  # face index of Noto Sans CJK SC in the .ttc
 
-SPARE = "返回面板切换桌面清残影反色亮度暖光前开关截图重启关闭打应用没有响应长按左右上下角两指轻点到可能卡住了请稍候"
+SPARE = "返回面板切换桌面清残影反色亮度暖光前开关截图重启关闭打应用没有响应长按左右上下角两指轻点到可能卡住了请稍候加载中"
 
 
 def cjk_chars():

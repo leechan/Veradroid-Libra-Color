@@ -128,6 +128,7 @@ public class HomeActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Stats.pruneAsync(this);   // 偏好文件里过期的每日统计和已删书的进度键（一天最多一次，后台）
         standalone = getClass() != HomeActivity.class;
         // If VeraHome itself dies, queue a system diagnostic upload before the
         // process goes away. The host watchdog catches native crashes separately.
@@ -532,13 +533,26 @@ public class HomeActivity extends Activity {
     private String wallApplied = "";
     private void applyWallpaper(boolean home) {
         // 状态没变就不碰：主题版本只在回到前台 / 应用里改了主题时更新，换页面时不查文件
-        String key = home + "|" + themeVer + "|" + prefs.getInt("wallpaperdim", 2) + "|" + prefs.getInt("wallmode", 0);
+        final String key = home + "|" + themeVer + "|" + prefs.getInt("wallpaperdim", 2) + "|" + prefs.getInt("wallmode", 0);
         if (key.equals(wallApplied)) return;
         wallApplied = key;
-        Drawable w = home ? Theme.wallpaper(this, getResources().getDisplayMetrics().widthPixels,
-                                             getResources().getDisplayMetrics().heightPixels) : null;
+        int sw = getResources().getDisplayMetrics().widthPixels, sh = getResources().getDisplayMetrics().heightPixels;
+        // 只拿已经处理好的那张，主线程不等后台的处理、也不自己解码（Theme.wallpaperIfReady）。还没好就先白底，
+        // 后台做好后再贴一次（只重试一次：图打不开时不会来回转）。
+        Drawable w = home ? Theme.wallpaperIfReady(this, sw, sh) : null;
         if (w != null) page.setBackground(w); else page.setBackgroundColor(Color.WHITE);
+        if (home && w == null && Theme.hasWallpaper() && !wallPending) {
+            wallPending = true;
+            Theme.prepareAsync(this, new Runnable() { @Override public void run() {
+                wallPending = false;
+                if (isFinishing() || mainTab != TAB_HOME || !key.equals(wallApplied)) return;   // 已经换了页面 / 设置
+                Drawable d = Theme.wallpaperIfReady(HomeActivity.this, getResources().getDisplayMetrics().widthPixels,
+                                                    getResources().getDisplayMetrics().heightPixels);
+                if (d != null) page.setBackground(d);
+            } });
+        }
     }
+    private boolean wallPending;
 
     private void showHome() { if (standalone) { finish(); return; } showMain(mainTab); }
 
@@ -1092,10 +1106,15 @@ public class HomeActivity extends Activity {
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
         try {
             HostLink.cmd("appdirs " + pkg);
-            String spec = prefs.getString("appdisp_" + pkg, "");
-            if (spec == null) spec = "";
-            // No built-in per-app profile: the user's global display settings apply unless they set one for this app.
-            if (spec.length() > 0) HostLink.cmd("appdisp " + pkg + "|" + spec);
+            if (AppProf.host()) {
+                // 每个应用的显示设置（宿主 appprof.sh：用户的 / 内置推荐）在应用画第一帧之前换好；显示桥挡住纯色的启动窗口
+                HostService.launchedPkg = pkg;
+                AppProf.launching(pkg);
+            } else {
+                String spec = prefs.getString("appdisp_" + pkg, "");
+                if (spec == null) spec = "";
+                if (spec.length() > 0) HostLink.cmd("appdisp " + pkg + "|" + spec);
+            }
             AppFont.forForeground(this, pkg, null);   // 启动前就换好字号，免得应用画完一遍再重排一遍
             startActivity(i);
             // JNI/native apps can take a while to paint; ask the host for one
@@ -1114,10 +1133,16 @@ public class HomeActivity extends Activity {
         items.add("打开"); acts.add(new Runnable() { @Override public void run() { launch(ri); } });
         items.add("更换图标…"); acts.add(new Runnable() { @Override public void run() {
             pickImage("给“" + name + "”选一张图标", new PickFile() {
-                @Override public void picked(File f) {
-                    String err = Theme.setIcon(pkg, f);
-                    if (err != null) { say(err); return; }
-                    iconChanged(pkg);
+                @Override public void picked(final File f) {
+                    // 解码用户的图（可能很大、可能在 FUSE 上）+ 压 PNG 放到后台：以前在主线程上做，点完要卡 0.5–2 秒
+                    new Thread(new Runnable() { @Override public void run() {
+                        final String err = Theme.setIcon(pkg, f);
+                        runOnUiThread(new Runnable() { @Override public void run() {
+                            if (isFinishing()) return;
+                            if (err != null) { say(err); return; }
+                            iconChanged(pkg);
+                        } });
+                    } }, "icon-set").start();
                 }
             });
         } });

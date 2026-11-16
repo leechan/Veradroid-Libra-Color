@@ -190,6 +190,113 @@ restore_missing() { # backup.tgz destdir
 }
 # 2026-11-10 数据安全（在 eink-emulator 里复现 / 排除过）
 vlog() { echo "[$(date '+%F %T')] $*" >> /mnt/base-us/veradroid-install-detail.log 2>/dev/null || true; }
+fsize() { { wc -c < "$1"; } 2>/dev/null | tr -d ' ' || true; }
+vp_now() { date +%s; }
+# ---- 分段并行下载 + 镜像（docs/download-speed.md）----
+# 国内到 Cloudflare 免费版的单条连接很慢，但几条连接一起下时总速度差不多按条数涨：大文件（≥ 8 MB）分成 VD_SEGS 段
+# （默认 4，network.conf 里可设 1–6，1 = 不分段；dl.wenjin.jp 每个 IP 最多 8 条连接，所以不超过 6），每段一条 Range 连接同时下；每段下好的部分留在 <输出>.seg/ 里，
+# 断了 / 重试时各段从自己的断点接着下；全部下完按顺序拼起来（拼一段删一段，不多占一份空间），之后照旧整体校验 SHA-256。
+# 镜像：元数据里可以有 "mirrors": ["https://…", …]（基地址，有顺序；写 [] 就是不用镜像）；元数据里没有这一项时
+# 用默认的 VD_DEF_MIRRORS（dl.wenjin.jp：同一台服务器，不经过 Cloudflare 直连）。network.conf 里的 VD_MIRROR 排在最前。
+# 文件在镜像上的地址 = 基地址/<key>，key = 主站地址去掉域名和 ? 后面的部分（如 bundles/veradroid-pw6-0.95.tar.gz）；
+# 基地址里有 {name} 时换成文件名（GitHub Releases 那种没有目录的）。每次下载前各候选（镜像 + 主站）先下前 256 KB 计时，
+# 用最快的；镜像下坏了（SHA-256 不对）就只用主站重下。镜像上的内容和主站不一样也没关系：最后都要过 SHA-256。
+VD_SEGS=${VD_SEGS:-4}; case "$VD_SEGS" in [1-6]) ;; *) VD_SEGS=4 ;; esac
+VD_SEG_MIN=8388608
+VD_DEF_MIRRORS='"https://dl.wenjin.jp"'
+VD_MIRRORS=
+vd_mirrors_from() { # 元数据 json → VD_MIRRORS（空格分开，只要 https）
+    VD_MIRRORS=$( { [ -z "${VD_MIRROR:-}" ] || printf '"%s",' "$VD_MIRROR"
+        if printf '%s' "$1" | grep -q '"mirrors"'; then printf '%s' "$1" | tr -d '\n' | sed -n 's/.*"mirrors": *\[\([^]]*\)\].*/\1/p'
+        else printf '%s' "$VD_DEF_MIRRORS"; fi; } | tr ',' '\n' \
+        | sed -n 's/^[ ]*"\(https:\/\/[^" ]*\)"[ ]*$/\1/p' | head -n 6 | tr '\n' ' ')
+    [ -z "$VD_MIRRORS" ] || vlog "mirrors: $VD_MIRRORS"
+    return 0
+}
+vd_cands() { # 主站地址 → 候选地址（每行一个：镜像按顺序在前，主站最后）
+    c_k=${1#*://}; c_k=${c_k#*/}; c_k=${c_k%%\?*}; c_n=${c_k##*/}
+    for c_m in $VD_MIRRORS; do
+        case "$c_m" in *'{name}'*) printf '%s\n' "$c_m" | sed "s|{name}|$c_n|" ;; *) printf '%s\n' "${c_m%/}/$c_k" ;; esac
+    done
+    printf '%s\n' "$1"
+}
+# vd_pick 主站地址 → 输出“地址 分段”：分段 = VD_SEGS（支持 Range）、1（不支持）、0（都测不通）
+vd_pick() {
+    p_o=$1; p_best=; p_bs=-1; p_seg=1
+    for p_u in $(vd_cands "$p_o"); do
+        p_w=$(curl_do -s -o /dev/null -r 0-262143 --connect-timeout 8 --max-time 12 -w '%{http_code} %{size_download} %{time_total}' "$p_u" 2>/dev/null) || p_w="000 0 0"
+        set -- $p_w
+        # 206 = 支持 Range；镜像必须支持（不然多半是错误页 / 跳转页），主站 200 也行（不分段）
+        case "$1" in 206) ;; 200) [ "$p_u" = "$p_o" ] || continue ;; *) vlog "probe: $p_u -> HTTP $1"; continue ;; esac
+        p_sp=$(awk -v b="$2" -v t="$3" 'BEGIN { if (t > 0) printf "%d", b / t; else print 0 }')
+        vlog "probe: $p_u -> HTTP $1, $p_sp B/s"
+        if [ "$p_sp" -gt "$p_bs" ] 2>/dev/null; then p_best=$p_u; p_bs=$p_sp; p_seg=1; [ "$1" = 206 ] && p_seg=$VD_SEGS; fi
+    done
+    [ -n "$p_best" ] || { p_best=$p_o; p_seg=0; }   # 都测不通：分段数未知（0），交给真正的下载去报错
+    # 记下选了哪个源（第几个候选），小文件（增量更新的部件）在 10 分钟内直接用它，不再一个个测
+    p_i=0; for p_u in $(vd_cands "$p_o"); do p_i=$((p_i + 1)); [ "$p_u" = "$p_best" ] && break; done
+    echo "$(vp_now) $p_i" > "$TMP/dl.pick" 2>/dev/null || true
+    echo "$p_best $p_seg"
+}
+# 已经下好的字节数（整个文件 + 各段）
+vd_have() {
+    h_s=$(fsize "$1"); h_s=${h_s:-0}
+    for h_f in "$1".seg/[0-9]*; do [ -f "$h_f" ] && h_s=$((h_s + $(fsize "$h_f"))); done
+    echo $h_s
+}
+# vd_fetch 主站地址 输出 总字节：下一次（选源 + 单连接续传或分段并行）；返回 curl 的退出码。在后台跑（vd_download 看进度）。
+vd_fetch() {
+    f_u=$1; f_o=$2; f_t=${3:-0}; f_d=$2.seg
+    if [ -f "$f_d/plan" ]; then
+        set -- $(vd_pick "$f_u"); f_src=$1; f_n=$(cut -d' ' -f2 "$f_d/plan")
+        [ "$2" != 1 ] || { vlog "download: $f_src has no Range now, dropping the segments"; rm -rf "$f_d"; f_n=1; }
+    elif [ "$VD_SEGS" -gt 1 ] && [ "$f_t" -ge $VD_SEG_MIN ] 2>/dev/null && [ ! -s "$f_o" ]; then set -- $(vd_pick "$f_u"); f_src=$1; f_n=$2
+        [ "$f_n" -gt 0 ] || f_n=1
+    elif [ -n "$VD_MIRRORS" ]; then
+        f_src=; set -- $(cat "$TMP/dl.pick" 2>/dev/null) 0 0
+        [ $(( $(vp_now) - $1 )) -lt 600 ] 2>/dev/null && f_src=$(vd_cands "$f_u" | sed -n "${2}p")
+        [ -n "$f_src" ] || { set -- $(vd_pick "$f_u"); f_src=$1; }
+        f_n=1
+    else f_src=$f_u; f_n=1; fi
+    [ "$f_src" = "$f_u" ] || vlog "download from mirror: $f_src"
+    if [ "$f_n" -le 1 ] 2>/dev/null; then
+        curl_do -fsSL --retry 2 --retry-delay 3 --connect-timeout 20 --max-time 1800 --speed-limit 1024 --speed-time 30 -C - -o "$f_o" "$f_src" 2>"$TMP/curl.err"
+        return $?
+    fi
+    mkdir -p "$f_d" || return 23
+    [ "$(cat "$f_d/plan" 2>/dev/null)" = "$f_t $f_n" ] || { rm -f "$f_d"/*; echo "$f_t $f_n" > "$f_d/plan"; }
+    f_len=$(( (f_t + f_n - 1) / f_n )); f_i=0; f_pids=
+    while [ $f_i -lt $f_n ]; do
+        f_a=$((f_i * f_len)); f_b=$((f_a + f_len - 1)); [ $f_b -lt $f_t ] || f_b=$((f_t - 1))
+        f_h=$(fsize "$f_d/$f_i"); f_h=${f_h:-0}
+        [ $((f_a + f_h)) -le $((f_b + 1)) ] || { rm -f "$f_d/$f_i"; f_h=0; }   # 比这一段还长：坏了，重下这段
+        if [ $((f_a + f_h)) -le $f_b ]; then
+            # 输出用 >> 接在已下好的后面；--stderr 带上目录名，安装器清理残留进程时能按目录找到它
+            curl_do -fsS --connect-timeout 20 --max-time 1800 --speed-limit 1024 --speed-time 30 --stderr "$f_d/err.$f_i" \
+                -r $((f_a + f_h))-$f_b "$f_src" >> "$f_d/$f_i" &
+            f_pids="$f_pids $!"
+        fi
+        f_i=$((f_i + 1))
+    done
+    f_rc=0; for f_p in $f_pids; do wait $f_p || f_rc=$?; done
+    cat "$f_d"/err.* > "$TMP/curl.err" 2>/dev/null || true
+    # 各段长度都对才拼：拼进第 0 段，拼一段删一段
+    f_i=0
+    while [ $f_i -lt $f_n ]; do
+        f_a=$((f_i * f_len)); f_b=$((f_a + f_len - 1)); [ $f_b -lt $f_t ] || f_b=$((f_t - 1))
+        f_h=$(fsize "$f_d/$f_i"); f_h=${f_h:-0}
+        if [ "$f_h" != $((f_b - f_a + 1)) ]; then
+            [ "$f_h" -le $((f_b - f_a + 1)) ] || rm -f "$f_d/$f_i"
+            [ $f_rc != 0 ] || f_rc=18   # curl 说成功了但长度不对：当成“传输不完整”，外面会重试
+            return $f_rc
+        fi
+        f_i=$((f_i + 1))
+    done
+    f_i=1
+    while [ $f_i -lt $f_n ]; do cat "$f_d/$f_i" >> "$f_d/0" && rm -f "$f_d/$f_i" || return 23; f_i=$((f_i + 1)); done
+    mv -f "$f_d/0" "$f_o" && rm -rf "$f_d" || return 23
+    return 0
+}
 android_up() { [ -f "$W/pid" ] && kill -0 "$(cat "$W/pid" 2>/dev/null)" 2>/dev/null; }
 # 用户在用：Android 在前台，或者正在启动 / 解冻（veradroid.sh 的 starting / thawing 锁，持有者还活着）
 android_in_use() {
@@ -813,6 +920,7 @@ else
     ver=$(printf '%s' "$json" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
     size=$(printf '%s' "$json" | sed -n 's/.*"size":\([0-9]*\).*/\1/p')
     [ -n "$url" ] && [ -n "$sha" ] || die "服务器没有可用的安装包"
+    vd_mirrors_from "$json"
 
     space_check_before_download "${size:-0}"
     mkdir -p "$TMP"
@@ -820,11 +928,19 @@ else
     progress_line 0 "下载中"
     # Resume partial downloads and abort only on a real stall.  This makes a
     # flaky/blocked CDN retry from the same byte instead of restarting 130 MB.
-    curl_do -fL --retry 8 $RETRY_ALL --retry-delay 3 --connect-timeout 20 --max-time 1200 --speed-limit 1024 --speed-time 30 -C - -o "$TMP/bundle.tar.gz" "$url" &
+    # 分段并行 + 镜像（vd_fetch）；断了从各段的断点重试，连续 8 次没进展才放弃
+    ( n=0; last=0
+      while :; do
+          vd_fetch "$url" "$TMP/bundle.tar.gz" "${size:-0}" && exit 0
+          rc=$?; [ "$rc" = 33 ] || [ "$rc" = 36 ] && rm -rf "$TMP/bundle.tar.gz" "$TMP/bundle.tar.gz.seg"
+          now=$(vd_have "$TMP/bundle.tar.gz"); [ $((now - last)) -gt 524288 ] && n=0; last=$now
+          n=$((n + 1)); vlog "download: curl rc=$rc at $now bytes, attempt $n/8"
+          [ $n -ge 8 ] && exit $rc
+          sleep 5
+      done ) &
     cpid=$!
     while kill -0 "$cpid" 2>/dev/null; do
-        sz=0
-        [ -f "$TMP/bundle.tar.gz" ] && sz=$(wc -c < "$TMP/bundle.tar.gz" | tr -d ' ')
+        sz=$(vd_have "$TMP/bundle.tar.gz")
         if [ -n "$size" ] && [ "$size" -gt 0 ] 2>/dev/null; then
             pct=$((sz * 100 / size))
             [ "$pct" -gt 100 ] && pct=100
@@ -843,7 +959,15 @@ fi
 if [ "$offline" = 1 ]; then progress_line 100 "安装包就绪"; else progress_line 100 "下载完成"; fi
 if [ -n "$sha" ]; then
     show "正在校验 SHA-256…"
-    verify_sha "$TMP/bundle.tar.gz" "$sha" || die "SHA-256 校验失败"
+    if ! verify_sha "$TMP/bundle.tar.gz" "$sha"; then
+        [ "$offline" = 1 ] && die "SHA-256 校验失败"
+        # 下载损坏 / 镜像上的文件不对：只从主站重下一次
+        vlog "sha256 mismatch: downloading again from the main site"
+        rm -rf "$TMP/bundle.tar.gz" "$TMP/bundle.tar.gz.seg" "$TMP/dl.pick"; VD_MIRRORS=
+        show "文件校验没通过，正在重新下载…"
+        vd_fetch "$url" "$TMP/bundle.tar.gz" "${size:-0}" || die "安装包下载失败"
+        verify_sha "$TMP/bundle.tar.gz" "$sha" || die "SHA-256 校验失败"
+    fi
 fi
 show "正在解压安装包…"
 progress_line 100 "解压"

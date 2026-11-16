@@ -43,7 +43,8 @@ import java.util.zip.ZipFile;
  */
 public class ReaderActivity extends Activity {
     private String path, ext;
-    private TextView title, pageInfo, content;
+    private TextView title, pageInfo;
+    private JustifiedText content;
     private ImageView pdfView;
     private LinearLayout textBox;
     private TextView footLeft;
@@ -58,6 +59,7 @@ public class ReaderActivity extends Activity {
     private int page, textSize = 22;
     private String fontPath, fontName = "系统默认", bookTitle = "";
     private float lineSpacing = 1.35f;
+    /** 对齐：0 左对齐、1 居中、2 两端对齐（两端对齐和左对齐断行一样，只是画的时候把每行拉满，见 JustifiedText）。 */
     private int marginDp = 24, align = 0;
     /** 段距（字高的倍数，0 = 没有）、首行缩进（字数）、极简全屏（不显示页脚）、点按方式（0 左边上一页 / 1 全屏下一页）。 */
     private float paraSpacing = 0f;
@@ -101,6 +103,9 @@ public class ReaderActivity extends Activity {
         openedAt = SystemClock.uptimeMillis();
         path = getIntent().getStringExtra("path");
         if (path == null) { finish(); return; }
+        // 同一个文件的几种写法（/sdcard、/storage/emulated/0）都记在 /data/media/0 下面：进度和书库里的书对得上
+        for (String pre : new String[] { "/sdcard/", "/storage/emulated/0/", "/storage/self/primary/" })
+            if (path.startsWith(pre)) { path = "/data/media/0/" + path.substring(pre.length()); break; }
         String name = new File(path).getName();
         int dot = name.lastIndexOf('.');
         ext = dot > 0 ? name.substring(dot + 1).toLowerCase(Locale.US) : "";
@@ -115,7 +120,10 @@ public class ReaderActivity extends Activity {
 
         FrameLayout holder = new FrameLayout(this);
         pageView.addView(holder, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        content = Ui.text(this, "", textSize, false);
+        content = new JustifiedText(this);
+        content.setTextSize(textSize);
+        content.setTextColor(Color.BLACK);
+        Fonts.apply(content, false);
         content.setLineSpacing(0, lineSpacing);
         content.setGravity(Gravity.TOP | Gravity.START);
         applyStyle();
@@ -370,6 +378,7 @@ public class ReaderActivity extends Activity {
                     ui.post(new Runnable() {
                         @Override public void run() {
                             opened();
+                            content.setJustify(false);
                             content.setText("打不开这本书：\n\n" + msg);
                             content.setVisibility(View.VISIBLE);
                             firstShown = true;
@@ -389,7 +398,7 @@ public class ReaderActivity extends Activity {
         provChapter = c; provIndex = idx; provStart = start; provEnd = end;
         content.setVisibility(View.VISIBLE);
         pdfView.setVisibility(View.GONE);
-        content.setText(styled(c.text, start, end));
+        setPageText(styled(c.text, start, end), c.text, start, end);
         if (bookTitle.length() > 0) title.setText(bookTitle);
         if (savedPage >= 0 && savedTotal > 0) {
             int pg = Math.min(savedPage, savedTotal - 1);
@@ -442,7 +451,7 @@ public class ReaderActivity extends Activity {
             if (start >= provChapter.text.length()) return;
             provStart = start; provEnd = pageEnd(provChapter.text, start, g);
             readPages++;
-            content.setText(styled(provChapter.text, provStart, provEnd));
+            setPageText(styled(provChapter.text, provStart, provEnd), provChapter.text, provStart, provEnd);
             footLeft.setText(""); pageOverlay.setText(""); pageInfo.setText("");
         } else if (page < pages.size() - 1) { page++; readPages++; showText(); }
     }
@@ -633,11 +642,20 @@ public class ReaderActivity extends Activity {
         if (pages.isEmpty()) return;
         Page p = pages.get(Math.max(0, Math.min(pages.size() - 1, page)));
         applyStyle();
-        content.setText(indent > 0 || paraSpacing > 0 ? styled(chapters.get(p.chapter).text, p.start, p.start + p.text.length()) : p.text);
+        String ch = chapters.get(p.chapter).text;
+        setPageText(indent > 0 || paraSpacing > 0 ? styled(ch, p.start, p.start + p.text.length()) : p.text, ch, p.start, p.start + p.text.length());
         paintProgress();
         if (blk && chromeVisible) paintBlocksTop();
         if (bookTitle.length() > 0 && !bookTitle.equals(String.valueOf(title.getText()))) title.setText(bookTitle);
         savePage();
+    }
+
+    /** 正文换成这一页；两端对齐时要知道这一页最后一行后面这一段是不是还没完（没完的话最后一行也拉满）。 */
+    private void setPageText(CharSequence t, String chapter, int start, int end) {
+        int i = start + trimEnd(chapter.substring(start, Math.min(chapter.length(), Math.max(start, end)))).length();
+        while (i < chapter.length() && (chapter.charAt(i) == ' ' || chapter.charAt(i) == '\t')) i++;
+        content.setContinues(i < chapter.length() && chapter.charAt(i) != '\n' && chapter.charAt(i) != '\r');
+        content.setText(t);
     }
 
     private void setTextSize(int v) {
@@ -1100,7 +1118,7 @@ public class ReaderActivity extends Activity {
             fontName = p.getString("fontName", home.getString("reader_font_name", "系统默认"));
             lineSpacing = p.getFloat("line", 1.35f);
             marginDp = p.getInt("margin", 24);
-            align = p.getInt("align", 0);
+            align = Math.max(0, Math.min(2, p.getInt("align", 0)));
             paraSpacing = p.getFloat("para", 0f);
             indent = p.getInt("indent", 0);
             minimal = p.getBoolean("minimal", false);
@@ -1129,6 +1147,7 @@ public class ReaderActivity extends Activity {
         int m = dp(marginDp);
         content.setPadding(m, dp(34), m, dp(30));   // 下面 30dp 留给页脚
         content.setGravity(align == 1 ? (Gravity.TOP | Gravity.CENTER_HORIZONTAL) : (Gravity.TOP | Gravity.START));
+        content.setJustify(align == 2);
     }
 
     // 每翻一页都会走到这里：字体文件（18 MB 的霞鹜文楷）只解析一次
@@ -1153,13 +1172,42 @@ public class ReaderActivity extends Activity {
         return 0.96f;
     }
 
+    /**
+     * 改了字号 / 行距 / 边距 / 字体、正文区域高度变了：整本重新分页，停在同一段文字。
+     * 以前在主线程上整本重排（buildPages）：大 TXT 在 512 MB 的 PW5 上要十几秒，触摸 5 秒没回应就是 ANR
+     * （用户诊断 0011115150：5 次“Input dispatching timed out”，主线程都在 rebuildKeepPosition → paginate → StaticLayout）。
+     * 现在和打开书时一样：先用新排版只排当前这一页马上显示（showFirst 的临时页，可以往后翻），整本在后台线程分完再换上
+     * 页表（installPages 按字符位置找回这一页；期间又改了排版，它发现 sig 不对会再来一次）。rebuildGen 丢掉过时的结果。
+     */
+    private int rebuildGen;
     private void rebuildKeepPosition() {
         if (pages.isEmpty()) { applyStyle(); return; }
         Page cur = pages.get(Math.max(0, Math.min(pages.size() - 1, page)));
-        int chapter = cur.chapter, offset = cur.start;       // 按字符位置：换了字号 / 行距 / 边距还停在同一段文字
-        buildPages();
-        page = pageAt(chapter, offset);
-        showText();
+        final int chapter = cur.chapter, offset = cur.start;       // 按字符位置：换了字号 / 行距 / 边距还停在同一段文字
+        final List<Chapter> chs = new ArrayList<Chapter>(chapters);
+        final Geometry g = geometry();
+        if (chapter < 0 || chapter >= chs.size()) { buildPages(); page = pageAt(chapter, offset); showText(); return; }
+        Chapter c = chs.get(chapter);
+        int start = skipBreaks(c.text, Math.min(offset, c.text.length()));
+        int end = start < c.text.length() ? pageEnd(c.text, start, g) : c.text.length();
+        pages.clear(); chapterStart.clear();
+        applyStyle();
+        showFirst(c, chapter, start, end, -1, 0, "");
+        footLeft.setText(""); pageOverlay.setText(""); pageInfo.setText("");
+        final int gen = ++rebuildGen;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final List<Page> pg = new ArrayList<Page>();
+                final List<Integer> starts = new ArrayList<Integer>();
+                long t0 = SystemClock.uptimeMillis();
+                try { paginate(chs, g, pg, starts); } catch (Throwable t) { android.util.Log.w("VeraHome", "reader: repaginate failed", t); }
+                android.util.Log.i("VeraPerf", "reader repaginate: " + pg.size() + " pages in " + (SystemClock.uptimeMillis() - t0) + " ms (background)");
+                ui.post(new Runnable() { @Override public void run() {
+                    if (gen != rebuildGen || isDestroyed() || !pages.isEmpty()) return;
+                    installPages(chs, pg, starts, g.sig);
+                } });
+            }
+        }, "reader-repaginate").start();
     }
 
     private void displayDialog() {
@@ -1245,8 +1293,12 @@ public class ReaderActivity extends Activity {
         View center = Ui.button(this, "居中", 14, align == 1, new View.OnClickListener() {
             @Override public void onClick(View v) { align = 1; saveStyle(); applyStyle(); d.dismiss(); }
         });
+        View both = Ui.button(this, "两端对齐", 14, align == 2, new View.OnClickListener() {
+            @Override public void onClick(View v) { align = 2; saveStyle(); applyStyle(); d.dismiss(); }
+        });
         alignRow.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         alignRow.addView(center, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        alignRow.addView(both, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         box.addView(alignRow);
 
         View close = Ui.button(this, "关闭", 16, true, new View.OnClickListener() {
@@ -1611,7 +1663,7 @@ public class ReaderActivity extends Activity {
             @Override public void onStep(int i) { marginDp = MARGIN_V[i]; saveStyle(); if (footView != null) footView.setPadding(dp(marginDp), 0, dp(marginDp), dp(6)); rebuildKeepPosition(); } }));
         sheetRow("首行缩进", "First-line indent", new Blocks.Stepper(this, new String[] { "无", "1 字", "2 字" }, Math.max(0, Math.min(2, indent)), new Blocks.Stepper.Listener() {
             @Override public void onStep(int i) { indent = i; saveStyle(); rebuildKeepPosition(); } }));
-        sheetRow("对齐", "Alignment", new Blocks.Stepper(this, new String[] { "左对齐", "居中" }, align, new Blocks.Stepper.Listener() {
+        sheetRow("对齐", "Alignment", new Blocks.Stepper(this, new String[] { "左对齐", "居中", "两端对齐" }, Math.max(0, Math.min(2, align)), new Blocks.Stepper.Listener() {
             @Override public void onStep(int i) { align = i; saveStyle(); rebuildKeepPosition(); } }).wrap());
     }
 

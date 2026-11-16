@@ -35,6 +35,14 @@
  *     REAGL <pct>             balanced mode: frames that change at least <pct> % of the screen use REAGL instead of DU (35)
  *     BADGE <ms> <pos> <icon> <caps>|<label>[|<line 2>]   gesture badge drawn by the bridge itself (docs/gesture-hint.md);
  *                             BADGE 0 takes it down
+ *     LAUNCH <ms>             an app is being opened (VeraHome, before startActivity / when the task stack changes):
+ *                             for up to <ms>, frames that are one flat colour (the window manager's starting window -
+ *                             the app's theme background, white or black) are not drawn; the last picture stays and
+ *                             after 600 ms a small "加载中" badge goes on it. The first frame with real content (or the
+ *                             end of <ms>) ends it. LAUNCH 0 ends it at once
+ *     ANIMHOLD <ms>           page-slide hold: a first frame that changes only a strip along a screen edge (a slide / cover page
+ *                             animation starting) is held and merged with the frames that follow until none came for <ms>
+ *                             (180; 0 = off), see anim_quiet_ms
  *     QUIT
  * NEVER send EPDC_FLAG_SCRLL_START/MID/END (0x60/0x20/0x40) to hwtcon_v2: on a real PW6 one START + MID + END sequence
  * left the driver's dispatch thread stuck for good (every later update timed out after 5 s, only a reboot cleared it). Nothing in this file sets flags other than SKIP_CFA / dithering / swipe.
@@ -198,6 +206,26 @@ static int rot_dir(int dir)
    waits up to hold_ms for a following frame; if one comes, only the newer picture is drawn. 0 = off (old behaviour). */
 static int hold_ms = 70;
 static int hold_pct = 3;
+/* Page-slide hold (ANIMHOLD <ms>, --anim-hold; 0 = off, default 180). Readers with a slide / cover / curl page animation
+   (晋江 7.1.9: ~6 frames 80 ms apart) start the turn with a strip along the left or right edge (the new page, or its shadow,
+   coming in: 136x1696 at x 1120), then the full page, then sometimes the shadow leaving and the header / page number.
+   The first frame after a quiet moment used to go out at once (a tap must answer quickly), so every turn was a DU strip,
+   a REAGL page and one or two small refreshes: 2-8 refreshes, ~1 s (a test PW6, KFB_MODE 3). Now a first frame whose change is
+   such an edge strip (nearly the full height and at most 2/5 of the width, touching the left or right edge - or the same
+   turned for top / bottom) is held; every frame that follows replaces it, and the newest picture is drawn once no frame
+   came for anim_quiet_ms (at most anim_max_ms after the first). Drawers and menus that slide in from an edge are merged
+   the same way. Other first frames (a pressed button, a key) are not affected. */
+static int anim_quiet_ms = 180, anim_max_ms = 1000;
+static long anim_t0 = 0;
+static int g_lead = 0;    /* set by the main loop: the frame being shown is the first after a quiet moment */
+static int edge_strip(int x0, int y0, int x1, int y1)
+{
+    int w = x1 - x0, h = y1 - y0;
+    if (w <= 0 || h <= 0) return 0;
+    if (y0 <= H / 20 && y1 >= H - H / 20 && w * 5 <= W * 2 && (x0 <= W / 50 || x1 >= W - W / 50)) return 1;
+    if (x0 <= W / 20 && x1 >= W - W / 20 && h * 5 <= H * 2 && (y0 <= H / 50 || y1 >= H - H / 50)) return 1;
+    return 0;
+}
 static int pace = 0;          /* PACE: follow the panel (see the header) */
 static int clean_ms = 0;      /* CLEAN: 16-gray clean-up after fast refreshes, 0 = off */
 static int cl_x0, cl_y0, cl_x1, cl_y1, cl_valid = 0;   /* panel area last drawn with DU and not cleaned yet */
@@ -788,7 +816,8 @@ static int row_sig(const uint8_t *a, const uint8_t *b, int x0, int x1, int phase
 
 /* convert page n, diff against the panel, refresh what changed - as several small rectangles when the changes are far
    apart (clock in the header + something at the bottom), not as one big one that would make the panel redraw the middle too */
-/* returns 0 = drawn (or nothing to draw), 1 = small change, hold it a moment, 2 = PACE: the panel is still busy there */
+/* returns 0 = drawn (or nothing to draw), 1 = small change, hold it a moment, 2 = PACE: the panel is still busy there,
+   3 = page-count flash due (hold until still), 4 = edge strip after a quiet moment (page-slide hold) */
 static int req_y0 = -1, req_y1 = 0;      /* rows the sender says changed (P n y0 y1); -1 = unknown, look at everything */
 static int pend_y0 = -1, pend_y1 = 0;    /* rows converted for a frame that was kept back: still to be compared */
 static int need_full = 1;                /* a frame was dropped (screensaver) or we just started: the next one must look at every row */
@@ -864,6 +893,16 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
                 total * 100 / ((long)W * H), flip_total * 100 / ((long)W * H),
                 (td1.tv_sec - td0.tv_sec) * 1000000L + (td1.tv_nsec - td0.tv_nsec) / 1000, now_ms() - tc0);
     if (nc == 0) return 0;    /* nothing changed */
+    if (may_hold && g_lead && anim_quiet_ms > 0 && mode == M_AUTO) {    /* page-slide hold, see anim_quiet_ms */
+        int bx0 = cx0[0], by0 = cy0[0], bx1 = cx1[0], by1 = cy1[0];
+        for (int i = 1; i < nc; i++) {
+            if (cx0[i] < bx0) bx0 = cx0[i];
+            if (cy0[i] < by0) by0 = cy0[i];
+            if (cx1[i] > bx1) bx1 = cx1[i];
+            if (cy1[i] > by1) by1 = cy1[i];
+        }
+        if (edge_strip(bx0, by0, bx1, by1)) return 4;
+    }
     if (pace && may_pace && mode != M_FULL) {
         long ov = 0, nowt = now_ms();
         for (int i = 0; i < nc; i++) ov += busy_overlap(cx0[i], cy0[i], cx1[i], cy1[i], nowt);
@@ -1133,6 +1172,57 @@ static void bg_tick(const char *sleepf)
 }
 /* ---- end of gesture badge ---- */
 
+/* ---- app launch: keep the last picture over the starting window (LAUNCH) ---- */
+static long launch_until = 0, launch_t0 = 0, launch_sent = 0;
+static int launch_rows = 0;     /* page_blank: share of sampled rows with content, per mille (for the timing log) */
+static int launch_badged = 0;
+static unsigned long n_launch_held = 0;
+/* one flat colour, apart from a narrow band (a status bar / the navigation bar drawn into the same buffer): sample every
+   4th row and column; a row counts as content when some sample differs from the most common value by more than 24.
+   A real screen - even a sparse login page - has content on far more than 6 % of the rows. */
+static int page_blank(const uint8_t *shm, int page)
+{
+    if (g_rot) return 0;
+    const uint8_t *img = shm + (size_t)page * W * H * 4;
+    int hist[16] = {0};
+    for (int y = 0; y < H; y += 64)
+        for (int x = 0; x < W; x += 64) { const uint8_t *p = img + ((size_t)y * W + x) * 4; hist[((p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8) >> 4]++; }
+    int bi = 0;
+    for (int i = 1; i < 16; i++) if (hist[i] > hist[bi]) bi = i;
+    int dom = bi * 16 + 8, rows = 0, crow = 0;
+    for (int y = 0; y < H; y += 4) {
+        rows++;
+        const uint8_t *r = img + (size_t)y * W * 4;
+        for (int x = 0; x < W; x += 4) {
+            const uint8_t *p = r + (size_t)x * 4;
+            int v = (p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8;
+            if (v - dom > 24 || dom - v > 24) { crow++; break; }
+        }
+    }
+    launch_rows = rows ? crow * 1000 / rows : 0;
+    return crow * 100 < rows * 6;
+}
+/* the hold is over: take the badge down by making its rectangle differ from the next picture (that frame then covers it
+   in the same refresh, no extra update) */
+static void launch_end(const char *why)
+{
+    if (!launch_until) return;
+    long held = launch_t0 ? now_ms() - launch_t0 : 0;
+    launch_until = 0;
+    if (bg_drawn && prev_y8)
+        for (int y = bg_py0; y < bg_py1; y++)
+            for (int x = bg_px0; x < bg_px1; x++) prev_y8[(size_t)y * W + x] = (uint8_t)~cur_y8[(size_t)y * W + x];
+    if (launch_badged) { bg_on = 0; bg_drawn = 0; }
+    if (launch_t0) fprintf(stderr, "[%ld] epd: launch hold ended (%s) after %ld ms, badge %d\n", now_ms(), why, held, launch_badged);
+    launch_t0 = 0; launch_badged = 0;
+}
+static void launch_badge(void)
+{
+    char a[] = "5000 t app LOADING|加载中";
+    launch_badged = 1;
+    bg_command(a);
+}
+
 static int cmd_run(const char *shm, const char *fifo, const char *ctl)
 {
     int sfd = open(shm, O_RDWR | O_CREAT, 0666);
@@ -1210,7 +1300,15 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             if (access(sleepf, F_OK) == 0) { held_page = -1; cl_valid = 0; burst_dirty = 0; need_full = 1; pend_y0 = -1; continue; }
             if (held_page >= 0) {
                 int expired = nowt >= held_until;
-                if ((held_why == 1 || held_why == 3) && !expired) continue;   /* a hold only ends by its deadline or a new frame */
+                if (held_why == 4) {   /* launch hold: the badge after 600 ms, then wait for content / the end of LAUNCH */
+                    if (launch_until && nowt < launch_until) {
+                        if (!launch_badged) launch_badge();
+                        held_until = launch_until;
+                        continue;
+                    }
+                    launch_end("timeout");
+                }
+                if ((held_why == 1 || held_why == 3 || held_why == 5) && !expired) continue;   /* a hold only ends by its deadline or a new frame */
                 int hp = held_page, hm = held_mode;
                 held_page = -1;
                 last_draw_ms = nowt;
@@ -1219,6 +1317,15 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
                         fprintf(stderr, "[%ld] epd: page-count flash after %ld ms\n", nowt, nowt - flash_t0);
                     req_y0 = -1;
                     show_page(fbmem, hp, M_FULL, 1, 0, 0);
+                    continue;
+                }
+                if (held_why == 5) {    /* page-slide hold: the frames stopped, draw the newest picture once */
+                    if (timing_flag && access(timing_flag, F_OK) == 0)
+                        fprintf(stderr, "[%ld] epd: slide hold: drawing after %ld ms\n", nowt, nowt - anim_t0);
+                    req_y0 = -1; pend_y0 = -1; g_lead = 0;
+                    if (show_page(fbmem, hp, hm, 0, 0, 0) == 3) {
+                        held_page = hp; held_mode = M_FULL; held_why = 3; flash_t0 = nowt; held_until = nowt + flash_quiet_ms;
+                    }
                     continue;
                 }
                 /* held small change: nothing followed, draw it. Paced frame: the panel reported a refresh done, try again
@@ -1273,14 +1380,19 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
                    desktop, applied at once. lightf / darken missing = off (host scripts from before the filter). */
                 double gm; int dt, fe, iv, um = 0, st = settle_ms, lf = 0, dk = 0;
                 if (sscanf(line + 4, "%lf %d %d %d %d %d %d %d", &gm, &dt, &fe, &iv, &um, &st, &lf, &dk) >= 4) {
+                    /* Only what changes the picture itself (contrast curve, dither, invert, light filter, darken) needs the
+                       whole screen redrawn. Switching apps sends SET with the app's own refresh mode / full-flash interval
+                       (host appprof.sh): redrawing then put an extra full-screen update on top of the app's first frame. */
+                    int lut_changed = gm != g_gamma || (uint8_t)dt != dither || (iv != 0) != g_invert ||
+                                      ((lf >= 0 && lf <= 3) ? lf : 0) != g_lightf || (dk == 1) != g_darken;
                     settle_ms = st < 0 ? 0 : st > 400 ? 400 : st;
                     g_gamma = gm; dither = (uint8_t)dt; flash_every = fe < 0 ? 0 : fe; g_invert = iv != 0;
                     ui_mode = (um >= 0 && um <= 3) ? um : 0;
                     g_lightf = (lf >= 0 && lf <= 3) ? lf : 0; g_darken = dk == 1;
-                    build_lut(g_gamma);
-                    fprintf(stderr, "epd: set contrast=%.2f dither=%d flash=%d invert=%d mode=%d settle=%d lightf=%d darken=%d\n",
-                            g_gamma, dither, flash_every, g_invert, ui_mode, settle_ms, g_lightf, g_darken);
-                    redraw = 1;
+                    if (lut_changed) build_lut(g_gamma);
+                    fprintf(stderr, "epd: set contrast=%.2f dither=%d flash=%d invert=%d mode=%d settle=%d lightf=%d darken=%d%s\n",
+                            g_gamma, dither, flash_every, g_invert, ui_mode, settle_ms, g_lightf, g_darken, lut_changed ? "" : " (no redraw)");
+                    if (lut_changed) redraw = 1;
                 }
             }
             else if (!strncmp(line, "DIR", 3)) {
@@ -1303,10 +1415,20 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
                 int v;
                 if (sscanf(line + 7, "%d", &v) == 1 && v >= -1 && v <= 5000) set_pwrdown(v);
             }
-            else if (!strncmp(line, "BADGE ", 6)) bg_command(line + 6);   /* gesture badge, see bg_tick */
+            else if (!strncmp(line, "BADGE ", 6)) bg_command(line + 6);
+            else if (!strncmp(line, "LAUNCH", 6)) {
+                int v;
+                if (sscanf(line + 6, "%d", &v) == 1 && v >= 0 && v <= 10000) {
+                    if (v == 0) launch_end("LAUNCH 0");
+                    else if (!g_rot) { if (!launch_until) { launch_t0 = 0; launch_badged = 0; } launch_sent = now_ms(); launch_until = launch_sent + v; }
+                }
+            }   /* gesture badge, see bg_tick */
             else if (!strncmp(line, "HINT", 4)) {
                 int ms, pc;
-                if (sscanf(line + 4, "%d %d", &ms, &pc) == 2 && ms > 0 && ms <= 3000 && pc >= 1 && pc <= 100) { hint_until = now_ms() + ms; hint_pct = pc; }
+                if (sscanf(line + 4, "%d %d", &ms, &pc) == 2 && ms > 0 && ms <= 3000 && pc >= 1 && pc <= 100) {
+                    hint_until = now_ms() + ms; hint_pct = pc;
+                    if (tlog) fprintf(stderr, "[%ld] epd: hint %d ms, reagl-min %d%%\n", now_ms(), ms, pc);
+                }
             }
             else if (!strncmp(line, "SETTLE2", 7)) { int v; if (sscanf(line + 7, "%d", &v) == 1 && v >= 0 && v <= 400) settle_first = v; }
             else if (!strncmp(line, "SCROLLDU", 8)) { int v; if (sscanf(line + 8, "%d", &v) == 1 && v >= 0 && v <= 5000) { burst_du_ms = waiter_on ? v : 0; if (!v) burst_dirty = 0; } }
@@ -1318,6 +1440,10 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             else if (!strncmp(line, "CLEAN", 5)) {
                 int v;
                 if (sscanf(line + 5, "%d", &v) == 1 && v >= 0 && v <= 5000) { clean_ms = waiter_on ? v : 0; if (!clean_ms) cl_valid = 0; }
+            }
+            else if (!strncmp(line, "ANIMHOLD", 8)) {   /* ANIMHOLD <ms>: page-slide hold quiet window (0 = off) */
+                int v;
+                if (sscanf(line + 8, "%d", &v) == 1 && v >= 0 && v <= 500) { anim_quiet_ms = v; if (!v && held_why == 5 && held_page >= 0) held_until = now_ms(); }
             }
             else if (!strncmp(line, "HOLD", 4)) {   /* HOLD <ms>: how long a small change waits for a following frame (0 = off) */
                 int v;
@@ -1400,8 +1526,34 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             /* a frame that arrives while a small change is held is drawn at once, whatever its size: it already waited.
                A frame that arrives while another one waits for the panel replaces it (newest picture wins) and keeps
                that one's safety deadline. */
-            int was_hold = held_page >= 0 && held_why == 1, was_paced = held_page >= 0 && held_why == 2;
             long nowt2 = now_ms();
+            if (launch_until) {
+                int blank = nowt2 < launch_until && mode != M_FULL && prev_valid && page_blank(fbmem, page);
+                if (timing_flag && access(timing_flag, F_OK) == 0) fprintf(stderr, "[%ld] epd: launch frame: content rows %d.%d%% -> %s\n", nowt2, launch_rows / 10, launch_rows % 10, blank ? "blank" : "content");
+                /* content in the first moments after LAUNCH, before any flat frame, is still the old picture being
+                   redrawn (the icon that was pressed, the previous app's last frame): keep waiting for the app */
+                if (!blank && !launch_t0 && nowt2 < launch_until && nowt2 - launch_sent < 1500) goto launch_show;
+                if (blank) {
+                    if (!launch_t0) { launch_t0 = nowt2; fprintf(stderr, "[%ld] epd: launch hold: blank frame kept off the panel\n", nowt2); }
+                    n_launch_held++;
+                    held_page = page; held_mode = mode; held_why = 4;
+                    held_until = launch_badged ? launch_until : launch_t0 + 600 < launch_until ? launch_t0 + 600 : launch_until;
+                    last_page = page;
+                    continue;
+                }
+                launch_end(nowt2 >= launch_until ? "timeout" : "content");
+                if (held_why == 4) held_page = -1;
+            }
+            launch_show:;
+            if (held_page >= 0 && held_why == 5 && mode != M_FULL) {
+                /* page-slide hold: this newer picture replaces the held one, the quiet window starts again */
+                held_page = page;
+                held_until = nowt2 + anim_quiet_ms;
+                if (held_until > anim_t0 + anim_max_ms) held_until = anim_t0 + anim_max_ms;
+                continue;
+            }
+            if (held_why == 5) held_page = -1;   /* a FULL request ends the slide hold */
+            int was_hold = held_page >= 0 && held_why == 1, was_paced = held_page >= 0 && held_why == 2;
             if (held_page >= 0 && held_why == 3 && mode != M_FULL) {
                 /* a page-count flash is waiting for the picture to settle: this newer picture replaces it, the wait
                    starts again (up to flash_max_ms after the flip began); nothing is drawn in between */
@@ -1412,11 +1564,14 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             }
             held_page = -1;
             if (rall || ry1 <= ry0) req_y0 = -1; else { req_y0 = ry0; req_y1 = ry1; }
+            g_lead = nowt2 - last_draw_ms > 350;
             int r = show_page(fbmem, page, mode, mode == M_FULL, !was_hold && !was_paced, !(was_paced && nowt2 >= held_until));
+            g_lead = 0;
+            if (r == 4) { held_page = page; held_mode = mode; held_why = 5; anim_t0 = nowt2; held_until = nowt2 + anim_quiet_ms; }
             if (r == 1) { held_page = page; held_mode = mode; held_why = 1; held_until = nowt2 + hold_ms; }
             if (r == 3) { held_page = page; held_mode = M_FULL; held_why = 3; flash_t0 = nowt2; held_until = nowt2 + flash_quiet_ms; }
             if (r && timing_flag && access(timing_flag, F_OK) == 0)
-                fprintf(stderr, "[%ld] epd: kept back (%s)\n", now_ms(), r == 1 ? "small change" : r == 3 ? "page-count flash, waiting for the picture to settle" : "panel busy");
+                fprintf(stderr, "[%ld] epd: kept back (%s)\n", now_ms(), r == 1 ? "small change" : r == 3 ? "page-count flash, waiting for the picture to settle" : r == 4 ? "edge strip: page-slide hold" : "panel busy");
             if (r == 2) { held_page = page; held_mode = mode; held_why = 2; if (!was_paced) held_until = nowt2 + 700; }
             if (n_sent != sent0) last_draw_ms = tframe;
         }
@@ -1466,6 +1621,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--mode") && i + 1 < argc) ui_mode = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--settle") && i + 1 < argc) settle_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--hold") && i + 1 < argc) hold_ms = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--anim-hold") && i + 1 < argc) anim_quiet_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--pace") && i + 1 < argc) pace = atoi(argv[++i]) != 0;
         else if (!strcmp(argv[i], "--clean") && i + 1 < argc) clean_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--reagl-min") && i + 1 < argc) { reagl_min = atoi(argv[++i]); if (reagl_min < 1 || reagl_min > 100) reagl_min = 35; }

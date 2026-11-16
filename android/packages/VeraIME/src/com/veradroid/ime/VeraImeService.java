@@ -208,6 +208,26 @@ public class VeraImeService extends InputMethodService {
         }
     }
 
+    /**
+     * Keyboard window gone: what was under it comes back as one big change. In 均衡 the display bridge sends a change of
+     * less than KFB_REAGL_MIN (35 %) of the screen as DU (1-bit, does not clean), so the keys stayed on the panel as a
+     * ghost. A one-shot hint to the bridge (display/epd.c HINT, the same one the pull-down panel uses): for the next
+     * 2.5 s (the app relayouts in several frames), changes of at least 5 % of the screen go out as REAGL (16 grays, cleans ghosts, no flash). Non-blocking:
+     * no bridge reading the FIFO = dropped.
+     */
+    @Override public void onWindowHidden() {
+        super.onWindowHidden();
+        java.io.FileDescriptor fd = null;
+        try {
+            fd = android.system.Os.open("/dev/kfb/epd.fifo", android.system.OsConstants.O_WRONLY | android.system.OsConstants.O_NONBLOCK, 0);
+            byte[] b = "HINT 2500 5\n".getBytes();
+            android.system.Os.write(fd, b, 0, b.length);
+        } catch (Throwable ignored) {
+        } finally {
+            if (fd != null) try { android.system.Os.close(fd); } catch (Throwable ignored) { }
+        }
+    }
+
     @Override public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
         boolean back = editHiddenAt > 0 && SystemClock.uptimeMillis() - editHiddenAt < 2000

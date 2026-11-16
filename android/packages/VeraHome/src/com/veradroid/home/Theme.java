@@ -60,8 +60,8 @@ final class Theme {
     /** “壁纸深浅”（偏好键 wallpaperdim，0..4 = 20% / 30% / 50% / 70% / 原图）盖的白色有多浓。 */
     private static final int[] VEIL_ALPHA = { 180, 160, 128, 77, 0 };
 
-    private static Bitmap wall;            // ALPHA_8，墨量
-    private static String wallKey = "";
+    private static volatile Bitmap wall;   // ALPHA_8，墨量
+    private static volatile String wallKey = "";
     private static volatile int bump;      // 应用里自己改了主题：version() 跟着变
     private static Context app;
     private static int lastW, lastH;
@@ -119,6 +119,22 @@ final class Theme {
         lastW = w; lastH = h;
         Bitmap b = wallBitmap(c, w, h);
         return b == null ? null : new WallDrawable(b);
+    }
+
+    /**
+     * 主线程用：内存里已经处理好的那张（和现在的图、铺法、深浅、屏幕大小都对得上）就返回它，否则返回 null，绝不等。
+     * wallpaper() 是 synchronized 的：后台正在处理新壁纸（传书网页换了图、设置里改了深浅 → prepareAsync / setWallpaper）时，
+     * 主线程回到主页要等那张图解码 + 逐像素处理完（Kindle 上 1–5 秒），没有缓存时主线程还会自己解码原图。
+     * 拿不到时调用方先用白底，再 prepareAsync，做好后再贴上去。
+     */
+    static Drawable wallpaperIfReady(Context c, int w, int h) {
+        app = c.getApplicationContext();
+        lastW = w; lastH = h;
+        File f = wallFile();
+        if (f == null || w <= 0 || h <= 0) return null;
+        Bitmap b = wall; String k = wallKey;
+        if (b == null || b.isRecycled() || !keyFor(f, w, h, fitOf(c), dimOf(c)).equals(k)) return null;
+        return new WallDrawable(b);
     }
 
     private static synchronized Bitmap wallBitmap(Context c, int w, int h) {

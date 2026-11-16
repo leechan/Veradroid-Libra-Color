@@ -135,7 +135,8 @@ final class BlocksCards {
     /** 算作“阅读应用”的包（继续阅读卡片只记这些）：默认一份常见的阅读器，用户可以在“首页卡片”里增减（键 blk_readers）。 */
     static final String READERS_DEFAULT = "com.tencent.weread.eink,com.tencent.weread,org.koreader.launcher,com.flyersoft.moonreader,com.flyersoft.moonreaderp,"
         + "com.duokan.reader,com.duokan.einkreader,com.chaozh.iReaderFree,com.chaozh.iReader,com.amazon.kindle,com.dragon.read,com.jjwxc.reader,"
-        + "com.qidian.QDReader,com.zhangyue.iReader.Eink,com.ss.android.lark.read,com.tadu.android,org.geometerplus.zlibrary.ui.android,com.ireadercity";
+        + "com.qidian.QDReader,com.zhangyue.iReader.Eink,com.ss.android.lark.read,com.tadu.android,org.geometerplus.zlibrary.ui.android,com.ireadercity,"
+        + "io.legado.app.release,io.legado.ink,com.gedoor.monkeybook";
     static List<String> readers(Context c) {
         List<String> l = new ArrayList<String>();
         for (String x : Store.prefs(c, "home").getString("blk_readers", READERS_DEFAULT).split(",")) if (x.trim().length() > 0) l.add(x.trim());

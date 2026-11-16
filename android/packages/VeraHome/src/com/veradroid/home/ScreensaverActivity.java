@@ -313,25 +313,41 @@ public class ScreensaverActivity extends Activity {
         }, "saver-find").start();
     }
 
-    private void copyIn(File src) {
-        try {
-            File dir = new File(SD_DIR);
-            dir.mkdirs();
-            String name = src.getName().replaceAll("[^A-Za-z0-9._\\-\\u4e00-\\u9fa5]", "_");
-            File dst = new File(dir, name);
-            InputStream in = new FileInputStream(src);
-            OutputStream out = new FileOutputStream(dst);
-            byte[] buf = new byte[65536];
-            int n;
-            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-            in.close(); out.close();
-            dst.setReadable(true, false);
-            choose("one", "sd/" + name);
-            load();
-            for (int i = 0; i < items.size(); i++) if (items.get(i).key.equals("sd/" + name)) { pageNo = i / PER; renderPage(); break; }
-            VeraToast.show(this, "已导入并设为屏保");
-        } catch (Exception e) {
-            VeraToast.show(this, "导入失败：" + e.getMessage());
-        }
+    /**
+     * 拷进 Android 的 Screensaver 文件夹再设成屏保。拷贝放在后台线程：图可能是几 MB 的 PNG，源可能在 Kindle 的书库（FUSE）上，
+     * 以前在主线程上拷，点完要卡好几秒（触摸 5 秒没回应就是 ANR）。拷完回到主线程选中、刷新列表。
+     */
+    private void copyIn(final File src) {
+        VeraToast.show(this, "正在导入…");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                String err = null, nm = null;
+                try {
+                    File dir = new File(SD_DIR);
+                    dir.mkdirs();
+                    nm = src.getName().replaceAll("[^A-Za-z0-9._\\-\\u4e00-\\u9fa5]", "_");
+                    File dst = new File(dir, nm);
+                    InputStream in = new FileInputStream(src);
+                    OutputStream out = new FileOutputStream(dst);
+                    try {
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    } finally { in.close(); out.close(); }
+                    dst.setReadable(true, false);
+                } catch (Exception e) { err = String.valueOf(e.getMessage()); }
+                final String e = err, name = nm;
+                handler.post(new Runnable() {
+                    @Override public void run() {
+                        if (isFinishing()) return;
+                        if (e != null) { VeraToast.show(ScreensaverActivity.this, "导入失败：" + e); return; }
+                        choose("one", "sd/" + name);
+                        load();
+                        for (int i = 0; i < items.size(); i++) if (items.get(i).key.equals("sd/" + name)) { pageNo = i / PER; renderPage(); break; }
+                        VeraToast.show(ScreensaverActivity.this, "已导入并设为屏保");
+                    }
+                });
+            }
+        }, "saver-import").start();
     }
 }

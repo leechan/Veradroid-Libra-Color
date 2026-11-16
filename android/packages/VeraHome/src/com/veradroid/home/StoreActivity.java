@@ -47,6 +47,8 @@ public class StoreActivity extends Activity {
     private static volatile String jobPkg;      // 正在处理的包名，null = 没有
     private static volatile String jobMsg;      // 当前进度 / 最近一次的结果（重新打开商店时显示）
     private static StoreActivity live;          // 正在前台的商店界面（进度写到它上面），只在主线程读写
+    // 下载镜像（服务器 /api/store/apps 的 "mirrors"；没有这一项时用 Dl.DEF_MIRRORS，[] = 不用镜像）
+    private static volatile List<String> mirrors = java.util.Arrays.asList(Dl.DEF_MIRRORS);
 
     static final class App {
         int id, versionCode;
@@ -113,6 +115,12 @@ public class StoreActivity extends Activity {
                 try {
                     JSONObject j = get(BASE + "/api/store/apps?device_id=" + enc(Update.deviceId(StoreActivity.this))
                         + "&token=" + enc(t));
+                    JSONArray ms = j.optJSONArray("mirrors");
+                    if (ms != null) {
+                        List<String> m = new ArrayList<String>();
+                        for (int i = 0; i < ms.length() && m.size() < 6; i++) m.add(ms.optString(i));
+                        mirrors = m;
+                    } else if (j.has("apps")) mirrors = java.util.Arrays.asList(Dl.DEF_MIRRORS);
                     JSONArray arr = j.optJSONArray("apps");
                     apps.clear();
                     if (arr != null) for (int i = 0; i < arr.length(); i++) {
@@ -249,21 +257,29 @@ public class StoreActivity extends Activity {
             out = new File(dir, "store." + a.pkg + "." + a.versionCode + ".apk");
             // 同名文件：上次没下完的留着续传（自己写的、比完整的小）；别的（旧安装留下的、别的 uid 的）先删掉
             if (out.isFile() && !(out.canWrite() && a.size > 0 && out.length() < a.size)) out.delete();
+            if (a.size <= 0) Dl.clear(out);   // 分段下载（out.seg/）只在知道大小时用
             // 空间：下载的 APK 和安装时 PackageManager 的副本同时在系统盘上（约 2 倍 + 编译结果）。镜像机型（PW5 / KT5 / KT6 /
             // Scribe）的系统盘不够时宿主的看门狗会自动扩（每 20 秒看一次），等它一会儿再判断。
-            waitSpace(dir, a.size, out.isFile() ? out.length() : 0);
+            waitSpace(dir, a.size, Dl.have(out));
             // 下载：断了 / 卡住就从断点接着下（Range），最多试 8 次。以前一次读超时或连接被重置，127 MB 的微信读书就整个失败
             // （Scribe 用户：商店装微信读书失败，同一个 APK 侧载能装）。
-            download(a, t, out);
+            download(a, t, out, mirrors);
             if (a.size > 0 && out.length() != a.size) throw new Exception("文件大小不对（" + out.length() + " / " + a.size + "）");
             say("正在核对下载的文件…");
-            if (!hex(sha256(out)).equalsIgnoreCase(a.sha)) throw new Exception("SHA-256 校验失败（下载的文件损坏，请重试）");
+            if (!hex(sha256(out)).equalsIgnoreCase(a.sha)) {
+                // 下坏了，或镜像上的文件和主站的不一样：只从主站重下一次
+                android.util.Log.w("VeraStore", "sha256 mismatch, downloading again from the main site");
+                Dl.clear(out);
+                download(a, t, out, null);
+                say("正在核对下载的文件…");
+                if (!hex(sha256(out)).equalsIgnoreCase(a.sha)) throw new Exception("SHA-256 校验失败（下载的文件损坏，请重试）");
+            }
             out.setReadable(true, false);
             say("下载完成，正在安装 " + a.name + " …（大应用可能要好几分钟）");
         } catch (Exception e) {
             err = reason(e);
             // 下了一半的留着（再点安装从断点继续）；校验失败 / 大小不对的删掉
-            if (out != null && (err == null || !err.startsWith("下载失败"))) out.delete();
+            if (out != null && (err == null || !err.startsWith("下载失败"))) Dl.clear(out);
         }
         if (err != null) { jobDone("安装失败：" + err, false); return; }
         // 等宿主的安装结果（ctl/inst.<文件名>），显示真正的结果和原因；以前交给宿主后就再也不说了
@@ -279,41 +295,38 @@ public class StoreActivity extends Activity {
         jobDone(msg, ok);
     }
 
-    /** Download a.download into out, resuming with Range after a broken / stalled connection (up to 8 tries). */
-    private void download(App a, String t, File out) throws Exception {
-        String url = a.download + "?device_id=" + enc(Update.deviceId(getApplicationContext())) + "&token=" + enc(t);
+    /** Download a.download into out (Dl: fastest of the mirrors and the main site, several Range connections for big
+     *  files), resuming after a broken / stalled connection; up to 8 tries, the counter starts again after real progress. */
+    private void download(final App a, String t, File out, List<String> mirrors) throws Exception {
+        String q = "device_id=" + enc(Update.deviceId(getApplicationContext())) + "&token=" + enc(t);
+        List<String> cands = Dl.candidates(a.download, q, mirrors);
         Exception last = null;
-        for (int attempt = 1; attempt <= 8; attempt++) {
-            long have = out.isFile() ? out.length() : 0;
-            if (a.size > 0 && have == a.size) return;
-            HttpURLConnection h = null;
+        long before = Dl.have(out); int fails = 0;
+        final long t0 = System.currentTimeMillis(); final long have0 = before;
+        Dl.Progress p = new Dl.Progress() { @Override public void on(long done, long total, boolean mirror) {
+            long pct = total > 0 ? done * 100 / total : -1;
+            long sec = Math.max(1, (System.currentTimeMillis() - t0) / 1000);
+            long kbs = Math.max(0, (done - have0) / 1024 / sec);
+            if (pct >= 0) say("正在下载 " + a.name + " … " + pct + "%（" + (done >> 20) + " / " + (total >> 20) + " MB，"
+                + (kbs >= 1024 ? String.format("%.1f MB/s", kbs / 1024.0) : kbs + " KB/s") + (mirror ? "，镜像" : "") + "）");
+        }};
+        while (fails < 8) {
+            if (a.size > 0 && out.isFile() && out.length() == a.size && !new File(out.getPath() + ".seg").exists()) return;
             try {
-                h = (HttpURLConnection) new URL(url).openConnection();
-                h.setConnectTimeout(20000); h.setReadTimeout(60000);
-                h.setRequestProperty("User-Agent", "VeraDroid/Store");
-                if (have > 0) h.setRequestProperty("Range", "bytes=" + have + "-");
-                int code = h.getResponseCode();
-                boolean append = have > 0 && code == 206;
-                if (code != 200 && code != 206) throw new Exception(readError(h, code));
-                if (!append) have = 0;   // server ignored the Range: start again from zero
-                InputStream in = new BufferedInputStream(h.getInputStream(), 65536);
-                FileOutputStream fo = new FileOutputStream(out, append);
-                byte[] buf = new byte[65536]; int n; long done = have, shown = -1;
-                try {
-                    while ((n = in.read(buf)) > 0) {
-                        fo.write(buf, 0, n); done += n;
-                        long pct = a.size > 0 ? done * 100 / a.size : -1;
-                        if (pct != shown && pct >= 0) { shown = pct; say("正在下载 " + a.name + " … " + pct + "%（" + (done >> 20) + " / " + (a.size >> 20) + " MB）"); }
-                    }
-                } finally { fo.close(); in.close(); }
+                Dl.fetchOnce(cands, out, a.size, p);
                 if (a.size <= 0 || out.length() == a.size) return;
-                if (out.length() > a.size) { out.delete(); throw new Exception("文件大小不对"); }
-                last = new Exception("连接中断（" + (out.length() >> 20) + " / " + (a.size >> 20) + " MB）");
+            } catch (Dl.HttpError e) {
+                if (e.code == 404 || e.code == 403) throw e;   // 商店里没有了 / 没权限：重试也没用
+                last = e;
             } catch (java.io.IOException e) {
                 last = e;
-            } finally { if (h != null) h.disconnect(); }
-            say("网络中断，正在从断点继续下载（第 " + (attempt + 1) + " 次）…");
-            try { Thread.sleep(Math.min(30000, 3000L * attempt)); } catch (InterruptedException ie) { throw ie; }
+            }
+            long now = Dl.have(out);
+            if (now - before > (512 << 10)) fails = 0; else fails++;
+            before = now;
+            if (fails >= 8) break;
+            say("网络中断，正在从断点继续下载（第 " + (fails + 1) + " 次）…");
+            try { Thread.sleep(Math.min(30000, 3000L * Math.max(1, fails))); } catch (InterruptedException ie) { throw ie; }
         }
         throw new Exception("下载失败：" + (last != null ? reason(last) : "网络不稳定") + "。再点一次安装会从断点继续");
     }

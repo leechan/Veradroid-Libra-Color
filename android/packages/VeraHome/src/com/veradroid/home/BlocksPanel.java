@@ -235,6 +235,28 @@ final class BlocksPanel {
         optCard.setVisibility(View.GONE);
         body.addView(optCard, Blocks.gap(ctx, 8));
 
+        // 当前应用的显示设置：前台是别的应用时才有（桌面 / 我们自己的页面在前台时收起）
+        appBar = new LinearLayout(ctx);
+        appBar.setGravity(Gravity.CENTER_VERTICAL);
+        appBar.setBackground(Blocks.plain(ctx));
+        appBar.setPadding(dp(14), dp(6), dp(14), dp(6));
+        appBar.setMinimumHeight(dp(52));
+        appBar.addView(new Icons.IconView(ctx, Icons.Kind.EYE), Blocks.lp(dp(24), dp(24)));
+        LinearLayout at = Blocks.titled(ctx, "This app", "当前应用的显示设置", 16, true);
+        LinearLayout.LayoutParams atp = Blocks.weight(1);
+        atp.leftMargin = dp(12);
+        appBar.addView(at, atp);
+        appHint = Ui.text(ctx, "", 12, false);
+        appHint.setSingleLine(true);
+        appHint.setEllipsize(TextUtils.TruncateAt.END);
+        appHint.setMaxWidth(dp(220));
+        appBar.addView(appHint);
+        appBar.setClickable(true);
+        appBar.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { openAppDisplay(); } });
+        Blocks.fast(appBar);
+        appBar.setVisibility(View.GONE);
+        body.addView(appBar, Blocks.gap(ctx, 12));
+
         // 回到 Kindle
         body.addView(Blocks.button(ctx, "回到 Kindle", false, new View.OnClickListener() {
             @Override public void onClick(View v) { HostLink.cmd("exit"); finish(); }
@@ -251,7 +273,37 @@ final class BlocksPanel {
 
     }
 
-    private LinearLayout optBar, optCard;
+    private LinearLayout optBar, optCard, appBar;
+    private TextView appHint;
+    private String appPkg;
+
+    /** 面板底下那个应用（HostService 记的“按哪个应用算显示设置”）；桌面在前台 = null */
+    private void syncApp() {
+        String p = HostService.profPkg;
+        if (p == null || p.equals("home") || p.equals(ctx.getPackageName())) { appPkg = null; vis(appBar, false); return; }
+        appPkg = p;
+        String label = p;
+        try { label = String.valueOf(ctx.getPackageManager().getApplicationLabel(ctx.getPackageManager().getApplicationInfo(p, 0))); } catch (Throwable ignored) { }
+        String sum = "";
+        if (AppProf.host()) {
+            String[] r = AppProf.lookup(AppProf.table(), p);
+            sum = (r[0].startsWith("u") ? "" : r[0].equals("b") ? "推荐 · " : "") + AppProf.summary(r[1]);
+        }
+        set(appHint, label + (sum.length() > 0 ? " · " + sum : ""));
+        vis(appBar, true);
+    }
+
+    private void openAppDisplay() {
+        if (appPkg == null) return;
+        String label = appPkg;
+        try { label = String.valueOf(ctx.getPackageManager().getApplicationLabel(ctx.getPackageManager().getApplicationInfo(appPkg, 0))); } catch (Throwable ignored) { }
+        Intent i = new Intent(ctx, AppDisplayActivity.class);
+        i.putExtra("pkg", appPkg);
+        i.putExtra("label", label);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        finish();
+        ctx.startActivity(i);
+    }
     private TextView optLabel, optHint;
     private boolean optRunning;
 
@@ -415,6 +467,7 @@ final class BlocksPanel {
         set(clock, Ui.clock(ctx));
         readStatus();
         loadNotes();
+        syncApp();
         if (!attached) {
             Perf.measure(root, "blocks panel");
             try { wm.addView(root, params()); attached = true; }

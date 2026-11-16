@@ -234,11 +234,71 @@ static void back_key(void)
 }
 
 /* ---- touch state ---- */
-struct slot { int active; int x, y; int sx, sy; long t0; };
+struct slot { int active; int x, y; int sx, sy; long t0, tl; };   /* tl: last event for this slot */
 static struct slot sl[MAXSLOT];
 static int cur_slot = 0, slot_ign = 0;   /* slot_ign: the driver is talking about a slot >= MAXSLOT */
 
 static int count_active(void) { int n = 0; for (int i = 0; i < MAXSLOT; i++) n += sl[i].active; return n; }
+
+/* ---- resync with the kernel after lost events ----
+   The evdev buffer of a 3.0 kernel holds 64 events (a few frames of a multitouch panel). When the reader is starved
+   (single-core A9, an app starting / GC / dexopt), the kernel throws the oldest events away and sends SYN_DROPPED. A lost
+   ABS_MT_TRACKING_ID -1 left a slot "active" here for good: every later tap then looked like a second finger (TWO: never
+   forwarded), so Android saw no touches while the host gestures still worked (Voyage report, 2026-11-16).
+   Fix: after SYN_DROPPED, and whenever a new finger lands while another one is believed down, ask the kernel which slots
+   really hold a finger (EVIOCGMTSLOTS) and lift the ones it does not know, here and in Android. */
+#ifndef EVIOCGMTSLOTS
+#define EVIOCGMTSLOTS(len) _IOC(_IOC_READ, 'E', 0x0a, len)
+#endif
+static unsigned long resync_lifts = 0, drops = 0;
+#define STALE_MS 3000
+static void handle_frame(struct input_event *fr, int n);
+static void resync_slots(int after_drop)
+{
+    if (src_proto != PROTO_B || tfd < 0) return;
+    struct { uint32_t code; int32_t v[MAXSLOT]; } q;
+    memset(&q, 0, sizeof(q));
+    q.code = ABS_MT_TRACKING_ID;
+    if (ioctl(tfd, EVIOCGMTSLOTS(sizeof(q)), &q) < 0) {
+        /* no kernel slot state (a driver without input_mt_init_slots): after lost events lift every finger -- a finger
+           that is really still down only loses the rest of this touch; while a new finger lands, lift the fingers that
+           sent nothing for STALE_MS (a resting finger on these panels still reports small changes) */
+        static int warned = 0;
+        if (!warned) { warned = 1; logf_("resync: EVIOCGMTSLOTS failed (%s), using the fallback", strerror(errno)); }
+        long now = now_ms();
+        for (int i = 0; i < MAXSLOT; i++) q.v[i] = (sl[i].active && !after_drop && now - sl[i].tl < STALE_MS) ? 1 : -1;
+    }
+    if (after_drop) {                       /* the slot the driver's next events refer to (it only sends ABS_MT_SLOT on change) */
+        struct input_absinfo ai;
+        if (ioctl(tfd, EVIOCGABS(ABS_MT_SLOT), &ai) == 0 && ai.value >= 0 && ai.value < MAXSLOT) cur_slot = ai.value;
+    }
+    struct input_event fr[2 * MAXSLOT + 4];
+    int n = 0, lifted = 0, keep = cur_slot, left = 0;
+    memset(fr, 0, sizeof(fr));
+#define RS(t, c, v) do { fr[n].type = (t); fr[n].code = (c); fr[n].value = (v); n++; } while (0)
+    for (int i = 0; i < MAXSLOT; i++) {
+        if (sl[i].active && q.v[i] < 0) { RS(EV_ABS, ABS_MT_SLOT, i); RS(EV_ABS, ABS_MT_TRACKING_ID, -1); lifted++; }
+        else if (sl[i].active) left++;
+    }
+    if (!lifted) return;
+    RS(EV_ABS, ABS_MT_SLOT, keep);          /* Android's slot pointer must be where the driver's next events expect it */
+    if (src_btn_touch && !left) RS(EV_KEY, BTN_TOUCH, 0);
+    RS(EV_SYN, SYN_REPORT, 0);
+#undef RS
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    for (int i = 0; i < n; i++) { fr[i].time.tv_sec = ts.tv_sec; fr[i].time.tv_usec = ts.tv_nsec / 1000; }
+    resync_lifts += lifted;
+    logf_("resync (%s): %d stuck finger(s) lifted, %d still down", after_drop ? "events dropped" : "new touch", lifted, left);
+    handle_frame(fr, n);
+    cur_slot = keep;
+}
+/* does this frame put a finger down while we already think one is down? */
+static int new_touch_over_active(const struct input_event *fr, int n)
+{
+    if (!count_active()) return 0;
+    for (int i = 0; i < n; i++) if (fr[i].type == EV_ABS && fr[i].code == ABS_MT_TRACKING_ID && fr[i].value >= 0) return 1;
+    return 0;
+}
 
 enum mode { IDLE, PENDING, PASS, EDGE_B, EDGE_T, TWO, SWALLOW, EDGE_FWD };
 static enum mode md = IDLE;
@@ -393,7 +453,7 @@ static void handle_frame(struct input_event *fr, int n)
         if (e->type == EV_ABS) {
             if (e->code == ABS_MT_SLOT) { slot_ign = !(e->value >= 0 && e->value < MAXSLOT); if (!slot_ign) cur_slot = e->value; }
             else if (slot_ign) continue;   /* a slot we do not track: Android still gets the events, the gestures ignore it */
-            else if (e->code == ABS_MT_TRACKING_ID) {
+            else if ((sl[cur_slot].tl = now_ms()), e->code == ABS_MT_TRACKING_ID) {
                 if (e->value >= 0) { sl[cur_slot].active = 1; sl[cur_slot].t0 = now_ms(); sl[cur_slot].sx = sl[cur_slot].sy = -1; }
                 else sl[cur_slot].active = 0;
             } else if (e->code == ABS_MT_POSITION_X) { sl[cur_slot].x = e->value; if (sl[cur_slot].sx < 0) sl[cur_slot].sx = e->value; }
@@ -918,7 +978,7 @@ int main(int argc, char **argv)
     if (ROT_ON) logf_("rotate %d: panel %dx%d (visible width %d) -> logical %dx%d", ROT, PW, PH, VW, W, H);
 
     struct input_event frame[MAXEV];
-    int nf = 0;
+    int nf = 0, dropping = 0;
     while (!quit) {
         if (want_release) {
             want_release = 0;
@@ -968,27 +1028,40 @@ int main(int argc, char **argv)
             continue;
         }
         if (pr < 0) { if (errno == EINTR) continue; break; }
-        struct input_event e;
-        ssize_t n = read(tfd, &e, sizeof(e));
-        if (n != (ssize_t)sizeof(e)) { if (n < 0 && errno == EINTR) continue; break; }
-        if (paused) { nf = 0; continue; }
-        if (e.type == EV_SYN && e.code == SYN_REPORT) {
-            if (nf < MAXEV) frame[nf++] = e;
-            if (src_proto == PROTO_B) {
-                rot_frame(frame, nf);
-                handle_frame(frame, nf);
-            } else {
-                static struct input_event conv[MAXEV];
-                int nc = normalize_frame(frame, nf, conv, MAXEV);
-                if (nc) { rot_frame(conv, nc); handle_frame(conv, nc); }
+        /* read everything that is queued in one call: one event per read() kept a starved single-core reader even further
+           behind the 64-event evdev buffer of the 3.0 kernels */
+        static struct input_event rb[64];
+        ssize_t n = read(tfd, rb, sizeof(rb));
+        if (n < (ssize_t)sizeof(rb[0])) { if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue; break; }
+        if (paused) { nf = 0; dropping = 0; continue; }
+        for (int k = 0; k < (int)(n / (ssize_t)sizeof(rb[0])); k++) {
+            struct input_event e = rb[k];
+            if (e.type == EV_SYN && e.code == SYN_DROPPED) {
+                /* the kernel lost events: throw away the partial frame and everything up to the next SYN_REPORT,
+                   then take the finger state from the kernel (evdev's documented recovery) */
+                nf = 0; dropping = 1; drops++;
+                continue;
             }
-            nf = 0;
-        } else if (nf < MAXEV - 1) frame[nf++] = e;
+            if (e.type == EV_SYN && e.code == SYN_REPORT) {
+                if (dropping) { dropping = 0; nf = 0; resync_slots(1); continue; }
+                if (nf < MAXEV) frame[nf++] = e;
+                if (src_proto == PROTO_B) {
+                    if (new_touch_over_active(frame, nf)) resync_slots(0);
+                    rot_frame(frame, nf);
+                    handle_frame(frame, nf);
+                } else {
+                    static struct input_event conv[MAXEV];
+                    int nc = normalize_frame(frame, nf, conv, MAXEV);
+                    if (nc) { rot_frame(conv, nc); handle_frame(conv, nc); }
+                }
+                nf = 0;
+            } else if (!dropping && nf < MAXEV - 1) frame[nf++] = e;
+        }
     }
     ioctl(tfd, EVIOCGRAB, 0);
     if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 0);
     ioctl(ufd, UI_DEV_DESTROY);
     if (kfd >= 0) ioctl(kfd, UI_DEV_DESTROY);
-    logf_("stopped, forwarded %lu events", fwd_count);
+    logf_("stopped, forwarded %lu events, %lu drops, %lu stuck fingers lifted", fwd_count, drops, resync_lifts);
     return 0;
 }

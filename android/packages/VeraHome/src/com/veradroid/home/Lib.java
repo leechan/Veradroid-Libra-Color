@@ -168,8 +168,10 @@ final class Lib {
                 try {
                     File[] dirs = { new File(Transfer.BOOKS), new File("/data/media/0/Download"),
                                     new File(Transfer.KINDLE), new File(Transfer.KINDLE + "/Downloads") };
-                    for (File dir : dirs) {
-                        File[] fs = dir.listFiles();
+                    List<File[]> lists = new ArrayList<File[]>();
+                    for (File dir : dirs) lists.add(dir.listFiles());
+                    lists.add(history(app));   // 在“文件”里从别的文件夹打开读过的书也算书库里的书（不然“最近阅读”永远没有它）
+                    for (File[] fs : lists) {
                         if (fs == null) continue;
                         for (File f : fs) {
                             if (!isBook(f.getName()) || !f.isFile()) continue;
@@ -220,6 +222,48 @@ final class Lib {
                 });
             }
         });
+    }
+
+    /** 阅读器读过（有上次阅读时间）、还在的书，不管在哪个文件夹。后台线程调。 */
+    private static File[] history(Context c) {
+        List<File> out = new ArrayList<File>();
+        try {
+            for (String k : Store.prefs(c, "reader").getAll().keySet()) {
+                if (!k.startsWith("r:/")) continue;
+                File f = new File(k.substring(2));
+                if (isBook(f.getName()) && f.isFile()) out.add(f);
+            }
+        } catch (Throwable t) { android.util.Log.w("VeraHome", "lib history: " + t); }
+        return out.toArray(new File[0]);
+    }
+
+    /** 打开了一本书库里还没有的书（“文件”里别的文件夹）：马上加进书库，回到主页“最近阅读”里就有它（不等下一次扫描）。 */
+    static void adopt(Context c, Book b) {
+        if (!loaded || known.containsKey(b.path) || !isBook(b.file.getName())) return;
+        try {
+            b.mtime = b.file.lastModified(); b.size = b.file.length();
+            Books.Info info = Books.info(b.file);
+            if (info.title != null && info.title.length() > 0) b.title = info.title;
+            b.author = info.author == null ? "" : info.author;
+        } catch (Throwable ignored) { }
+        books.add(b);
+        known.put(b.path, b);
+        saveIndex(c);
+        version++;   // 不通知页面（正要打开阅读器，主页这时别重画）；回到主页时按签名重搭
+    }
+
+    /** “最近阅读”：读过的书按上次阅读时间排（最新的在前）；不够 n 本再用最近放进来的没读过的书补上。 */
+    static List<Book> recentlyRead(int n) {
+        List<Book> read = new ArrayList<Book>(), unread = new ArrayList<Book>();
+        for (Book b : books) (b.lastRead > 1 ? read : unread).add(b);
+        Collections.sort(read, new Comparator<Book>() { @Override public int compare(Book a, Book b) {
+            int r = Long.compare(b.lastRead, a.lastRead); return r != 0 ? r : a.path.compareTo(b.path); } });
+        Collections.sort(unread, new Comparator<Book>() { @Override public int compare(Book a, Book b) {
+            int r = Long.compare(b.mtime, a.mtime); return r != 0 ? r : a.path.compareTo(b.path); } });
+        List<Book> out = new ArrayList<Book>();
+        for (Book b : read) { if (out.size() >= n) break; out.add(b); }
+        for (Book b : unread) { if (out.size() >= n) break; out.add(b); }
+        return out;
     }
 
     // ------------------------------------------------------------------ views of the list
@@ -386,6 +430,7 @@ final class Lib {
     }
 
     static void openBuiltin(Activity a, Book b) {
+        adopt(a, b);
         touch(a, b);
         Intent i = new Intent(a, ReaderActivity.class);
         i.putExtra("path", b.path);
@@ -415,7 +460,7 @@ final class Lib {
         // KOReader / 静读天下都按文件路径记进度，所以仍给 file://，只在这一次 startActivity 时放开这条检查（/sdcard 对所有应用可读）。
         android.os.StrictMode.VmPolicy vp = android.os.StrictMode.getVmPolicy();
         android.os.StrictMode.setVmPolicy(new android.os.StrictMode.VmPolicy.Builder().build());
-        try { a.startActivity(i); touch(a, b); }
+        try { a.startActivity(i); adopt(a, b); touch(a, b); }
         catch (ActivityNotFoundException e) { VeraToast.show(a, b.builtin() ? "还没装 KOReader，可在软件商店安装" : "这种格式要用 KOReader 打开，可在软件商店安装"); }
         catch (Exception e) { VeraToast.show(a, "打不开 KOReader：" + e.getMessage()); }
         finally { android.os.StrictMode.setVmPolicy(vp); }

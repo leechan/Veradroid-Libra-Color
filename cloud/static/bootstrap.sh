@@ -647,6 +647,111 @@ fsize() { { wc -c < "$1"; } 2>/dev/null | tr -d ' ' || true; }
 dl_code() {
     case "$1" in 6) echo 12 ;; 7|35|51|60|22|52|56) echo 13 ;; 23) echo 21 ;; *) echo 14 ;; esac
 }
+# ---- 分段并行下载 + 镜像（docs/download-speed.md）----
+# 国内到 Cloudflare 免费版的单条连接很慢，但几条连接一起下时总速度差不多按条数涨：大文件（≥ 8 MB）分成 VD_SEGS 段
+# （默认 4，network.conf 里可设 1–6，1 = 不分段；dl.wenjin.jp 每个 IP 最多 8 条连接，所以不超过 6），每段一条 Range 连接同时下；每段下好的部分留在 <输出>.seg/ 里，
+# 断了 / 重试时各段从自己的断点接着下；全部下完按顺序拼起来（拼一段删一段，不多占一份空间），之后照旧整体校验 SHA-256。
+# 镜像：元数据里可以有 "mirrors": ["https://…", …]（基地址，有顺序；写 [] 就是不用镜像）；元数据里没有这一项时
+# 用默认的 VD_DEF_MIRRORS（dl.wenjin.jp：同一台服务器，不经过 Cloudflare 直连）。network.conf 里的 VD_MIRROR 排在最前。
+# 文件在镜像上的地址 = 基地址/<key>，key = 主站地址去掉域名和 ? 后面的部分（如 bundles/veradroid-pw6-0.95.tar.gz）；
+# 基地址里有 {name} 时换成文件名（GitHub Releases 那种没有目录的）。每次下载前各候选（镜像 + 主站）先下前 256 KB 计时，
+# 用最快的；镜像下坏了（SHA-256 不对）就只用主站重下。镜像上的内容和主站不一样也没关系：最后都要过 SHA-256。
+VD_SEGS=${VD_SEGS:-4}; case "$VD_SEGS" in [1-6]) ;; *) VD_SEGS=4 ;; esac
+VD_SEG_MIN=8388608
+VD_DEF_MIRRORS='"https://dl.wenjin.jp"'
+VD_MIRRORS=
+vd_mirrors_from() { # 元数据 json → VD_MIRRORS（空格分开，只要 https）
+    VD_MIRRORS=$( { [ -z "${VD_MIRROR:-}" ] || printf '"%s",' "$VD_MIRROR"
+        if printf '%s' "$1" | grep -q '"mirrors"'; then printf '%s' "$1" | tr -d '\n' | sed -n 's/.*"mirrors": *\[\([^]]*\)\].*/\1/p'
+        else printf '%s' "$VD_DEF_MIRRORS"; fi; } | tr ',' '\n' \
+        | sed -n 's/^[ ]*"\(https:\/\/[^" ]*\)"[ ]*$/\1/p' | head -n 6 | tr '\n' ' ')
+    [ -z "$VD_MIRRORS" ] || vlog "mirrors: $VD_MIRRORS"
+    return 0
+}
+vd_cands() { # 主站地址 → 候选地址（每行一个：镜像按顺序在前，主站最后）
+    c_k=${1#*://}; c_k=${c_k#*/}; c_k=${c_k%%\?*}; c_n=${c_k##*/}
+    for c_m in $VD_MIRRORS; do
+        case "$c_m" in *'{name}'*) printf '%s\n' "$c_m" | sed "s|{name}|$c_n|" ;; *) printf '%s\n' "${c_m%/}/$c_k" ;; esac
+    done
+    printf '%s\n' "$1"
+}
+# vd_pick 主站地址 → 输出“地址 分段”：分段 = VD_SEGS（支持 Range）、1（不支持）、0（都测不通）
+vd_pick() {
+    p_o=$1; p_best=; p_bs=-1; p_seg=1
+    for p_u in $(vd_cands "$p_o"); do
+        p_w=$(curl_do -s -o /dev/null -r 0-262143 --connect-timeout 8 --max-time 12 -w '%{http_code} %{size_download} %{time_total}' "$p_u" 2>/dev/null) || p_w="000 0 0"
+        set -- $p_w
+        # 206 = 支持 Range；镜像必须支持（不然多半是错误页 / 跳转页），主站 200 也行（不分段）
+        case "$1" in 206) ;; 200) [ "$p_u" = "$p_o" ] || continue ;; *) vlog "probe: $p_u -> HTTP $1"; continue ;; esac
+        p_sp=$(awk -v b="$2" -v t="$3" 'BEGIN { if (t > 0) printf "%d", b / t; else print 0 }')
+        vlog "probe: $p_u -> HTTP $1, $p_sp B/s"
+        if [ "$p_sp" -gt "$p_bs" ] 2>/dev/null; then p_best=$p_u; p_bs=$p_sp; p_seg=1; [ "$1" = 206 ] && p_seg=$VD_SEGS; fi
+    done
+    [ -n "$p_best" ] || { p_best=$p_o; p_seg=0; }   # 都测不通：分段数未知（0），交给真正的下载去报错
+    # 记下选了哪个源（第几个候选），小文件（增量更新的部件）在 10 分钟内直接用它，不再一个个测
+    p_i=0; for p_u in $(vd_cands "$p_o"); do p_i=$((p_i + 1)); [ "$p_u" = "$p_best" ] && break; done
+    echo "$(vp_now) $p_i" > "$TMP/dl.pick" 2>/dev/null || true
+    echo "$p_best $p_seg"
+}
+# 已经下好的字节数（整个文件 + 各段）
+vd_have() {
+    h_s=$(fsize "$1"); h_s=${h_s:-0}
+    for h_f in "$1".seg/[0-9]*; do [ -f "$h_f" ] && h_s=$((h_s + $(fsize "$h_f"))); done
+    echo $h_s
+}
+# vd_fetch 主站地址 输出 总字节：下一次（选源 + 单连接续传或分段并行）；返回 curl 的退出码。在后台跑（vd_download 看进度）。
+vd_fetch() {
+    f_u=$1; f_o=$2; f_t=${3:-0}; f_d=$2.seg
+    if [ -f "$f_d/plan" ]; then
+        set -- $(vd_pick "$f_u"); f_src=$1; f_n=$(cut -d' ' -f2 "$f_d/plan")
+        [ "$2" != 1 ] || { vlog "download: $f_src has no Range now, dropping the segments"; rm -rf "$f_d"; f_n=1; }
+    elif [ "$VD_SEGS" -gt 1 ] && [ "$f_t" -ge $VD_SEG_MIN ] 2>/dev/null && [ ! -s "$f_o" ]; then set -- $(vd_pick "$f_u"); f_src=$1; f_n=$2
+        [ "$f_n" -gt 0 ] || f_n=1
+    elif [ -n "$VD_MIRRORS" ]; then
+        f_src=; set -- $(cat "$TMP/dl.pick" 2>/dev/null) 0 0
+        [ $(( $(vp_now) - $1 )) -lt 600 ] 2>/dev/null && f_src=$(vd_cands "$f_u" | sed -n "${2}p")
+        [ -n "$f_src" ] || { set -- $(vd_pick "$f_u"); f_src=$1; }
+        f_n=1
+    else f_src=$f_u; f_n=1; fi
+    [ "$f_src" = "$f_u" ] || vlog "download from mirror: $f_src"
+    if [ "$f_n" -le 1 ] 2>/dev/null; then
+        curl_do -fsSL --retry 2 --retry-delay 3 --connect-timeout 20 --max-time 1800 --speed-limit 1024 --speed-time 30 -C - -o "$f_o" "$f_src" 2>"$TMP/curl.err"
+        return $?
+    fi
+    mkdir -p "$f_d" || return 23
+    [ "$(cat "$f_d/plan" 2>/dev/null)" = "$f_t $f_n" ] || { rm -f "$f_d"/*; echo "$f_t $f_n" > "$f_d/plan"; }
+    f_len=$(( (f_t + f_n - 1) / f_n )); f_i=0; f_pids=
+    while [ $f_i -lt $f_n ]; do
+        f_a=$((f_i * f_len)); f_b=$((f_a + f_len - 1)); [ $f_b -lt $f_t ] || f_b=$((f_t - 1))
+        f_h=$(fsize "$f_d/$f_i"); f_h=${f_h:-0}
+        [ $((f_a + f_h)) -le $((f_b + 1)) ] || { rm -f "$f_d/$f_i"; f_h=0; }   # 比这一段还长：坏了，重下这段
+        if [ $((f_a + f_h)) -le $f_b ]; then
+            # 输出用 >> 接在已下好的后面；--stderr 带上目录名，安装器清理残留进程时能按目录找到它
+            curl_do -fsS --connect-timeout 20 --max-time 1800 --speed-limit 1024 --speed-time 30 --stderr "$f_d/err.$f_i" \
+                -r $((f_a + f_h))-$f_b "$f_src" >> "$f_d/$f_i" &
+            f_pids="$f_pids $!"
+        fi
+        f_i=$((f_i + 1))
+    done
+    f_rc=0; for f_p in $f_pids; do wait $f_p || f_rc=$?; done
+    cat "$f_d"/err.* > "$TMP/curl.err" 2>/dev/null || true
+    # 各段长度都对才拼：拼进第 0 段，拼一段删一段
+    f_i=0
+    while [ $f_i -lt $f_n ]; do
+        f_a=$((f_i * f_len)); f_b=$((f_a + f_len - 1)); [ $f_b -lt $f_t ] || f_b=$((f_t - 1))
+        f_h=$(fsize "$f_d/$f_i"); f_h=${f_h:-0}
+        if [ "$f_h" != $((f_b - f_a + 1)) ]; then
+            [ "$f_h" -le $((f_b - f_a + 1)) ] || rm -f "$f_d/$f_i"
+            [ $f_rc != 0 ] || f_rc=18   # curl 说成功了但长度不对：当成“传输不完整”，外面会重试
+            return $f_rc
+        fi
+        f_i=$((f_i + 1))
+    done
+    f_i=1
+    while [ $f_i -lt $f_n ]; do cat "$f_d/$f_i" >> "$f_d/0" && rm -f "$f_d/$f_i" || return 23; f_i=$((f_i + 1)); done
+    mv -f "$f_d/0" "$f_o" && rm -rf "$f_d" || return 23
+    return 0
+}
 # vd_download 地址 输出文件 总字节（0 = 不知道）：断点续传；卡住 / 断了自动重试（连续 5 次没进展才放弃，DL_RC = curl 的退出码）。
 # 画面：已下 / 总共 MB、速度、剩余时间；慢（< 50 KB/s 超过 20 秒，或预计超过 20 分钟）、卡住（15 秒没数据）时说清楚是网络的问题。
 DL_RC=0; DL_EARLY=
@@ -654,12 +759,12 @@ vd_download() {
     du_u=$1; du_o=$2; du_t=${3:-0}; [ "$du_t" -gt 0 ] 2>/dev/null || du_t=0
     du_try=0; du_spd=0; du_slow=0; du_stall=0; du_t0=$(vp_now); DL_RC=0
     while :; do
-        du_a=$(fsize "$du_o"); du_a=${du_a:-0}; du_last=$du_a; du_lt=$(vp_now)
-        curl_do -fsSL --retry 2 --retry-delay 3 --connect-timeout 20 --max-time 1800 --speed-limit 1024 --speed-time 30 -C - -o "$du_o" "$du_u" 2>"$TMP/curl.err" &
+        du_a=$(vd_have "$du_o"); du_last=$du_a; du_lt=$(vp_now)
+        vd_fetch "$du_u" "$du_o" "$du_t" &
         du_p=$!
         while kill -0 $du_p 2>/dev/null; do
             sleep 1
-            du_sz=$(fsize "$du_o"); du_sz=${du_sz:-0}; du_now=$(vp_now); du_dt=$((du_now - du_lt)); [ $du_dt -ge 1 ] || du_dt=1
+            du_sz=$(vd_have "$du_o"); du_now=$(vp_now); du_dt=$((du_now - du_lt)); [ $du_dt -ge 1 ] || du_dt=1
             du_in=$(( (du_sz - du_last) / du_dt )); [ $du_in -ge 0 ] || du_in=0
             du_spd=$(( (du_spd * 3 + du_in) / 4 )); du_last=$du_sz; du_lt=$du_now
             if [ $du_in = 0 ]; then [ $du_stall = 0 ] && du_stall=$du_now; else du_stall=0; fi
@@ -694,16 +799,17 @@ vd_download() {
             # 新的整包把 bin/fbink 放在最前面（打包脚本）：下了几 MB 就能把它先解出来，换上整屏方块画面
             if [ -z "$DL_EARLY" ] && [ "$VP_MODE" != fb ] && [ $du_sz -gt 3145728 ]; then
                 DL_EARLY=1; mkdir -p "$TMP/early"
-                tar -xzf "$du_o" -C "$TMP/early" veradroid-pw6/bin/fbink >/dev/null 2>&1 || true
+                du_f=$du_o; [ -f "$du_o.seg/0" ] && du_f=$du_o.seg/0   # 分段下载时文件开头在第 0 段
+                tar -xzf "$du_f" -C "$TMP/early" veradroid-pw6/bin/fbink >/dev/null 2>&1 || true
                 [ -x "$TMP/early/veradroid-pw6/bin/fbink" ] && vp_upgrade "$TMP/early/veradroid-pw6/bin/fbink"
             fi
         done
         DL_RC=0; wait $du_p || DL_RC=$?; VP_EN2=
-        du_sz=$(fsize "$du_o"); du_sz=${du_sz:-0}
+        du_sz=$(vd_have "$du_o")
         [ $DL_RC = 0 ] && return 0
         [ $du_t -gt 0 ] && [ $du_sz -ge $du_t ] && return 0
         # 服务器不支持断点续传（33 / 36）：只能从头来
-        case "$DL_RC" in 33|36) rm -f "$du_o"; du_sz=0 ;; esac
+        case "$DL_RC" in 33|36) rm -rf "$du_o" "$du_o.seg"; du_sz=0 ;; esac
         [ $((du_sz - du_a)) -gt 524288 ] && du_try=0
         du_try=$((du_try + 1))
         vlog "download: curl rc=$DL_RC at $du_sz bytes ($(head -c 200 "$TMP/curl.err" 2>/dev/null | tr '\n' ' ')), attempt $du_try/5"
@@ -1253,7 +1359,8 @@ vd_parts_get() {
         vd_download "$(vd_parts_url "$1" "$2")" "$pg_f" "$3" || { vlog "parts: $1: download failed (curl $DL_RC)"; return 1; }
         PARTS_DL=$((PARTS_DL + $3))
         verify_sha "$pg_f" "$2" && return 0
-        vlog "parts: $1: sha256 mismatch"; rm -f "$pg_f"
+        vlog "parts: $1: sha256 mismatch"; rm -rf "$pg_f" "$pg_f.seg"
+        VD_MIRRORS=; rm -f "$TMP/dl.pick"   # 重下只用主站
     done
     return 1
 }
@@ -1791,6 +1898,7 @@ else
     ver=$(printf '%s' "$json" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
     size=$(printf '%s' "$json" | sed -n 's/.*"size":\([0-9]*\).*/\1/p')
     [ -n "$url" ] && [ -n "$sha" ] || DIE_CODE=13 die "服务器没有可用的安装包"
+    vd_mirrors_from "$json"
     # 增量更新（vd_parts_prepare）：成功就跳过下面的整包下载 / 校验 / 解压；不成功什么都不影响，照常下整包
     # 失败时 PARTS_ROOTFS 等也要清掉：vd_parts_prepare 中途（部件解压失败）已经把它设成了 full / tree，后面解 rootfs 的
     # vd_parts_rootfs_install 只看 PARTS_ROOTFS，会去解已经删掉的 $PD 里的部件，整包下好了却报“解压 Android rootfs 失败（空间不足？）”
@@ -1813,7 +1921,8 @@ if [ -n "$sha" ]; then
     if ! ui_run in "$TMP/bundle.tar.gz" "${size:-0}" "核对下载的文件和服务器上的一模一样" verify_sha "$TMP/bundle.tar.gz" "$sha"; then
         # 下载损坏（网络传输出错）：自动重下一次
         vlog "sha256 mismatch: downloading again"
-        rm -f "$TMP/bundle.tar.gz"
+        rm -rf "$TMP/bundle.tar.gz" "$TMP/bundle.tar.gz.seg"
+        VD_MIRRORS=; rm -f "$TMP/dl.pick"   # 第二次只从主站下（镜像上的文件可能是旧的）
         vp_step dl "文件校验没通过：下载的文件损坏，正在重新下载…" "这是网络传输出错，不是机器的问题"
         vd_download "$url" "$TMP/bundle.tar.gz" "${size:-0}" || DIE_CODE=$(dl_code "$DL_RC") die "安装包下载失败（curl $DL_RC）"
         vp_step verify "SHA-256（第二次）"

@@ -24,6 +24,13 @@ final class AppFont {
 
     private AppFont() { }
 
+    /** cls 是我们自己盖在别的应用上面的页面 */
+    static boolean overlay(String cls) {
+        if (cls == null) return false;
+        for (String o : OVERLAYS) if (cls.endsWith(o)) return true;
+        return false;
+    }
+
     private static SharedPreferences prefs(Context c) { return Store.prefs(c, "home"); }
 
     /** 这个应用设的字号；0 = 跟随全局。 */

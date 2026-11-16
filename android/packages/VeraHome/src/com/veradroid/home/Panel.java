@@ -51,7 +51,10 @@ final class Panel {
     }
 
     static void open(Context c) {
-        openedOver = HostService.fgAct;
+        // 当场查一次前台：HostService.fgAct 要等它下一次前台检查才更新（刚从统计页、设置页回到桌面时还是旧页面），
+        // 拿旧值当“打开时在前台的页面”，下一次检查一看前台“变了”就把刚打开的面板收起（Voyage 模拟器：打开 2.5 秒自己收起）
+        String top = HostService.topActivity(c);
+        openedOver = top != null && !top.endsWith("/com.veradroid.home.PanelActivity") ? top : HostService.fgAct;
         if (Blocks.on(c)) { if (instance != null && instance.showing) instance.finish(); BlocksPanel.open(c); return; }
         BlocksPanel.close();
         Context app = c.getApplicationContext();

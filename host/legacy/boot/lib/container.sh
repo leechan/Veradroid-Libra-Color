@@ -186,6 +186,26 @@ sysfont_mount() {     # 容器里（run_in_ns），/dev 的 tmpfs 建好之后�
     echo "veradroid: system font $sf_src not mounted, stock fonts" >&2
     return 0
 }
+sysbin_wrap_mount() {   # 容器里（run_in_ns），/dev 的 tmpfs 建好之后、换根之前
+    # 两个系统程序换成 boot/ 里的小脚本（原因写在脚本里）：
+    #   dex2oat：应用自己（DexClassLoader / 插件框架）编 /data 下的代码时只做 verify-at-runtime，不用 speed；
+    #   cmd：应用自己跑的 "cmd package compile ..."（自己给自己强制重编）不执行。
+    # 真的程序复制到 /dev/vdbin（不能 bind：Android init 把根设成 shared，后面绑在 /system/bin/dex2oat 上的包装会传播到
+    # 同一个 peer 的 bind 上，包装 exec 自己死循环；测试机实测）。SYSBIN_WRAP=off 关掉。
+    [ "${SYSBIN_WRAP:-on}" = off ] && return 0
+    for sw_n in dex2oat cmd; do
+        [ -f $VD/boot/$sw_n-wrap.sh ] && [ -x $R/system/bin/$sw_n ] || continue
+        mkdir -p $R/dev/vdbin || return 0
+        if cp $R/system/bin/$sw_n $R/dev/vdbin/$sw_n && cp $VD/boot/$sw_n-wrap.sh $R/dev/vdbin/$sw_n-wrap &&
+            chmod 755 $R/dev/vdbin/$sw_n $R/dev/vdbin/$sw_n-wrap &&
+            mount --bind $R/dev/vdbin/$sw_n-wrap $R/system/bin/$sw_n; then :
+        else
+            rm -f $R/dev/vdbin/$sw_n $R/dev/vdbin/$sw_n-wrap
+            echo "veradroid: $sw_n wrapper not mounted" >&2
+        fi
+    done
+    return 0
+}
 container_start() {
     sysfont_prepare       # 系统字体：生成 $W/sysfont（run_in_ns 绑进去）
     fstrim_defuse
@@ -384,6 +404,7 @@ run_in_ns() {
         [ -d $VD/fonts ] && mount --bind $VD/fonts $R/data/media/0/Fonts
         chmod 777 $R/data/media/0/Fonts 2>/dev/null
         sysfont_mount        # 系统字体（SYSTEM_FONT）：上面 sysfont_prepare 准备好的才绑
+        sysbin_wrap_mount    # dex2oat / cmd 的包装（boot/*-wrap.sh）
         # /sdcard -> /storage/self/primary -> /storage/emulated/0. vold/FUSE
         # replaces /storage/emulated and filters by sdcard_rw group; KOReader
         # then gets EACCES on books. Drop that FUSE view and bind the ext4

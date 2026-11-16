@@ -52,6 +52,8 @@ public class HostService extends Service {
         // 锁屏密码（LockScreen）：USB 上放了重置文件就先清掉，再按需盖上锁屏（开机这一次）
         handler.post(new Runnable() { @Override public void run() { handle("lock.reset"); LockScreen.show(HostService.this); } });
         watchForeground();
+        AppProf.migrate(this);
+        keepAnimationsOff();
         try {
             android.content.IntentFilter f = new android.content.IntentFilter(Intent.ACTION_CLOSE_SYSTEM_DIALOGS);
             f.addAction(Intent.ACTION_SCREEN_OFF);
@@ -62,6 +64,8 @@ public class HostService extends Service {
     // 前台应用的包名写到 /dev/kfb/fg，宿主的 veradroid-input 据此在某些应用里关掉“底边上划返回”（微信读书上划 = 工具栏）。
     // 用 TaskStackListener（任务栈一变就通知），不轮询。
     private String lastFg = null, lastFgAct = null;
+    /** 显示设置按哪个应用算（"home" = 桌面 / 我们自己的页面）；桌面刚替哪个应用发过 LAUNCH（任务栈通知到了就不再发一次） */
+    static volatile String profPkg = null, launchedPkg = null;
     static volatile String fgAct;   // 现在前台的 activity（不算 PanelActivity），Panel 打开时记下
     // HOME 键（系统发 CLOSE_SYSTEM_DIALOGS，reason=homekey / recentapps）和屏幕关掉：收起下拉面板
     private final android.content.BroadcastReceiver panelCloser = new android.content.BroadcastReceiver() {
@@ -98,6 +102,15 @@ public class HostService extends Service {
         handler.post(fgCheck);
         handler.postDelayed(fgPoll, 10000);
     }
+    /** 现在真正在前台的 activity（包名/类名）；拿不到就是 null。fgAct 要等下一次前台检查才更新，可能还是上一个页面。 */
+    static String topActivity(Context c) {
+        try {
+            List<ActivityManager.RunningTaskInfo> l = ((ActivityManager) c.getSystemService(Context.ACTIVITY_SERVICE)).getRunningTasks(1);
+            if (l != null && !l.isEmpty() && l.get(0).topActivity != null)
+                return l.get(0).topActivity.getPackageName() + "/" + l.get(0).topActivity.getClassName();
+        } catch (Throwable ignored) { }
+        return null;
+    }
     private void writeForeground() {
         String pkg = "", cls = "";
         try {
@@ -113,6 +126,17 @@ public class HostService extends Service {
             if (!cls.equals("com.veradroid.home.PanelActivity")) fgAct = lastFgAct;
             Panel.onForeground(lastFgAct);   // 下拉面板：前台换了 activity 就收起
         }
+        // 每个应用的显示设置（宿主 appprof.sh）：前台应用变了告诉宿主。我们自己盖在应用上面的页面（面板、设置、显示设置……）
+        // 不算换应用：底下那个应用的设置照旧。换到别的应用（不是桌面）时，显示桥替它挡住纯色的启动窗口（冷启动的白屏 / 黑屏）。
+        String prof = pkg.length() == 0 ? null : !pkg.equals(getPackageName()) ? pkg : AppFont.overlay(cls) ? null : "home";
+        if (prof != null && !prof.equals(profPkg)) {
+            if (AppProf.host()) {
+                if (!prof.equals("home") && !prof.equals(launchedPkg)) HostLink.epd("LAUNCH " + AppProf.LAUNCH_MS);
+                AppProf.fg(prof);
+            }
+            launchedPkg = null;
+            profPkg = prof;
+        }
         if (pkg.equals(lastFg)) return;
         Cleaner.onForeground(this, pkg);   // 后台保留应用：用户应用到了前台，3 秒后按设置清掉多出来的
         try {
@@ -124,8 +148,38 @@ public class HostService extends Service {
         } catch (Exception ignored) { }
     }
 
+    /**
+     * 窗口 / 转场 / 动画时长缩放一直保持 0（墨水屏上每一帧动画都是一次刷新）。开机时 init.kindle.rc 的 vd_setup 设成 0，
+     * 但有的应用（和“开发者选项”一类的工具）会改回 1：盯着这三个设置，一变就改回 0。ContentObserver，不轮询。
+     */
+    private static final String[] ANIM_KEYS = { android.provider.Settings.Global.WINDOW_ANIMATION_SCALE,
+        android.provider.Settings.Global.TRANSITION_ANIMATION_SCALE, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE };
+    private android.database.ContentObserver animObserver;
+    private void keepAnimationsOff() {
+        animObserver = new android.database.ContentObserver(handler) {
+            @Override public void onChange(boolean self) { animationsOff(); }
+        };
+        try {
+            for (String k : ANIM_KEYS)
+                getContentResolver().registerContentObserver(android.provider.Settings.Global.getUriFor(k), false, animObserver);
+        } catch (Throwable t) { android.util.Log.w("VeraHome", "animation scale observer: " + t); }
+        animationsOff();
+    }
+    private void animationsOff() {
+        for (String k : ANIM_KEYS) {
+            try {
+                float v = android.provider.Settings.Global.getFloat(getContentResolver(), k, 1f);
+                if (v != 0f) {
+                    android.provider.Settings.Global.putFloat(getContentResolver(), k, 0f);
+                    android.util.Log.i("VeraHome", "animation scale " + k + " was " + v + " - set back to 0");
+                }
+            } catch (Throwable t) { android.util.Log.w("VeraHome", "animation scale " + k + ": " + t); }
+        }
+    }
+
     @Override public void onDestroy() {
         try { unregisterReceiver(panelCloser); } catch (Throwable ignored) { }
+        try { if (animObserver != null) getContentResolver().unregisterContentObserver(animObserver); } catch (Throwable ignored) { }
         if (observer != null) CtlWatch.remove(observer);
         super.onDestroy();
     }
@@ -141,7 +195,7 @@ public class HostService extends Service {
             want = want.trim();
             if (want.length() == 0) return;
             if (want.equals("home")) { goHome(false); return; }
-            applyAppDisplay(want);
+            if (AppProf.host()) { launchedPkg = want; AppProf.launching(want); } else applyAppDisplay(want);
             AppFont.forForeground(this, want, null);   // 启动前就换好字号，免得应用画完一遍再重排一遍
             HostLink.cmd("appdirs " + want);
             Intent i = getPackageManager().getLaunchIntentForPackage(want);

@@ -133,6 +133,8 @@ settings_load() {
     for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SETTLE2 KFB_SCROLLDU KFB_IMG KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN; do eval "GLOB_$k=\$$k"; done
     [ -f "$SYS/settings.app" ] && . "$SYS/settings.app"       # 当前前台应用的显示参数（cmd.sh appdisp 写，已校验）
     smooth_apply
+    # 应用单独选了刷新方式：档位（KFB_SMOOTH）不能把它盖掉
+    _am=$(sed -n 's/^KFB_MODE=//p' "$SYS/settings.app" 2>/dev/null); [ -n "$_am" ] && KFB_MODE=$_am
     # 512 MB devices: default to full exit when returning to Kindle, unless the
     # user already set RETURN_MODE. A frozen WeRead + Home sits on ~200 MB and
     # is what LMK then shoots (adj 0) when the user re-opens it.
@@ -241,7 +243,7 @@ dns_apply() {
     fi
     pid=$(cat $W/pid 2>/dev/null)   # 以前读 $X/pid（从来没人写），DNS 选择一直没生效
     [ -n "$pid" ] || return 0
-    P=$pid; $(vd_in) /system/bin/sh -c "export ANDROID_DATA=/data ANDROID_ROOT=/system PATH=/system/bin; ndc resolver setnetdns 100 '' $d1 $d2" >/dev/null 2>&1
+    P=$pid; vd_timeout 15 $(vd_in) /system/bin/sh -c "export ANDROID_DATA=/data ANDROID_ROOT=/system PATH=/system/bin; ndc resolver setnetdns 100 '' $d1 $d2" >/dev/null 2>&1
     t "dns $DNS_MODE ($d1 $d2)"
 }
 

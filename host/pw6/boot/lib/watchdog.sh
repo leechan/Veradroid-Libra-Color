@@ -142,6 +142,63 @@ do_restart() {
     exit 0
 }
 
+# /var 是 Kindle 的 64 MB tmpfs（/tmp 也指向 /var/tmp）。Kindle 的 fastmetrics 每 10 分钟把一批指标存成 /var/tmp/fm-out-<毫秒>
+# （约 150 KB），由 tmd 上传后删掉。Android 在前台时 tmd 被我们停着（framework.sh 的 FW_BASE），批次只进不出；没注册 / 离线的
+# Kindle 上 tmd 在也发不出去。一台 PW6 测试机（5.20.2）用了 5 天堆了 336 个、52 MB，/var 到了 87-93%。满了以后 Kindle 和我们往
+# /tmp、/var/run、/var/log 写的东西全失败（停止日志、整包更新的下载、ssh、upstart 的状态文件），界面和返回都可能卡住。
+# /var 用到 70% 以上时从最旧的批次删起，降到 60% 以下为止，最新的 20 个不动。只删这一种文件（Kindle 自己的遥测缓存，不是用户数据）。
+var_used() { df -k /var 2>/dev/null | awk 'NR == 2 { sub("%", "", $5); print $5 + 0 }'; }
+var_guard() {
+    vu0=$(var_used); [ "${vu0:-0}" -ge 70 ] 2>/dev/null || return 0
+    vl=$(ls /var/tmp 2>/dev/null | grep '^fm-out-[0-9]*$' | sort)
+    vc=$(printf '%s\n' "$vl" | grep -c .); [ "$vc" -gt 20 ] || return 0
+    vn=0
+    for f in $(printf '%s\n' "$vl" | head -n $((vc - 20))); do
+        [ -f "/var/tmp/$f" ] && [ ! -L "/var/tmp/$f" ] || continue
+        rm -f "/var/tmp/$f"; vn=$((vn + 1))
+        [ $((vn % 10)) = 0 ] && [ "$(var_used)" -lt 60 ] && break
+    done
+    t "var: /var was ${vu0}% full: removed $vn old Kindle metrics batches (/var/tmp/fm-out-*), now $(var_used)%"
+}
+
+# 内存盘（/dev/shm，占的是内存）里的日志：显示桥每刷一次写一行，开着几天能长到几 MB。超过上限就留后一半
+log_cap() {   # log_cap <文件> <字节>
+    sz=$(wc -c < "$1" 2>/dev/null || echo 0)
+    [ "$sz" -gt "$2" ] 2>/dev/null || return 0
+    tail -c $(($2 / 2)) "$1" > "$1.tmp" 2>/dev/null && cat "$1.tmp" > "$1"; rm -f "$1.tmp"
+}
+helpers_supervise() {
+    if [ -x "$VD/bin/veradroid-epd" ] && [ -f $W/epd.pid ] && ! alive $W/epd.pid; then
+        n=$(cat $W/epd.restarts 2>/dev/null || echo 0)
+        if [ "$n" -lt 3 ]; then
+            echo $((n + 1)) > $W/epd.restarts
+            t "display bridge (pid $(cat $W/epd.pid)) gone, restarting it ($((n + 1))/3); last log: $(tail -n 2 $W/epd.log 2>/dev/null | tr '\n' ' ')"
+            cp $W/epd.log $W/epd.log.crashed 2>/dev/null
+            display_start; epd_send REDRAW
+        fi
+    fi
+    if [ -f $W/input.pid ] && ! alive $W/input.pid && [ ! -f $W/frozen ]; then
+        n=$(cat $W/input.restarts 2>/dev/null || echo 0)
+        if [ "$n" -lt 3 ]; then
+            echo $((n + 1)) > $W/input.restarts
+            t "touch front end (pid $(cat $W/input.pid)) gone, restarting it ($((n + 1))/3); last log: $(tail -n 2 $W/input.log 2>/dev/null | tr '\n' ' ')"
+            cp $W/input.log $W/input.log.crashed 2>/dev/null
+            if input_touch_start; then
+                # 容器里的 /dev/input/event0、event1 是开机时绑进去的；Android 的 EventHub 在旧设备挂断时把它们删了，
+                # 只有目录里出现新文件（inotify）才会再打开。按新设备的设备号在容器的 /dev/input 里建两个新节点
+                ci=/proc/$(cat $W/pid 2>/dev/null)/root/dev/input   # 容器自己的 /dev（挂载命名空间里的 tmpfs），宿主的 $R/dev 看不到
+                rm -f $ci/event1[0-9] 2>/dev/null
+                k=0; for d in $KFB_TOUCH $KFB_KEYS_VIRT; do
+                    dn=$(cat /sys/class/input/${d##*/}/dev 2>/dev/null)
+                    [ -n "$dn" ] && mknod -m 666 $ci/event1$((n * 2 + k)) c ${dn%%:*} ${dn##*:} 2>/dev/null   # 建出来就要是 666：EventHub 收到 inotify 立刻打开，晚一步 chmod 就是 Permission denied
+                    k=$((k + 1))
+                done
+                t "touch front end restarted: $KFB_TOUCH / $KFB_KEYS_VIRT handed to android as $(ls $ci | grep '^event1[0-9]' | tr '\n' ' ')"
+            else t "touch front end: restart failed"; fi
+        fi
+    fi
+}
+
 watchdog() {
     # PERF: poll every 60s while frozen to cut host wakeups. FIFO cmd.sh still handles UI.
     # MEM: re-apply kernel LMK each tick (lab126 can reset minfree).
@@ -150,9 +207,13 @@ watchdog() {
         sleep $sleep_for
         kill -0 $P 2>/dev/null || { t "system exited"; log_release; sh $VD/boot/stop.sh >/dev/null 2>&1; break; }
         lmk_kernel_tune 2>/dev/null || true
+        log_cap $W/epd.log 262144; log_cap $W/input.log 131072; log_cap $W/input.err 65536
         if [ ! -f $W/saver_frozen ] && [ ! -f $W/frozen ]; then
             # 命令监听没了（FIFO 建不起来、被杀）：桌面的“返回 Kindle”、设置、手势全都没反应，只能重启 Kindle。重新起一个。
             alive $W/cmd.pid || { t "cmd listener gone, restarting it"; cmd_listen & echo $! > $W/cmd.pid; }
+            # 显示桥 / 触摸前端没了（崩溃、被 OOM 杀掉）：以前没人管，屏幕永远停在最后一帧，或者 Android 再也收不到触摸，
+            # 只能重启 Kindle。重新起一个（每次开机各最多 3 次，再多就是程序本身起不来，留给诊断）。
+            helpers_supervise
             # system_server 重启（Watchdog 杀掉后软重启）以后 ActivityManager 会把 lmkd 的门槛写回原厂的大屏手机档，
             # 512 MB 机型上前台的微信读书又会被反复杀掉（用户诊断 092A03）。pid 变了就重新设一次。
             ss=$(pidof system_server 2>/dev/null | cut -d' ' -f1)
@@ -168,6 +229,7 @@ watchdog() {
             [ -f $W/booted ] && type compile_watch >/dev/null 2>&1 && compile_watch
         fi
         type bat_log >/dev/null 2>&1 && bat_log
+        var_guard
         # 系统盘快满了就自动扩（storage.sh）。冻结时不做。
         [ -f $W/saver_frozen ] || [ -f $W/frozen ] || { type st_auto_tick >/dev/null 2>&1 && st_auto_tick; }
         if [ -f $X/ctl/diag ]; then rm -f $X/ctl/diag; ( diag_save; touch $X/ctl/diag.done ) & fi

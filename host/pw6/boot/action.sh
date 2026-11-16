@@ -26,9 +26,11 @@ send() { kill -0 "$(cat $W/cmd.pid 2>/dev/null)" 2>/dev/null || return 0; ( echo
 # GESTURE_HINT=all（默认：每个手势都提示）| stuck（只在 Android 没有响应时提示）| off
 # POS = 牌子贴着哪条边 / 哪个角（t b l r tl tr bl br，逻辑画面的方向，旋转由显示桥处理），由下面的分派设置
 POS=t
+# 写显示桥的 FIFO：它恰好在检查之后退出的话，打开 FIFO 会一直等读者。放到后台、3 秒后还没写完就放弃
+fifo_put() { ( echo "$1" > $X/epd.fifo ) & fp=$!; ( sleep 3; kill $fp 2>/dev/null ) </dev/null >/dev/null 2>&1 & }
 badge() {   # badge <毫秒> <位置> <图标> <英文小字>|<中文>[|<第二行>]
     [ -p $X/epd.fifo ] && kill -0 "$(cat $W/epd.pid 2>/dev/null)" 2>/dev/null || return 0
-    echo "BADGE $1 $2 $3 $4" > $X/epd.fifo
+    fifo_put "BADGE $1 $2 $3 $4"
 }
 hint() { [ "${GESTURE_HINT:-all}" = all ] && badge 800 "$POS" "$1" "$2"; return 0; }   # hint <图标> <文字>
 # 卡住时告诉用户怎么回 Kindle：说真的绑了“回 Kindle”的宿主手势（默认是左下角长按）
@@ -54,7 +56,7 @@ run_action() {
             case "$1" in back) hint back "BACK|返回" ;; home) hint home "HOME|桌面" ;; panel) hint panel "PANEL|面板" ;; switch) hint switch "SWITCH APPS|切换" ;; esac
             touch $X/ctl/act.$1; watch_ctl act.$1 ;;
         kindle|return) hint kindle "KINDLE|回 Kindle"; send exit ;;
-        clear|refresh) hint clear "REFRESH|清残影"; [ -p $X/epd.fifo ] && kill -0 "$(cat $W/epd.pid 2>/dev/null)" 2>/dev/null && echo FULL > $X/epd.fifo ;;
+        clear|refresh) hint clear "REFRESH|清残影"; [ -p $X/epd.fifo ] && kill -0 "$(cat $W/epd.pid 2>/dev/null)" 2>/dev/null && fifo_put FULL ;;
         invert) hint invert "INVERT|反色"; send invert ;;
         stop) hint power "STOP|关闭 Android"; send stop ;;
         restart) hint restart "RESTART|重启 Android"; send restart ;;

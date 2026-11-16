@@ -253,7 +253,7 @@ final class BlocksSettings {
         add(g, tools);
         LinearLayout bk = new LinearLayout(a);
         bk.setOrientation(LinearLayout.VERTICAL);
-        bk.addView(Blocks.row(a, "后台保留应用", "Background apps", new Blocks.Stepper(a, Cleaner.LIMIT_L, Math.max(0, Math.min(4, prefs.getInt(Cleaner.LIMIT_KEY, 1))), new Blocks.Stepper.Listener() {
+        bk.addView(Blocks.row(a, "后台保留应用", "Background apps", new Blocks.Stepper(a, Cleaner.LIMIT_L, Math.max(0, Math.min(4, prefs.getInt(Cleaner.LIMIT_KEY, Cleaner.defaultLimit()))), new Blocks.Stepper.Listener() {
             @Override public void onStep(int i) { prefs.edit().putInt(Cleaner.LIMIT_KEY, i).apply(); } })), Blocks.match());
         TextView bkHint = Ui.text(a, "前台以外最多留几个自己装的应用在后台，多出来的（最久没用的）在换应用 3 秒后停掉，省内存。应用长按 → 保持后台 的不算。", 12, false);
         bkHint.setPadding(dp(12), 0, dp(12), dp(10));

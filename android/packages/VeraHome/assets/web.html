@@ -296,7 +296,7 @@ img.shot{max-width:100%;max-height:75vh;border-radius:10px;border:1px solid var(
   <div class="h"><svg class="i" data-i="grid"></svg>应用<span class="badge" id="appN"></span><span class="sp"></span>
    <input type="search" id="appQ" placeholder="搜索名称或包名" style="width:180px"><select id="appSort"><option value="name">按名称</option><option value="size">按占用</option><option value="updated">最近更新</option><option value="running">运行中优先</option></select>
    <label class="sub" style="display:flex;align-items:center;gap:6px"><span class="switch"><input type="checkbox" id="appSys"><span></span></span>系统应用</label>
-   <button class="btn sm pri" id="apkPick"><svg class="i" data-i="plus"></svg>安装 APK</button><input type="file" id="apkFile" accept=".apk" multiple hidden></div>
+   <button class="btn sm pri" id="apkPick"><svg class="i" data-i="plus"></svg>安装 APK</button><input type="file" id="apkFile" multiple hidden></div>
   <div class="selbar" id="appSel" hidden style="border-radius:9px;margin-bottom:8px"><b id="appSelN"></b><span style="flex:1"></span><button class="btn sm" id="appBatchStop">停止</button><button class="btn sm dan" id="appBatchDel">卸载</button><button class="btn sm ghost" id="appSelNone"><svg class="i" data-i="x"></svg></button></div>
   <div class="drop" id="apkDrop" hidden>松开安装 APK</div>
   <div id="alist" class="list"></div></div>
@@ -840,7 +840,10 @@ function openEditor(f){var dirty=false,root=FS.root,dir=FS.path,ro=f.create?fals
 /* =================================================================== 应用 */
 var APPS=[],ASEL={},COMP={};
 $('appSys').onchange=loadApps;$('appQ').oninput=renderApps;$('appSort').onchange=renderApps;
-$('apkPick').onclick=function(){$('apkFile').click()};$('apkFile').onchange=function(){sendSimple(this.files,'/api/upload?to=books',function(){setTimeout(loadApps,4000)});this.value=''};
+$('apkPick').onclick=function(){$('apkFile').click()};/* no accept=".apk" on the input: iOS (Safari / the Files picker) has no type for .apk and greys every APK out. Any file can be
+   picked; the ones that are not .apk are left out here. */
+$('apkFile').onchange=function(){var ok=[],bad=0;for(var i=0;i<this.files.length;i++){if(/\.apk$/i.test(this.files[i].name))ok.push(this.files[i]);else bad++}
+ if(bad)toast(bad+' 个文件不是 .apk，没有上传','err');if(ok.length)sendSimple(ok,'/api/upload?to=books',function(){setTimeout(loadApps,4000)});this.value=''};
 bindDrop($('s-apps'),function(dt){var fs=Array.prototype.filter.call(dt.files,function(f){return /\.apk$/i.test(f.name)});if(!fs.length){toast('这里只收 APK','err');return}sendSimple(fs,'/api/upload?to=books',function(){setTimeout(loadApps,4000)})},$('apkDrop'));
 $('s-apps').addEventListener('dragenter',function(e){if(hasFiles(e))$('apkDrop').hidden=false});$('s-apps').addEventListener('drop',function(){$('apkDrop').hidden=true});
 function loadApps(){if(!APPS.length)$('alist').innerHTML=skel(5);api('/api/apps2?system='+($('appSys').checked?1:0)).then(function(j){APPS=j.apps||[];ASEL={};renderApps()}).catch(function(e){if(e.message!=='login')$('alist').innerHTML=errBox('加载失败','loadApps()')})}

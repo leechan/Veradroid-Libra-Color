@@ -7,7 +7,7 @@ status_write() {
     fl=$(lipc-get-prop $p flIntensity 2>/dev/null)
     flmax=$(lipc-get-prop $p flMaxIntensity 2>/dev/null)
     warm=$(lipc-get-prop $p currentAmberLevel 2>/dev/null)
-    wifi=$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)
+    wifi=$(wifi_state)
     slp=$(lipc-get-prop $p screenSaverTimeout 2>/dev/null)
     lan=$(ifconfig wlan0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
     inv=$(sed -n 's/^KFB_INVERT=//p' $X/settings 2>/dev/null)

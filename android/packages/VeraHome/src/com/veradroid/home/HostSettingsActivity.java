@@ -17,7 +17,7 @@ import java.util.Map;
 
 /**
  * 以前只有宿主 / 传书网页才能改的设置，在设备上给一个入口。两页，Intent extra "page"：
- *   display  显示与刷新：旋转（KFB_ROTATE）、显示档位（KFB_SMOOTH）、局部刷新（KFB_MODE）、整页刷新（KFB_REAGL_MIN）、整屏闪刷（KFB_FLASH）、
+ *   display  显示与刷新：旋转（KFB_ROTATE）、显示档位（KFB_SMOOTH）、局部刷新（KFB_MODE）、快速滑动（KFB_SCROLLDU）、图片灰度（KFB_IMG）、整页刷新（KFB_REAGL_MIN）、整屏闪刷（KFB_FLASH）、
  *            浅色过滤（KFB_LIGHTF）、深色加深（KFB_DARKEN）
  *   system   系统与性能：Wi-Fi 省电（WIFI_PS）、小内存模式（LOWMEM）、Kindle 界面（KINDLE_UI）、应用预编译（APP_COMPILE + ctl/compile.status + 全部优化）
  * 每项一行“< 值 >”步进：点一下只改那一行的字（一次小刷新），同时经 HostLink.settings 写给宿主（ctl/settings.new + apply → settings.conf）。
@@ -164,9 +164,13 @@ public class HostSettingsActivity extends Activity {
         section("局部刷新（屏幕上一小块变化：点按钮、翻列表）");
         stepper("局部刷新方式", "均衡：快，残影少；灰度最准：颜色最准，稍慢；最快：只有黑白，最灵敏，残影多；自动：和 Kindle 自己一样由驱动选。",
             "KFB_MODE", new String[] { "均衡", "灰度最准", "最快", "自动（同 Kindle）" }, new String[] { "0", "1", "2", "3" }, "0", null);
+        stepper("快速滑动", "滚动、拖动列表时先用黑白快刷跟上手指，停下约 0.3 秒后再用 16 级灰度补刷一遍（清掉残影）。滑动时字会粗糙一点。",
+            "KFB_SCROLLDU", new String[] { "关（默认）", "开" }, new String[] { "0", "300" }, "0", null);
+        stepper("图片灰度", "均衡方式下，小块变化里是图片（封面、头像、照片）的部分用 16 级灰度刷，不再变成黑白点阵；文字照旧快刷。图片会慢约 70 毫秒。",
+            "KFB_IMG", new String[] { "关（默认）", "开" }, new String[] { "0", "25" }, "0", null);
         section("整页刷新（翻页、换页面）");
         stepper("多大算整页", "一次变化超过屏幕的这么多，就用 16 级灰度的整页波形（清残影，约慢 70 毫秒）；小于它按局部刷新。",
-            "KFB_REAGL_MIN", new String[] { "三成", "一半", "七成", "接近整屏（默认）" }, new String[] { "30", "50", "70", "85" }, "85", null);
+            "KFB_REAGL_MIN", new String[] { "三成", "翻页（默认）", "一半", "七成", "接近整屏" }, new String[] { "30", "35", "50", "70", "85" }, "35", null);
         stepper("整屏闪刷", "每翻这么多页，整个屏幕黑白闪一下，彻底清掉残影（和 Kindle 的“页面刷新”一样）。",
             "KFB_FLASH", new String[] { "不按页数闪", "每页", "每 3 页", "每 6 页", "每 8 页", "每 10 页", "每 20 页" },
             new String[] { "0", "1", "3", "6", "8", "10", "20" }, "8", null);

@@ -127,6 +127,26 @@ done
 [ -f "$VD/boot/lib/progress.sh" ] && . "$VD/boot/lib/progress.sh"
 
 t() { echo "[$(date +%H:%M:%S) up=$(cut -d' ' -f1 /proc/uptime)] $*"; }
+# Wi-Fi 开关只动 Wi-Fi。以前用的 com.lab126.cmd wirelessEnable 是 Kindle 的“飞行模式”：关它连蓝牙也关了，开它又把蓝牙打开
+# （KPW6 用户报告）。com.lab126.wifid enable 写得进去但不起作用（一台测试机 5.19.5：仍然连着）。起作用的是 cmd 的哈希属性
+# disableInterfaces（{ wan = (0), wifi = (1) } = 关掉 Wi-Fi 接口；输入格式里整数要带括号）：测试机实测 Wi-Fi 断开（wifid enable 跟着变 0、
+# wlan0 不在了），飞行模式和蓝牙不变，写回 (0) 2 秒内重新连上。没有这个属性的固件退回 wirelessEnable。飞行模式开着时 Wi-Fi 算关。
+wifi_dis() { lipc-hash-prop com.lab126.cmd disableInterfaces </dev/null 2>/dev/null | sed -n "s/^[[:space:]]*$1 = (\([0-9]*\)).*/\1/p" | head -1; }
+wifi_state() {
+    wa=$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null); wd=$(wifi_dis wifi)
+    if [ -n "$wd" ]; then [ "$wd" = 0 ] && ww=1 || ww=0; else ww=${wa:-1}; fi
+    [ "$wa" = 0 ] && ww=0
+    echo "$ww"
+}
+wifi_set() { # 0|1
+    wd=$(wifi_dis wifi)
+    if [ -n "$wd" ]; then
+        wn=$(wifi_dis wan); [ "$1" = 1 ] && wv=0 || wv=1
+        echo "{ wan = (${wn:-0}), wifi = ($wv) }" | lipc-hash-prop com.lab126.cmd disableInterfaces >/dev/null 2>&1
+        # 用户明确要开 Wi-Fi 而飞行模式开着：只有关掉飞行模式 Wi-Fi 才会真的开（蓝牙按 Kindle 自己的规则恢复）
+        [ "$1" = 1 ] && [ "$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)" = 0 ] && lipc-set-prop -i com.lab126.cmd wirelessEnable 1
+    else lipc-set-prop -i com.lab126.cmd wirelessEnable "$1"; fi
+}
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; }
 # 给显示桥发命令。显示桥不在了就不写：往没有读端的 FIFO 里 echo 会永远卡在 open()，
 # 命令监听、看门狗、唤醒流程以前都可能这样被拖死（显示桥崩过：tmpfs 写满时 SIGBUS）。

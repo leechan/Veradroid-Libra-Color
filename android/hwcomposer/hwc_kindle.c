@@ -10,7 +10,16 @@
  * gralloc framebuffer uses), row by row and only the rows that differ from what is there, then tells veradroid-epd
  * which rows changed ("P <page> <first row> <end row>"; the framebuffer HAL only said "P <page>"). A frame that changes
  * nothing (apps post those all the time: invisible spinners, cursors) costs one compare here and nothing in the bridge.
- * Anything it does not understand (scaled / rotated / dim / skip layers, odd buffers) goes back to GLES for that frame.
+ * Anything it does not understand (scaled / rotated / skip layers, odd buffers) goes back to GLES for that frame.
+ *
+ * Dim layers (the black veil WindowManager puts behind a dialog: no buffer, planeAlpha = dim amount, 0.6 by default) are
+ * composed here too. SurfaceFlinger hands them over as skip layers and still draws them into the GLES framebuffer target,
+ * but that target is not used for such a frame: this HAL composes all layers itself, the dim as black at /dev/kfb/hwc.dim.
+ * The app's own dim amount does not reach a 1.1 HWC (HWComposer_hwc1 only passes planeAlpha from API 1.2; below it marks
+ * faded layers skip and leaves planeAlpha 255), so the veil has one strength for every dialog. Measured: with hwc.dim = 0x99
+ * (起点读书's 0.6) the frame equals SurfaceFlinger's GLES one to +-1 per channel (+-2 on 318 bytes). Before, one dim layer sent the whole frame to GLES (35-65 ms each, also for every step
+ * of the dim fade), and the 60 % veil came out almost black after the bridge's contrast / darken (起点读书, 掌阅, 欧路词典
+ * dialogs on PW6, 0.94): the page behind a dialog was unreadable and every dialog flashed a near-black full screen.
  *
  * It also provides the vsync (SurfaceFlinger does not start its fake vsync thread when a HWC is present): period from
  * /dev/kfb/hz (default 30).
@@ -23,6 +32,8 @@
  *              (tmpfs: it costs no memory). No page sync is needed when switching between GLES and overlay frames.
  *   hwc.gles   checked at run time: never take overlays (GLES composition, only vsync and posting come from here)
  *   hz         refresh rate for vsync, 10..60
+ *   hwc.dim    checked at run time: how much a dim layer darkens, 0..255 (default 51 = 20 %); -1 = leave dim frames to
+ *              GLES at the app's own alpha (the old behaviour)
  *
  * Buffers come from the default gralloc (hardware/libhardware/modules/gralloc): its handle has no width / height / format,
  * so the layer geometry is checked against the handle's size (stride = width rounded up to 2, 32 bpp) and everything
@@ -41,6 +52,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef __ARM_NEON__
+#include <arm_neon.h>
+#endif
 #include <cutils/log.h>
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer.h>
@@ -53,6 +67,8 @@
 #define KFB_HZ   "/dev/kfb/hz"
 #define KFB_PAGE "/dev/kfb/page"
 #define KFB_ONEPAGE "/dev/kfb/onepage"
+#define KFB_DIM  "/dev/kfb/hwc.dim"
+#define DIM_DEFAULT 51
 
 /* the default gralloc's private_handle_t (gralloc_priv.h), C view */
 struct vd_handle {
@@ -79,6 +95,7 @@ struct ctx {
     int ovl_since_gles;       /* an overlay frame was drawn since the last GLES frame: the pages differ */
     int overlay;              /* decision of the last prepare() */
     int force_gles;
+    int dim_cap;              /* hwc.dim: the dim alpha we draw; < 0 = dim frames go to GLES */
     int page_noted;
     int lost;                 /* an announcement to the bridge was not delivered */
     time_t force_checked;
@@ -91,6 +108,9 @@ struct ctx {
     unsigned long n_ovl, n_gles, n_sync, n_same;
     uint32_t *rowbuf;         /* one composed row */
     long last_us, max_us;
+    unsigned long long sum_us;     /* all overlay frames: average cost in the dump */
+    unsigned long n_rows_direct, n_rows_blend;
+    unsigned long n_dim;      /* overlay frames with a dim layer */
 };
 
 static long long now_ns(void)
@@ -123,14 +143,27 @@ static void notify(struct ctx *c, int page, int y0, int y1)
 
 static size_t page_round(size_t v) { return (v + 4095) & ~(size_t)4095; }
 
-/* can we copy this layer ourselves? fills the buffer stride (pixels); *bpp = 4 (RGBA / RGBX 8888) or 2 (RGB 565) */
+/* a WindowManager dim layer: SurfaceFlinger (HWComposer_hwc1 setBuffer(NULL)) gives a layer without a buffer the skip flag
+   and no handle; in 7.1 the only visible layers without a buffer are LayerDim (a normal Layer is not visible before its
+   first buffer). It is black, premultiplied, its strength is planeAlpha. */
+static int is_dim(const struct ctx *c, const hwc_layer_1_t *l)
+{
+    return c->dim_cap >= 0 && !c->onepage && !l->handle && (l->flags & HWC_SKIP_LAYER) &&
+           l->compositionType == HWC_FRAMEBUFFER && l->blending == HWC_BLENDING_PREMULT &&
+           l->displayFrame.right > l->displayFrame.left && l->displayFrame.bottom > l->displayFrame.top;
+}
+
+/* can we copy this layer ourselves? fills the buffer stride (pixels); *bpp = 4 (RGBA / RGBX 8888) or 2 (RGB 565),
+   0 for a dim layer (no buffer, *stride = 1) */
 static int layer_ok2(const struct ctx *c, const hwc_layer_1_t *l, int *stride, int *bpp)
 {
+    if (is_dim(c, l)) { *stride = 1; if (bpp) *bpp = 0; return 1; }
     if (l->flags & HWC_SKIP_LAYER) return 0;
     if (l->compositionType == HWC_BACKGROUND || l->compositionType == HWC_SIDEBAND) return 0;
     if (!l->handle) return 0;
     if (l->transform != 0) return 0;
     if (l->blending != HWC_BLENDING_NONE && l->blending != HWC_BLENDING_PREMULT) return 0;
+    if (l->planeAlpha != 255) return 0;      /* a faded layer: the row rules (alpha 0 / 255) and the copy would ignore it */
     const struct vd_handle *h = (const struct vd_handle *)l->handle;
     if (h->nh.numFds != 1 || h->magic != VD_MAGIC || (h->flags & VD_FLAG_FB) || !h->base) return 0;
     const hwc_rect_t *s = &l->sourceCropi, *d = &l->displayFrame;
@@ -139,12 +172,25 @@ static int layer_ok2(const struct ctx *c, const hwc_layer_1_t *l, int *stride, i
     if (sw != d->right - d->left || sh != d->bottom - d->top) return 0;      /* scaled */
     /* the buffer is as large as the crop says (crop from 0,0): gralloc_alloc() made it
        align(h, 2) * align(w, 2) * 4 + 4 bytes, rounded up to a page */
-    if (s->left != 0 || s->top != 0) return 0;
-    int st = (s->right + 1) & ~1, bh = (s->bottom + 1) & ~1;
-    int b;
-    if (page_round((size_t)bh * st * 4 + 4) == (size_t)h->size) b = 4;
-    else if (page_round((size_t)bh * st * 2 + 4) == (size_t)h->size && l->blending == HWC_BLENDING_NONE) b = 2;   /* 565: opaque */
-    else return 0;
+    int st, bh, b;
+    if (s->left == 0 && s->top == 0) {
+        st = (s->right + 1) & ~1; bh = (s->bottom + 1) & ~1;
+        if (page_round((size_t)bh * st * 4 + 4) == (size_t)h->size) b = 4;
+        else if (page_round((size_t)bh * st * 2 + 4) == (size_t)h->size && l->blending == HWC_BLENDING_NONE) b = 2;   /* 565: opaque */
+        else return 0;
+    } else {
+        /* a window with surface insets (a dialog with an elevation shadow: 欧路词典 / 起点读书 dialogs have 60 px): the
+           buffer is the crop plus the same inset on both sides of each axis, crop (x, y, x + w, y + h) in a
+           (w + 2x) x (h + 2y) buffer (起点读书: (60, 0, 1332, 961) in 1392 x 961). Only that shape is taken (32 bit), and
+           only when no neighbouring stride / height gives the same allocation size (small buffers round to the same
+           page): a wrong stride would shear the picture. Anything else still goes to GLES. */
+        st = (s->right + s->left + 1) & ~1; bh = (s->bottom + s->top + 1) & ~1;
+        if (page_round((size_t)bh * st * 4 + 4) != (size_t)h->size) return 0;
+        if (page_round((size_t)bh * (st + 2) * 4 + 4) == (size_t)h->size || page_round((size_t)bh * (st - 2) * 4 + 4) == (size_t)h->size ||
+            page_round((size_t)(bh + 2) * st * 4 + 4) == (size_t)h->size || page_round((size_t)(bh - 2) * st * 4 + 4) == (size_t)h->size)
+            return 0;
+        b = 4;
+    }
     (void)c;
     *stride = st;
     if (bpp) *bpp = b;
@@ -172,6 +218,12 @@ static inline uint32_t blend_px(uint32_t s, uint32_t d)
     return s + (rb | ag);                 /* premultiplied source over destination */
 }
 
+/* planeAlpha is always 255 on a 1.1 HWC (see the header); kept in the min() for a 1.2 build */
+static inline int dim_alpha(const struct ctx *c, const hwc_layer_1_t *l)
+{
+    return l->planeAlpha < c->dim_cap ? l->planeAlpha : c->dim_cap;
+}
+
 /* put the part of one layer that lies on output row y into the row buffer (the lower layers are already in it) */
 static void row_layer(const struct ctx *c, uint32_t *row, const hwc_layer_1_t *l, int stride, int bpp, int y)
 {
@@ -183,8 +235,17 @@ static void row_layer(const struct ctx *c, uint32_t *row, const hwc_layer_1_t *l
     if (dx + w > c->w) w = c->w - dx;
     if (w <= 0) return;
     uint32_t *d = row + dx;
-    if (bpp == 2) { row565(d, (const uint16_t *)((const uint8_t *)(uintptr_t)h->base + ((size_t)(y - dy) * stride + sx) * 2), w); return; }
-    const uint32_t *s = (const uint32_t *)((const uint8_t *)(uintptr_t)h->base + ((size_t)(y - dy) * stride + sx) * 4);
+    if (bpp == 0) {                       /* dim: premultiplied black at alpha a over what is there */
+        uint32_t a = (uint32_t)dim_alpha(c, l);
+        if (a == 0) return;
+        uint32_t px = a << 24;
+        for (int x = 0; x < w; x++) d[x] = blend_px(px, d[x]);
+        return;
+    }
+    sx += l->sourceCropi.left;                              /* crop offset (windows with surface insets) */
+    size_t sy = (size_t)(y - dy + l->sourceCropi.top);
+    if (bpp == 2) { row565(d, (const uint16_t *)((const uint8_t *)(uintptr_t)h->base + (sy * stride + sx) * 2), w); return; }
+    const uint32_t *s = (const uint32_t *)((const uint8_t *)(uintptr_t)h->base + (sy * stride + sx) * 4);
     if (l->blending == HWC_BLENDING_NONE) { memcpy(d, s, (size_t)w * 4); return; }
     for (int x = 0; x < w; x++) {
         uint32_t p = s[x];
@@ -192,6 +253,43 @@ static void row_layer(const struct ctx *c, uint32_t *row, const hwc_layer_1_t *l
         if (a == 255) d[x] = p;
         else if (p) d[x] = blend_px(p, d[x]);
     }
+}
+
+/* what one row of a 32-bit premultiplied layer looks like where it lies on the output: 0 = every pixel alpha 0 and
+   colour 0 (shows nothing), 2 = every pixel alpha 255 (hides what is under it), 1 = anything else (must be blended) */
+static int row_class(const struct ctx *c, const hwc_layer_1_t *l, int stride, int y)
+{
+    const struct vd_handle *h = (const struct vd_handle *)l->handle;
+    int dx = l->displayFrame.left, w = l->displayFrame.right - dx, sx = 0;
+    if (dx < 0) { sx = -dx; w += dx; dx = 0; }
+    if (dx + w > c->w) w = c->w - dx;
+    if (w <= 0) return 0;
+    const uint32_t *s = (const uint32_t *)((const uint8_t *)(uintptr_t)h->base +
+                        ((size_t)(y - l->displayFrame.top + l->sourceCropi.top) * stride + sx + l->sourceCropi.left) * 4);
+    uint32_t an = 0xffffffffu, o = 0;
+    int x = 0;
+#ifdef __ARM_NEON__
+    uint32x4_t va = vdupq_n_u32(0xffffffffu), vo = vdupq_n_u32(0);
+    for (; x + 16 <= w; x += 16) {
+        uint32x4_t a0 = vld1q_u32(s + x), a1 = vld1q_u32(s + x + 4), a2 = vld1q_u32(s + x + 8), a3 = vld1q_u32(s + x + 12);
+        va = vandq_u32(va, vandq_u32(vandq_u32(a0, a1), vandq_u32(a2, a3)));
+        vo = vorrq_u32(vo, vorrq_u32(vorrq_u32(a0, a1), vorrq_u32(a2, a3)));
+        /* mixed already: no need to read the rest of the row */
+        if ((x & 255) == 240) {
+            uint32x2_t ta = vand_u32(vget_low_u32(va), vget_high_u32(va)), to = vorr_u32(vget_low_u32(vo), vget_high_u32(vo));
+            uint32_t aa = vget_lane_u32(ta, 0) & vget_lane_u32(ta, 1), oo = vget_lane_u32(to, 0) | vget_lane_u32(to, 1);
+            if (oo && (aa >> 24) != 255) return 1;
+        }
+    }
+    {
+        uint32x2_t ta = vand_u32(vget_low_u32(va), vget_high_u32(va)), to = vorr_u32(vget_low_u32(vo), vget_high_u32(vo));
+        an = vget_lane_u32(ta, 0) & vget_lane_u32(ta, 1); o = vget_lane_u32(to, 0) | vget_lane_u32(to, 1);
+    }
+#endif
+    for (; x < w; x++) { an &= s[x]; o |= s[x]; }
+    if (o == 0) return 0;
+    if ((an >> 24) == 255) return 2;
+    return 1;
 }
 
 static int covers_all(const struct ctx *c, const hwc_layer_1_t *l)
@@ -206,7 +304,13 @@ static int hwc_prepare(hwc_composer_device_1_t *dev, size_t n, hwc_display_conte
     if (n < 1 || !disp[0]) return 0;
     hwc_display_contents_1_t *list = disp[0];
     time_t t = time(NULL);
-    if (t != c->force_checked) { c->force_checked = t; c->force_gles = access(KFB_GLES, F_OK) == 0; }
+    if (t != c->force_checked) {
+        c->force_checked = t; c->force_gles = access(KFB_GLES, F_OK) == 0;
+        int v = DIM_DEFAULT;
+        FILE *f = fopen(KFB_DIM, "re");
+        if (f) { if (fscanf(f, "%d", &v) != 1) v = DIM_DEFAULT; fclose(f); }
+        c->dim_cap = v < 0 ? -1 : v > 255 ? 255 : v;
+    }
     size_t nl = list->numHwLayers ? list->numHwLayers - 1 : 0;      /* the last one is the framebuffer target */
     int ok = !c->force_gles && nl > 0 && nl <= 32 && c->fb;
     int st;
@@ -214,6 +318,9 @@ static int hwc_prepare(hwc_composer_device_1_t *dev, size_t n, hwc_display_conte
     for (size_t i = 0; i < nl; i++) {
         hwc_layer_1_t *l = &list->hwLayers[i];
         if (l->compositionType == HWC_BACKGROUND || l->compositionType == HWC_SIDEBAND) continue;
+        /* a dim layer stays FRAMEBUFFER (SurfaceFlinger resets skip layers anyway): it draws it into the framebuffer
+           target, which set() ignores in an overlay frame */
+        if (ok && is_dim(c, l)) continue;
         l->compositionType = ok ? HWC_OVERLAY : HWC_FRAMEBUFFER;
     }
     if (!ok && c->ovl_since_gles && c->fb && !c->onepage) {
@@ -247,26 +354,62 @@ static int hwc_set(hwc_composer_device_1_t *dev, size_t n, hwc_display_contents_
         size_t first = 0;
         for (size_t i = nl; i-- > 0;)
             if (covers_all(c, &list->hwLayers[i])) { first = i; break; }
-        int base_full = covers_all(c, &list->hwLayers[first]);
-        int st[32], bp[32];
+        int st[32], bp[32], ndim = 0, whole = 0;
         size_t top = nl > 32 ? 32 : nl;       /* prepare() refused more than 32 layers */
-        for (size_t i = first; i < top; i++) { st[i] = 0; bp[i] = 4; if (!layer_ok2(c, &list->hwLayers[i], &st[i], &bp[i])) st[i] = 0; }
-        const struct vd_handle *bh = (const struct vd_handle *)list->hwLayers[first].handle;
-        int bdy = list->hwLayers[first].displayFrame.top, bdx = list->hwLayers[first].displayFrame.left;
+        for (size_t i = first; i < top; i++) {
+            st[i] = 0; bp[i] = 4;
+            if (!layer_ok2(c, &list->hwLayers[i], &st[i], &bp[i])) st[i] = 0;
+            else if (bp[i] == 0) ndim++;
+        }
+        if (ndim) {
+            /* SurfaceFlinger has just drawn the dim layer with GLES into the framebuffer target, which is one of our two
+               pages. If that is the page on screen, compose into the other one (the bridge must not read the GLES veil)
+               and let the bridge compare the whole page: rows equal to the stale page would otherwise go unnamed. */
+            const hwc_layer_1_t *t = &list->hwLayers[list->numHwLayers - 1];
+            const struct vd_handle *th = (const struct vd_handle *)t->handle;
+            if (t->compositionType == HWC_FRAMEBUFFER_TARGET && th && th->magic == VD_MAGIC && (th->flags & VD_FLAG_FB) &&
+                ((int)((size_t)th->offset / c->page_bytes) & 1) == page) {
+                page ^= 1; dst = c->fb + (size_t)page * c->page_bytes; whole = 1;
+            }
+            c->n_dim++;
+        }
         int y0 = -1, y1 = 0;
         const size_t rb = (size_t)c->w * 4;
         for (int y = 0; y < c->h; y++) {
             const uint8_t *src;
-            int single = base_full && st[first] && bp[first] == 4;
-            for (size_t i = first + 1; single && i < top; i++)
-                if (st[i] && y >= list->hwLayers[i].displayFrame.top && y < list->hwLayers[i].displayFrame.bottom) single = 0;
-            if (single) {      /* the usual row: one opaque full-width layer, straight from its buffer */
-                src = (const uint8_t *)(uintptr_t)bh->base + ((size_t)(y - bdy) * st[first] + (size_t)(-bdx)) * 4;
+            /* which layers really show on this row, top down: a premultiplied layer whose row is all alpha 0 shows nothing
+               (apps keep full-screen translucent windows over the page: 多看 has one over its reader, mostly empty), and a
+               full-width row that is all alpha 255 hides everything under it. Only the rest is blended (docs/jank.md). */
+            int base = -1, nvis = 0;
+            unsigned char vis[32];
+            for (size_t i = top; i-- > first;) {
+                const hwc_layer_1_t *l = &list->hwLayers[i];
+                if (!st[i] || y < l->displayFrame.top || y >= l->displayFrame.bottom) continue;
+                if (bp[i] == 0) { vis[nvis++] = (unsigned char)i; continue; }     /* dim: always blended */
+                int fullw = l->displayFrame.left <= 0 && l->displayFrame.right >= c->w;
+                if (bp[i] != 4 || l->blending == HWC_BLENDING_NONE) {
+                    if (fullw) { base = (int)i; break; }
+                    vis[nvis++] = (unsigned char)i; continue;
+                }
+                int k = row_class(c, l, st[i], y);
+                if (k == 0) continue;                                   /* transparent here */
+                if (k == 2 && fullw) { base = (int)i; break; }          /* opaque over the full width */
+                vis[nvis++] = (unsigned char)i;
+            }
+            if (base >= 0 && nvis == 0 && bp[base] == 4 && list->hwLayers[base].displayFrame.left <= 0) {
+                /* one layer shows on the whole row: straight from its buffer */
+                const hwc_layer_1_t *l = &list->hwLayers[base];
+                const struct vd_handle *h = (const struct vd_handle *)l->handle;
+                src = (const uint8_t *)(uintptr_t)h->base + ((size_t)(y - l->displayFrame.top + l->sourceCropi.top) * st[base] +
+                      (size_t)(l->sourceCropi.left - l->displayFrame.left)) * 4;
+                c->n_rows_direct++;
             } else {
-                memset(c->rowbuf, 0, rb);
-                for (size_t i = first; i < top; i++)
-                    if (st[i]) row_layer(c, c->rowbuf, &list->hwLayers[i], st[i], bp[i], y);
+                if (base >= 0) row_layer(c, c->rowbuf, &list->hwLayers[base], st[base], bp[base], y);
+                else memset(c->rowbuf, 0, rb);
+                for (int j = nvis; j-- > 0;)
+                    row_layer(c, c->rowbuf, &list->hwLayers[vis[j]], st[vis[j]], bp[vis[j]], y);
                 src = (const uint8_t *)c->rowbuf;
+                c->n_rows_blend++;
             }
             uint8_t *d = dst + (size_t)y * rb;
             if (memcmp(d, src, rb)) {
@@ -275,9 +418,11 @@ static int hwc_set(hwc_composer_device_1_t *dev, size_t n, hwc_display_contents_
                 y1 = y + 1;
             }
         }
-        if (y0 >= 0) { notify(c, page, y0, y1); c->ovl_since_gles = 1; c->n_ovl++; }
+        if (whole) { notify(c, page, 0, 0); c->ovl_since_gles = 1; c->n_ovl++; }
+        else if (y0 >= 0) { notify(c, page, y0, y1); c->ovl_since_gles = 1; c->n_ovl++; }
         else c->n_same++;
         c->last_us = (long)((now_ns() - t0) / 1000);
+        c->sum_us += (unsigned long long)c->last_us;
         if (c->last_us > c->max_us) c->max_us = c->last_us;
     } else if (list->numHwLayers) {
         const hwc_layer_1_t *t = &list->hwLayers[list->numHwLayers - 1];
@@ -337,8 +482,10 @@ static void hwc_register_procs(hwc_composer_device_1_t *dev, hwc_procs_t const *
 static void hwc_dump(hwc_composer_device_1_t *dev, char *buf, int len)
 {
     struct ctx *c = (struct ctx *)dev;
-    snprintf(buf, len, "hwc_kindle: %dx%d %ld Hz, frames written here %lu + unchanged %lu (last %ld us, max %ld us), GLES frames %lu, page syncs %lu, force_gles=%d onepage=%d\n",
-             c->w, c->h, 1000000000L / c->period_ns, c->n_ovl, c->n_same, c->last_us, c->max_us, c->n_gles, c->n_sync, c->force_gles, c->onepage);
+    snprintf(buf, len, "hwc_kindle: %dx%d %ld Hz, frames written here %lu + unchanged %lu (last %ld us, max %ld us, avg %ld us), rows direct %lu blended %lu, GLES frames %lu, page syncs %lu, dim frames %lu (cap %d), force_gles=%d onepage=%d\n",
+             c->w, c->h, 1000000000L / c->period_ns, c->n_ovl, c->n_same, c->last_us, c->max_us,
+             (c->n_ovl + c->n_same) ? (long)(c->sum_us / (c->n_ovl + c->n_same)) : 0L, c->n_rows_direct, c->n_rows_blend,
+             c->n_gles, c->n_sync, c->n_dim, c->dim_cap, c->force_gles, c->onepage);
 }
 
 static int hwc_get_configs(hwc_composer_device_1_t *dev, int disp, uint32_t *configs, size_t *num)
@@ -399,6 +546,7 @@ static int hwc_open(const struct hw_module_t *module, const char *name, struct h
     c->fifo = -1;
     c->page_noted = -1;
     c->onepage = access(KFB_ONEPAGE, F_OK) == 0;
+    c->dim_cap = DIM_DEFAULT;
     c->rowbuf = malloc((size_t)c->w * 4);
     if (!c->rowbuf) { free(c); return -ENOMEM; }
     pthread_mutex_init(&c->lock, NULL);

@@ -1,6 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Rebuild the Android system images (rootfs.tar.gz) that pack.sh ships, from a git checkout .
+# Build the Android system images (rootfs.tar.gz) from this checkout:
+#   AOSP_WORK=<dir> sh tools/build/build_rootfs.sh <command>   (AOSP_WORK layout: see below)
 #   build_rootfs.sh prepare|sync|pw6|k49|all            family images (one per binder ABI, releases up to PW6 0.90 / k49 0.98)
 #   build_rootfs.sh class <class>                         per-class image (docs/per-model-images.md):
 #        pw6 | k49-512 | k49-1g | a7-512 | a9-512 | a9-256   -> rootfs-<class>-<git>.tar.gz
@@ -27,11 +28,11 @@
 # Builds run in the docker image vdaosp:7.1 (tools/build/Dockerfile.aosp).
 # WORK=<git checkout> (default: this repository).  Output: $DEST/rootfs-<flavour>-<git>.tar.gz (+ .sha256)
 set -eu
-A=${VD_AOSP:-$AOSP_WORK}
-if [ -z "${VD_HOME_LOCKED:-}" ]; then VD_HOME_LOCKED=1 exec flock "${VD_LOCK:-$A/.build_home.lock}" sh "$0" "$@"; fi
-WORK=${WORK:-${VD_BUILD:-$HOME/veradroid-build}/work}
+A=${VD_AOSP:-${AOSP_WORK:?set AOSP_WORK (or VD_AOSP) to the build work directory, see the header of this script}}
+if [ -z "${VD_HOME_LOCKED:-}" ] && command -v flock >/dev/null; then VD_HOME_LOCKED=1 exec flock "${VD_LOCK:-$A/.build.lock}" sh "$0" "$@"; fi
+WORK=${WORK:-$(cd "$(dirname "$0")/../.." && pwd)}
 # VD_SRC: another source tree (e.g. an overlay over src-big holding one branch's patches); VD_O64 / VD_O32: family out dirs
-SRC=${VD_SRC:-$A/src-big}; O64=${VD_O64:-$A/out-big}; O32=${VD_O32:-$A/out-big32}; DEST=${DEST:-${VD_BUILD:-$HOME/veradroid-build}/big/rootfs}
+SRC=${VD_SRC:-$A/src-big}; O64=${VD_O64:-$A/out-big}; O32=${VD_O32:-$A/out-big32}; DEST=${DEST:-$A/rootfs}
 REV=$(git -C "$WORK" rev-parse --short HEAD)
 BC=$SRC/device/veradroid/kindle/BoardConfig.mk
 # veradroid_kindle_slim = veradroid_kindle + slim.mk (trimmed preloaded-classes / boot image classes, no media helper

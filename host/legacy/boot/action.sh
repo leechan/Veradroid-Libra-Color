@@ -67,7 +67,10 @@ run_action() {
             # powerButton 是 powerd 自己的“模拟电源键”属性；没有它的老固件退回 powerd_test -p
             lipc-set-prop -i com.lab126.powerd powerButton 1 2>/dev/null || powerd_test -p >/dev/null 2>&1 ;;
         wifi)
-            v=$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)
+            # Wi-Fi 本身的状态（cmd disableInterfaces 的 wifi），不是飞行模式；飞行模式开着时算关（同 lib/common.sh wifi_state）
+            v=$(lipc-hash-prop com.lab126.cmd disableInterfaces </dev/null 2>/dev/null | sed -n "s/^[[:space:]]*wifi = (\([0-9]*\)).*/\1/p" | head -1)
+            case "$v" in 0) v=1 ;; 1) v=0 ;; *) v=$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null) ;; esac
+            [ "$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)" = 0 ] && v=0
             if [ "$v" = 1 ]; then hint wifi "WI-FI|Wi-Fi 关"; send "wifi 0"; else hint wifi "WI-FI|Wi-Fi 开"; send "wifi 1"; fi ;;
         app.*)
             # 打开指定应用：和 veradroid.sh 打开应用同一个通道（桌面的 HostService 监听 ctl/app）。包名只许普通字符

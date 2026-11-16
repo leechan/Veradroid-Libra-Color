@@ -34,10 +34,34 @@ apk_precheck() {
     sz=$(apk_size "$1")
     [ "${sz:-0}" -ge 1024 ] 2>/dev/null || { echo "文件是空的或太小（${sz:-0} 字节），多半是下载或拷贝没有完成。请重新下载后再放进来。"; return 0; }
     case "$(dd if="$1" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')" in
-        504b0304) return 1 ;;
+        504b0304) apk_abi_check "$1"; return $? ;;
     esac
     echo "这不是 APK 安装包（文件开头不是 ZIP 格式，可能是网页、压缩包或别的文件改了名字）。请从应用官网重新下载 .apk 文件。"
     return 0
+}
+# 32 位库是否完整（apk_precheck 调；有问题时输出原因并返回 0）。Kindle 只能跑 32 位 ARM：PackageManager 按 armeabi-v7a、
+# armeabi 的顺序挑第一个有库的目录。有的官方包只带 64 位库（知乎 11.15：装不上），更糟的是 32 位目录只带了一部分
+# （掌阅 8.7.5.2：armeabi 27 个、arm64-v8a 46 个）——装得上，打开后缺 libmsaoaidsec.so 等、开屏页 ANR，用户只看到卡死。
+# 64 位有、32 位没有的库 >= 3 个且 32 位不到 64 位的八成，就当作没有完整的 32 位版本，不装。少一两个的（有的应用只给
+# 64 位带个可选插件）照装。APK_ABI_CHECK=off 关掉这项检查。
+apk_abi_check() { # $1 = apk
+    [ "${APK_ABI_CHECK:-on}" = off ] && return 1
+    command -v unzip >/dev/null 2>&1 || return 1
+    aac_l=$(unzip -l "$1" 2>/dev/null | awk '$1 ~ /^[0-9]+$/ && NF >= 4 && $NF ~ /^lib\/[^\/]+\/[^\/]+\.so$/ { print $NF }')
+    [ -n "$aac_l" ] || return 1                        # 没有原生库：和 ABI 无关
+    aac_64=$(printf '%s\n' "$aac_l" | sed -n 's#^lib/arm64-v8a/##p' | sort -u)
+    aac_32=$(printf '%s\n' "$aac_l" | sed -n 's#^lib/armeabi-v7a/##p' | sort -u)
+    [ -n "$aac_32" ] || aac_32=$(printf '%s\n' "$aac_l" | sed -n 's#^lib/armeabi/##p' | sort -u)
+    [ -n "$aac_64" ] || return 1                       # 没有 64 位库：32 位是不是全的没法比（x86-only 交给 PackageManager 报）
+    n64=$(printf '%s\n' "$aac_64" | grep -c .)
+    n32=$(printf '%s\n' "$aac_32" | grep -c .)
+    miss=$(printf '%s\n' "$aac_64" | while read -r so; do printf '%s\n' "$aac_32" | grep -qxF "$so" || echo "$so"; done)
+    nm=$(printf '%s\n' "$miss" | grep -c .)
+    if [ "$n32" -eq 0 ] || { [ "$nm" -ge 3 ] && [ $((n32 * 10)) -lt $((n64 * 8)) ]; }; then
+        echo "这个安装包没有完整的 32 位版本，Kindle 上无法运行（32 位库 $n32 个，64 位库 $n64 个，缺 $(printf '%s\n' "$miss" | head -n 3 | tr '\n' ' ')等）。请找这个应用的 32 位（armeabi-v7a）版本。"
+        return 0
+    fi
+    return 1
 }
 # PackageManager 的失败代码 -> 给用户看的原因
 apk_fail_reason() { # $1 = pm 输出  $2 = apk（可选，用来进一步判断“格式不对”是哪一种）
@@ -190,6 +214,10 @@ after_boot() {
         adb_sh 'settings put global hide_error_dialogs 1; settings put global show_first_crash_dialog 0; settings put global show_restart_in_crash_dialog 0' >/dev/null 2>&1
         # 系统里没有开机向导（Provision）：不标记“已完成设置”时 HOME 键被忽略（user setup is in progress）、快捷设置受限
         adb_sh 'settings put global device_provisioned 1; settings put secure user_setup_complete 1' >/dev/null 2>&1
+        # 允许“未知来源”：系统里没有“设置”应用，这个开关用户打不开。关着时 Android 里的一切安装（应用自己的更新、浏览器
+        # 下载后点开、文件管理器点 APK）都被软件包安装程序拦下：“出于安全考虑，您的手机已设置为禁止安装来源不明的应用”，
+        # 点“设置”也没反应（用户说的“更新应用没权限”；一台 PW6 测试机上 0.94 实测，打开后同一个更新在安装程序里正常装上）。
+        adb_sh 'settings put secure install_non_market_apps 1' >/dev/null 2>&1
         # 用不到的后台服务：通知排序助手常驻约 37 MB
         adb_sh 'pm disable-user --user 0 android.ext.services' >/dev/null 2>&1
         slim_after_boot

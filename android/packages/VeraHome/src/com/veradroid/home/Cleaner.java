@@ -39,10 +39,25 @@ final class Cleaner {
     static final String[] LIMIT_L = { "0 个", "1 个", "2 个", "3 个", "不限" };
     private static final String TAG = "VeraHome";
 
+    /** 用户没选过时的默认：957 MB 的机型（PW6 / KS）2 个，512 MB 机型 1 个。一台 PW6 测试机实测（loop0 直读写，桌面 → 微信读书 → 多看 →
+     *  静读天下 轮换 3 轮，docs/jank.md 6 节）：1 个 14.7 s / 轮、每次切换读盘中位 171 MB；2 个 8.4 s、24 MB；3 个 8.7 s、23 MB；
+     *  MemAvailable 最低 309 / 332 / 316 MB，三种都没有 lmkd / 内核 OOM 杀进程。 */
+    static int defaultLimit() {
+        long kb = 0;
+        try {
+            BufferedReader r = new BufferedReader(new FileReader("/proc/meminfo"));
+            try {
+                String l;
+                while ((l = r.readLine()) != null) if (l.startsWith("MemTotal:")) { kb = Long.parseLong(l.replaceAll("[^0-9]", "")); break; }
+            } finally { r.close(); }
+        } catch (Throwable ignored) { }
+        return kb > 0 && kb < 700 * 1024 ? 1 : 2;
+    }
+
     /** 后台最多留几个用户应用；-1 = 不限。 */
     static int limit(Context c) {
-        int i = 1;
-        try { i = Store.prefs(c, "home").getInt(LIMIT_KEY, 1); } catch (Throwable ignored) { }
+        int i = defaultLimit();
+        try { i = Store.prefs(c, "home").getInt(LIMIT_KEY, i); } catch (Throwable ignored) { }
         return i >= 4 ? -1 : Math.max(0, i);
     }
 
@@ -68,7 +83,7 @@ final class Cleaner {
     /** 用户应用最近到过前台的顺序（最近的在最前）。进程内记着；HostService 重启后从头记（没记过的算最久）。 */
     private static final LinkedList<String> recent = new LinkedList<String>();
     private static final Handler ui = new Handler(Looper.getMainLooper());
-    private static String front;
+    private static volatile String front;   // read by the VeraBgClean thread
     private static Context appCtx;
     private static final Runnable enforce = new Runnable() { @Override public void run() { enforceNow(); } };
 
@@ -177,6 +192,8 @@ final class Cleaner {
      * 和系统内存不够时杀进程一样，只是进程没了，不是“强行停止”：闹钟、通知、同步、开机广播都还在。有服务在跑的不动。
      */
     private static void kill(ActivityManager am, String pkg) {
+        // never the app in front, also when it came to the front after the list was made (user switched within the 3 s)
+        if (pkg.equals(front)) { Log.i(TAG, "bgclean: " + pkg + " is in front now - left alone"); return; }
         try { am.killBackgroundProcesses(pkg); } catch (Throwable t) { Log.w(TAG, "bgclean: " + pkg + ": " + t); }
         try { Thread.sleep(300); } catch (InterruptedException ignored) { }
         try {
@@ -191,6 +208,7 @@ final class Cleaner {
             }
             if (uid < 0) return;   // 已经停了
             if (!onlyBackground) { Log.i(TAG, "bgclean: " + pkg + " has a service / is visible - left alone"); return; }
+            if (pkg.equals(front)) { Log.i(TAG, "bgclean: " + pkg + " is in front now - left alone"); return; }
             Object amn = Class.forName("android.app.ActivityManagerNative").getMethod("getDefault").invoke(null);
             amn.getClass().getMethod("killUid", int.class, int.class, String.class).invoke(amn, uid % 100000, uid / 100000, "VeraHome bgclean");
             Log.i(TAG, "bgclean: " + pkg + " process ended (killUid, background only)");

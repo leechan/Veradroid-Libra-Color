@@ -48,6 +48,21 @@ splash_begin() {
     $FBINK -q -f -s
 }
 
+# 开机画面在后台画（splash_begin + 第一格进度）：fbink 每画一段字都要读一遍字体，PW5 模拟器上整屏画完要 3–6 秒，
+# 以前显示桥、触摸、容器都要等它画完才开始。fbink 探测（拿到可用的 FBINK，display_prepare 要用它读屏幕几何）仍在前台做。
+# 之后再画进度条（splash_update）之前先 splash_wait：两个 fbink 同时画同一块会花屏。
+splash_bg() {
+    fbink_probe || return 0
+    ( splash_begin "$@"; splash_update 12 ) </dev/null &
+    echo $! > $W/splash.pid
+}
+splash_wait() {
+    sw_p=$(cat $W/splash.pid 2>/dev/null); rm -f $W/splash.pid
+    [ -n "$sw_p" ] || return 0
+    sw_i=0; while kill -0 "$sw_p" 2>/dev/null && [ $sw_i -lt 150 ]; do usleep 100000; sw_i=$((sw_i + 1)); done
+    return 0
+}
+
 # 只更新底部进度条（它自带百分比，不再重复写一遍；局部刷新，很快）
 splash_update() {   # $1 = 百分比  $2 = 文字
     fbink_probe || return 0

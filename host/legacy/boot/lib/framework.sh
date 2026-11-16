@@ -101,16 +101,27 @@ fw_restore_running() {
     t "fw: $n dependent kindle services restarted"
 }
 
+# 一批 Kindle 服务并行起来，全部起好（upstart 的 start 要等任务真的跑起来）才返回。
+# 以前一个一个 start：每个要 0.3–2 秒（stored、scanner、webreader……），十来个加起来好几秒，都算在“回到书库”里（PW5 模拟器约 9 秒）。
+fw_start_many() {
+    fs_p=
+    for fs_s in "$@"; do ( start $fs_s >/dev/null 2>&1 ) & fs_p="$fs_p $!"; done
+    for fs_x in $fs_p; do wait $fs_x 2>/dev/null; done
+    return 0
+}
+
 kindle_home() {
     # 框架停过（stop）：等它和书库程序重新起来，最多 3 分钟；只暂停的情况最多 1 分钟
     max=30; [ -n "$NOFW" ] && max=90
     i=0
     if [ -f /etc/upstart/kppmainapp.conf ]; then
-        until lipc-probe com.lab126.KPPMainApp 2>/dev/null | grep -qw go || [ $i -ge $max ]; do sleep 2; i=$((i + 1)); done
+        until lipc-probe com.lab126.KPPMainApp 2>/dev/null | grep -qw go || [ $i -ge $((max * 8)) ]; do usleep 250000; i=$((i + 1)); done
+        i=$((i / 8))   # 每 0.25 秒看一次（以前每 2 秒）；下面的日志仍按“约几秒”记
     else
         # 5.16 以前的固件（PW2 5.12、Voyage 5.13）没有 KPPMainApp，书库是 Java 框架里的 booklet：等框架报“已启动”。
         # 以前在这里干等 KPPMainApp，每次返回 Kindle 都白等满 1 / 3 分钟（pw2-5122 模拟器）。
-        until [ "$(lipc-get-prop com.lab126.kaf frameworkStarted 2>/dev/null)" = 1 ] || [ $i -ge $max ]; do sleep 2; i=$((i + 1)); done
+        until [ "$(lipc-get-prop com.lab126.kaf frameworkStarted 2>/dev/null)" = 1 ] || [ $i -ge $((max * 8)) ]; do usleep 250000; i=$((i + 1)); done
+        i=$((i / 8))
     fi
     t "fw: kindle home after $((i * 2))s"
     if [ -f /etc/upstart/kppmainapp.conf ]; then
@@ -311,15 +322,18 @@ framework_start() {
     fw_clear_restart_counters
     NOFW=; case "$(cat $FWD/mode 2>/dev/null)" in stop|stopfail) NOFW=1 ;; esac
     fw_unfreeze
+    fw_svc=; for s in $(cat $FWD/stopped 2>/dev/null); do [ "$s" = framework ] || fw_svc="$fw_svc $s"; done
     if [ -n "$NOFW" ]; then
-        # 框架要重新启动（冷启动约一分钟）：先告诉用户在等什么，不然屏幕上是停之前存下的那一帧，点了没反应
-        fw_wait_screen || splash "正在恢复 Kindle 界面，大约需要一分钟…" 36
         vdkaf_stop
         killall vdkaf vdkaf-sf 2>/dev/null      # 被叫停的后台那一段刚起、漏记 pid 的也不能留（它顶着 com.lab126.kaf）
-        # 框架先起（别的任务有些要等它），再起其余的
-        grep -qx framework $FWD/stopped 2>/dev/null && start framework >/dev/null 2>&1
+        # 框架先起（别的任务有些要等它），再并行起其余的；放到后台，同时画等待画面（以前画完才开始起框架）
+        ( grep -qx framework $FWD/stopped 2>/dev/null && start framework >/dev/null 2>&1; fw_start_many $fw_svc ) & fw_svp=$!
+        # 框架要重新启动（冷启动约一分钟）：告诉用户在等什么，不然屏幕上是停之前存下的那一帧，点了没反应
+        fw_wait_screen || splash "正在恢复 Kindle 界面，大约需要一分钟…" 36
+        wait $fw_svp 2>/dev/null
+    else
+        fw_start_many $fw_svc
     fi
-    for s in $(cat $FWD/stopped 2>/dev/null); do [ "$s" = framework ] || start $s >/dev/null 2>&1; done
     [ -n "$NOFW" ] && fw_restore_running
     sleep 1
     kindle_home

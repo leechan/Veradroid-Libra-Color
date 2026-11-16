@@ -137,7 +137,7 @@ wifi_connect() {
 $(wifi_saved)
 WIFI_EOF
     [ -n "$found" ] || { t "wificonnect: not a saved network"; wifi_result ok=0 "error=not saved" "essid=$hex"; return 1; }
-    [ "$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)" = 1 ] || { lipc-set-prop -i com.lab126.cmd wirelessEnable 1; sleep 2; }
+    [ "$(wifi_state)" = 1 ] || { wifi_set 1; sleep 2; }
     t "wificonnect: switching to a saved network"
     lipc-set-prop com.lab126.cmd ensureConnection "wifi:$want"
     i=0
@@ -215,7 +215,7 @@ cmd_listen() {
             # 却把全局的翻页动画和刷新合并关掉了（滑动时闪）。不认这组写死的值，按全局设置来。
             [ "$aspec" = "KFB_ANIM_MODE=0;KFB_SETTLE=25;KFB_MODE=0;KFB_CONTRAST=1.3" ] && aspec=
             if [ "$apkg" != home ] && [ -n "$aspec" ] && [ "$aspec" != "$a" ]; then
-                printf '%s\n' "$aspec" | tr ';' '\n' | grep -E '^KFB_(CONTRAST|DITHER|FLASH|INVERT|LIGHTF|DARKEN|MODE|SETTLE|HOLD|SMOOTH|PACE|CLEAN|REAGL_MIN|ANIM_MODE|ANIM_DIR|ANIM_STEPS|ANIM_MIN)=[0-9.]{1,6}$' > $SYS/settings.app.tmp
+                printf '%s\n' "$aspec" | tr ';' '\n' | grep -E '^KFB_(CONTRAST|DITHER|FLASH|INVERT|LIGHTF|DARKEN|MODE|SETTLE|HOLD|SMOOTH|PACE|CLEAN|REAGL_MIN|SETTLE2|SCROLLDU|IMG|ANIM_MODE|ANIM_DIR|ANIM_STEPS|ANIM_MIN)=[0-9.]{1,6}$' > $SYS/settings.app.tmp
                 [ -s $SYS/settings.app.tmp ] && mv -f $SYS/settings.app.tmp $SYS/settings.app || rm -f $SYS/settings.app.tmp
             fi
             settings_load 2>/dev/null || true
@@ -281,6 +281,13 @@ cmd_listen() {
                 ( upload_dir_fix 2>/dev/null; chmod 777 $SYS/data/local/tmp 2>/dev/null
                   # 桌面的进度卡片（我的 页）：正在装哪个、从什么时候开始（大应用要装几分钟）
                   type vp_kvw >/dev/null 2>&1 && vp_kvw $X/ctl/apkinst.status state=installing "name=$iname" "start=$(date +%s)"
+                  # 不是 APK、32 位库不全（apk_precheck / apk_abi_check，afterboot.sh）：不装，直接把原因给传书网页 / 商店
+                  if type apk_precheck >/dev/null 2>&1 && bad=$(apk_precheck "$SYS$ipath"); then
+                      echo "$bad" > $X/ctl/inst.$iname.tmp; mv -f $X/ctl/inst.$iname.tmp $X/ctl/inst.$iname
+                      type vp_kvw >/dev/null 2>&1 && vp_kvw $X/ctl/apkinst.status state=error "name=$iname" "result=$bad"
+                      t "install: $iname refused before pm: $bad"
+                      exit 0
+                  fi
                   type compile_hold >/dev/null 2>&1 && compile_hold      # 后台编译拿着 PackageManager 的锁：先让开（compile.sh）
                   # pm/app_process crashes in libjavacore on this rootfs; cmd package
                   # shares PackageManager but initializes cleanly. It reads the APK
@@ -320,7 +327,7 @@ cmd_listen() {
         bt)      type bt_cmd >/dev/null 2>&1 && bt_cmd "$a" ;;   # bt map/swap/bridge、scan/list/bond/connect/disconnect/unbond/enable/disable（bt.sh，参数在那里校验）
         optimize) ( opt_run ) & ;;   # 面板的“优化机器状态”（opt_run）
         poke)    lipc-set-prop -i com.lab126.powerd touchScreenSaverTimeout 1 2>/dev/null ;;
-        wifi)    numeric "$a" && lipc-set-prop -i com.lab126.cmd wirelessEnable "$a" ;;
+        wifi)    case "$a" in 0|1) wifi_set "$a"; status_write ;; esac ;;   # 只开关 Wi-Fi，不动飞行模式和蓝牙（common.sh wifi_set）
         wifilist)    ( wifi_list ) & ;;
         wificonnect) ( wifi_connect "$a" ) & ;;   # 参数在 wifi_connect 里校验（十六进制、必须是已保存的网络）
         dns)     case "$a" in

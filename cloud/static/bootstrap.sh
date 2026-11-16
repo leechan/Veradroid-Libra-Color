@@ -113,7 +113,13 @@ show() {
     if [ -n "${VP_ON:-}" ]; then ui_note "$*"; return 0; fi   # 整屏进度画面在：写进画面的说明行，不用 eips 盖上去
     [ -n "${UI_AUTO:-}" ] && return 0                           # 自动更新：用户在看书，不往屏幕上写字（状态文件里有）
     if command -v eips >/dev/null 2>&1; then
-        eips 1 3 "$*" >/dev/null 2>&1 || true
+        # eips 没有中文字形：中文字节画出来是乱码，叠在上一行没擦掉的尾巴上（legacy 的 Oasis 3 用户照片）。只画英文：
+        # “English / 中文”取斜杠前一半，否则去掉非 ASCII；剩下不到 4 个字母、也没有百分比的（纯中文的提示）不画。补空格到 60 列。
+        case "$*" in *" / "*) se=${*%% / *} ;; *) se=$* ;; esac
+        se=$(printf '%s' "$se" | tr -cd ' -~' | cut -c1-60)
+        if [ "$(printf '%s' "$se" | tr -cd 'A-Za-z' | wc -c)" -ge 4 ] || case "$se" in *%*) true ;; *) false ;; esac; then
+            eips 1 3 "$(printf '%-60s' "$se")" >/dev/null 2>&1 || true
+        fi
     fi
 }
 progress_line() { # pct label
@@ -1786,7 +1792,10 @@ else
     size=$(printf '%s' "$json" | sed -n 's/.*"size":\([0-9]*\).*/\1/p')
     [ -n "$url" ] && [ -n "$sha" ] || DIE_CODE=13 die "服务器没有可用的安装包"
     # 增量更新（vd_parts_prepare）：成功就跳过下面的整包下载 / 校验 / 解压；不成功什么都不影响，照常下整包
-    vd_parts_prepare "$json" && PARTS=1 && sha= || { PARTS=; [ -z "$PD" ] || rm -rf "$PD" "$TMP/veradroid-pw6"; }
+    # 失败时 PARTS_ROOTFS 等也要清掉：vd_parts_prepare 中途（部件解压失败）已经把它设成了 full / tree，后面解 rootfs 的
+    # vd_parts_rootfs_install 只看 PARTS_ROOTFS，会去解已经删掉的 $PD 里的部件，整包下好了却报“解压 Android rootfs 失败（空间不足？）”
+    # （模拟器 PW6 0.92 -> 0.94：parts 解压 apks 失败、退回整包后安装失败，代码 21）
+    vd_parts_prepare "$json" && PARTS=1 && sha= || { PARTS=; PARTS_ROOTFS=; PARTS_TREE=; PARTS_FULL=; [ -z "$PD" ] || rm -rf "$PD" "$TMP/veradroid-pw6"; }
 
     [ -n "$PARTS" ] || space_check_before_download "${size:-0}"
     mkdir -p "$TMP"
@@ -1864,58 +1873,111 @@ if [ ! -s "$STABLE" ]; then
     done
 fi
 BAK="$SYS/host.bak.$stamp"
-# ---- 安装前备份（2026-11-10 改）----
-# 旧版每次都新建一份 documents+koreader+extensions+thumbnails 的 tgz、从来不删，还每次覆盖唯一的那份
-# veradroid-documents-backup.tgz，错误全部吞掉 —— 一天几十次自动更新就能把用户存储写满。现在：
+# ---- 安装前备份（2026-11-10 改；2026-11-16 有上限，同 bootstrap-legacy.sh 6aa5c04）----
 #  - 先估空间，不够就跳过备份（安装本身不删除任何用户文件），写进 veradroid-install-detail.log；
-#  - 写到 .partial，成功了才改名；只保留最新一份。旧备份只有在“里面的每个文件现在都还在”时才删除，
-#    否则留着（它可能是用户丢书之前唯一的一份）；
-#  - veradroid-documents-backup.tgz 不再写入（user backup 已经包含 documents），已有的那份原样保留。
-USER_SAFE=
-if [ -d /mnt/us ]; then
-    set --
-    for d in documents koreader extensions system/thumbnails; do [ -e "/mnt/us/$d" ] && set -- "$@" "$d"; done
-    if [ $# -gt 0 ]; then
-        need=$(cd /mnt/us && du -sk "$@" 2>/dev/null | awk '{s += $1} END {print s + 0}')
-        freek=$(df -k /mnt/base-us | awk 'NR==2{print $4}')
-        if [ $(( need + 512000 )) -gt "${freek:-0}" ]; then
-            show "空间不够做安装前备份（需要约 $((need / 1024)) MB），跳过备份；安装不会删除任何书或设置"
-            vlog "user backup skipped: need ${need}K + 500M, free ${freek}K"
+#  - 写到 .partial，成功了才改名；最新一份 + 最多一份“含设备上已经没有的文件”的旧备份；
+#  - veradroid-documents-backup.tgz 不再写入，已有的那份原样保留。
+# 挑哪些文件（bk_select）：以前把 documents + koreader + extensions + system/thumbnails 整个 tar -czf，几 GB 的书（本来就是压缩
+# 格式）在一个核上 gzip 一遍要很久（legacy：Oasis 3 用户 3 GB 卡在备份），备份又占掉同样大的空间。安装本身不删书，装完第一次开机
+# boot_data_check 按 veradroid-docs-manifest 逐个核对、少了从这份备份补。现在：
+#  - 一定备份：书以外的文件（阅读进度 / 笔记 .sdr、KOReader 和插件的设置、txt 等），每个 20 MB 以下；
+#  - 书（azw3 / epub / pdf / mobi / kfx / cbz …，以及图片 / 音频这些已经压缩过的）20 MB 以下的按从小到大放进去，合计不超过
+#    BK_BUDGETK（默认 300 MB，VD_BACKUP_MB 可改）；放不下的书和 20 MB 以上的文件不备份，只记在清单里（少了照样报 DOCUMENTS LOSS）；
+#  - system/thumbnails 是缓存，不备份。tar -cvf | gzip -1；进度按 tar -v 已处理的文件对累计大小算（已备份 / 总共 MB、还要几分钟）。
+# 备份的路径和以前一样（相对 /mnt/us），宿主的恢复（tar -xzkf … -T 缺的文件）不变。
+BKL=$TMP/bk.list; BKC=$TMP/bk.cum
+BK_BUDGETK=$(( ${VD_BACKUP_MB:-300} * 1024 )); BK_NEEDK=0; BK_SKIPN=0; BK_SKIPK=0
+bk_is_book() { case "$1" in
+    *.[Aa][Zz][Ww]|*.[Aa][Zz][Ww]3|*.[Aa][Zz][Ww]4|*.[Kk][Ff][Xx]|*.[Kk][Ff][Xx]-[Zz][Ii][Pp]|*.[Mm][Oo][Bb][Ii]|*.[Pp][Rr][Cc]|*.[Pp][Dd][Ff]|\
+    *.[Ee][Pp][Uu][Bb]|*.[Cc][Bb][Zz]|*.[Cc][Bb][Rr]|*.[Zz][Ii][Pp]|*.[Rr][Aa][Rr]|*.7[Zz]|*.[Dd][Jj][Vv][Uu]|*.[Kk][Pp][Ff]|*.[Ff][Bb]2.[Zz][Ii][Pp]|\
+    *.[Mm][Pp]3|*.[Mm]4[Aa]|*.[Mm]4[Bb]|*.[Aa][Aa][Xx]|*.[Aa][Aa][Cc]|*.[Oo][Gg][Gg]|*.[Jj][Pp][Gg]|*.[Jj][Pp][Ee][Gg]|*.[Pp][Nn][Gg]|*.[Gg][Ii][Ff]|*.[Ww][Ee][Bb][Pp]) return 0 ;;
+    esac; return 1; }
+bk_select() {
+    : > $BKL; : > $BKC; BK_NEEDK=0; BK_SKIPN=0; BK_SKIPK=0
+    [ -d /mnt/us ] || return 0
+    # 大小(字节) 类别(0 = 非书，1 = 书) 路径；非书在前，书从小到大。一次 stat 一批文件（-exec … +）
+    ( cd /mnt/us && for d in documents koreader extensions; do [ -d "$d" ] && find "$d" -type f -exec stat -c '%s %n' {} + 2>/dev/null; done ) | while read -r sz f; do
+        case "$f" in ''|*.partial|*.tmp|documents/veradroid-*.tar.gz) continue ;; esac
+        is_installer_path "$f" && continue
+        c=0; bk_is_book "$f" && c=1
+        printf '%s %s %s\n' "$c" "$sz" "$f"      # KB 在 awk 里算（shell 算术遇到怪名字在 set -e 下会让整个安装器退出）
+    done | awk '{ k = int(($2 + 1023) / 1024); f = $0; sub(/^[^ ]* [^ ]* /, "", f); print $1, k, f }' | sort -k1,1n -k2,2n > $BKL.all
+    set -- $(awk -v budget=$BK_BUDGETK -v cap=20480 -v L=$BKL -v C=$BKC '
+        { c = $1; k = $2; f = $0; sub(/^[^ ]* [^ ]* /, "", f)
+          if (k >= cap || (c == 1 && tot + k > budget)) { sn++; sk += k; next }
+          tot += k; print f > L; print tot > C }
+        END { printf "%d %d %d\n", tot, sn, sk }' $BKL.all)
+    BK_NEEDK=${1:-0}; BK_SKIPN=${2:-0}; BK_SKIPK=${3:-0}
+    rm -f $BKL.all
+    vlog "backup selection: $(wc -l < $BKL | tr -d ' ') files ${BK_NEEDK}K (budget ${BK_BUDGETK}K for books); not backed up: $BK_SKIPN files ${BK_SKIPK}K (books over the budget / files >= 20 MB; listed in the documents manifest)"
+}
+# bk_watch pid verbose-log total-K：tar 跑着时每秒画一次“已备份 / 总共 MB、还要约几分钟”（按已用时间外推；方格 = 百分比）
+bk_watch() {
+    bw_t0=$(vp_now)
+    while kill -0 "$1" 2>/dev/null; do
+        n=$(wc -l < "$2" 2>/dev/null | tr -d ' '); dk=0
+        [ "${n:-0}" -gt 0 ] 2>/dev/null && dk=$(sed -n "${n}p" $BKC 2>/dev/null)
+        dk=${dk:-0}; el=$(( $(vp_now) - bw_t0 )); bp=$(( dk * 100 / ($3 + 1) )); [ "$bp" -gt 99 ] && bp=99
+        eta=; [ "$dk" -gt 0 ] && [ "$el" -ge 5 ] && eta=$(( el * ($3 - dk) / dk / 60 + 1 ))
+        if [ -n "${VP_ON:-}" ] || [ -n "${UI_AUTO:-}" ]; then
+            vp_progress "$bp" "$((dk / 1024)) / $(($3 / 1024)) MB${eta:+ · 还要约 $eta 分钟} · 已用 $(vp_elapsed)" "${VP_L2:-}"
         else
-            part=/mnt/base-us/veradroid-user-backup.partial
-            rm -f "$part"
-            vp_step backup "书、KOReader、插件打一个备份包（约 $((need / 1024)) MB）" "只在本机，装完核对书库；只留最新一份"
-            if ui_run out "$part" $((need * 1024)) "只在本机，装完核对书库；只留最新一份" tar -czf "$part" -C /mnt/us "$@" 2>>/mnt/base-us/veradroid-install-detail.log; then
-                USER_SAFE=/mnt/base-us/veradroid-user-backup-$stamp.tgz
-                mv "$part" "$USER_SAFE"
-                vlog "user backup ok: $USER_SAFE ($(wc -c < "$USER_SAFE") bytes)"
-                # BH081-6：以前“旧备份里有设备上已经没有的文件就永远保留”——用户每两次更新之间删过一本读完的书，
-                # 就多留一整份备份（documents+koreader 全量），几次自动更新就把用户存储吃满。
-                # 现在：最新这份 + 最多再留一份“含已删除文件”的旧备份（最近的那份），更早的删掉。
-                kept_old=
-                for old in $(ls -t /mnt/base-us/veradroid-user-backup-*.tgz 2>/dev/null); do
-                    [ "$old" = "$USER_SAFE" ] && continue
-                    # 只管安装器自己按时间戳起名的备份（veradroid-user-backup-YYYYMMDD-HHMMSS.tgz）；
-                    # 用户自己改过名、拷过来的（如 …-KEEP-….tgz）一律不动（真机实测：KEEP 备份曾被当成旧备份删掉）
-                    case "${old##*/}" in veradroid-user-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].tgz) ;; *) continue ;; esac
-                    if [ -n "$kept_old" ]; then rm -f "$old"; vlog "pruned $old (already keeping $kept_old as the one older backup)"; continue; fi
-                    tar -tzf "$old" >/dev/null 2>&1 || { vlog "keep $old (cannot read it)"; continue; }
-                    miss=$(tar -tzf "$old" 2>/dev/null | while IFS= read -r f; do
-                        case "$f" in (*/|*.partial|*.tmp|system/thumbnails/*|./system/thumbnails/*) continue ;; esac   # 缩略图是缓存，会自己重建
-                        is_installer_path "$f" && continue
-                        p=${f#./}; [ -e "/mnt/us/$p" ] || [ -L "/mnt/us/$p" ] || { echo "$p"; break; }
-                    done)
-                    if [ -z "$miss" ]; then rm -f "$old"; vlog "pruned $old (everything in it is still on the device)"
-                    else kept_old=$old; vlog "keep $old: has files no longer on the device (e.g. $miss)"; fi
-                done
-            else
-                rm -f "$part"
-                show "安装前备份失败（见 veradroid-install-detail.log），继续安装；安装不会删除任何书或设置"
-                vlog "user backup FAILED"
-            fi
+            progress_line "$bp" "Backup $((dk / 1024))/$(($3 / 1024)) MB${eta:+, about $eta min left} / 备份"
         fi
+        sleep 1
+    done
+    return 0
+}
+USER_SAFE=
+bk_select || true
+if [ -s $BKL ]; then
+    need=$BK_NEEDK
+    freek=$(df -k /mnt/base-us | awk 'NR==2{print $4}')
+    if [ $(( need + 102400 )) -gt "${freek:-0}" ]; then
+        show "Not enough space for the pre-install backup ($((need / 1024)) MB), skipped / 空间不够做安装前备份（需要约 $((need / 1024)) MB），跳过备份；安装不会删除任何书或设置"
+        vlog "user backup skipped: need ${need}K + 100M, free ${freek}K"
+    else
+        part=/mnt/base-us/veradroid-user-backup.partial; bv=$TMP/bk.v
+        rm -f "$part" $bv.rc; : > $bv
+        bk_l2="设置、阅读进度和 $((${VD_BACKUP_MB:-300})) MB 以内的书；只在本机，装完核对书库"
+        [ "$BK_SKIPN" -gt 0 ] && bk_l2="设置、阅读进度和一部分书（另 $BK_SKIPN 个大文件不动、不备份）；装完核对书库"
+        vp_step backup "备份设置和书（约 $((need / 1024)) MB）" "$bk_l2"
+        vlog "user backup: ${need}K to back up ($(wc -l < $BKL | tr -d ' ') files)"
+        t0=$(date +%s)
+        # 管道的退出码只看 gzip：tar 的失败另外记下来
+        ( { tar -cvf - -C /mnt/us -T $BKL 2>$bv || echo fail > $bv.rc; } | gzip -1 > "$part" ) &
+        bkp=$!
+        bk_watch $bkp $bv "$need"
+        bk_rc=0; wait $bkp || bk_rc=$?
+        if [ $bk_rc = 0 ] && [ ! -f $bv.rc ] && gzip -t "$part" 2>/dev/null; then
+            USER_SAFE=/mnt/base-us/veradroid-user-backup-$stamp.tgz
+            mv "$part" "$USER_SAFE"
+            vlog "user backup ok: $USER_SAFE ($(wc -c < "$USER_SAFE") bytes, $(( $(date +%s) - t0 )) s)"
+            # 最新这份 + 最多再留一份“含设备上已经没有的文件”的旧备份（最近的那份），更早的删掉（BH081-6）。旧备份只解压列一次目录。
+            kept_old=
+            for old in $(ls -t /mnt/base-us/veradroid-user-backup-*.tgz 2>/dev/null); do
+                [ "$old" = "$USER_SAFE" ] && continue
+                # 只管安装器自己按时间戳起名的备份；用户自己改过名、拷过来的（如 …-KEEP-….tgz）一律不动
+                case "${old##*/}" in veradroid-user-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].tgz) ;; *) continue ;; esac
+                if [ -n "$kept_old" ]; then rm -f "$old"; vlog "pruned $old (already keeping $kept_old as the one older backup)"; continue; fi
+                tar -tzf "$old" > $bv.old 2>/dev/null || { vlog "keep $old (cannot read it)"; continue; }
+                miss=$(while IFS= read -r f; do
+                    case "$f" in (*/|*.partial|*.tmp|system/thumbnails/*|./system/thumbnails/*) continue ;; esac   # 缩略图是缓存，会自己重建
+                    is_installer_path "$f" && continue
+                    p=${f#./}; [ -e "/mnt/us/$p" ] || [ -L "/mnt/us/$p" ] || { echo "$p"; break; }
+                done < $bv.old)
+                if [ -z "$miss" ]; then rm -f "$old"; vlog "pruned $old (everything in it is still on the device)"
+                else kept_old=$old; vlog "keep $old: has files no longer on the device (e.g. $miss)"; fi
+            done
+        else
+            rm -f "$part"
+            show "Pre-install backup failed, installing anyway / 安装前备份失败（见 veradroid-install-detail.log），继续安装；安装不会删除任何书或设置"
+            vlog "user backup FAILED ($(tail -c 300 $bv 2>/dev/null | tr '\n' ' '))"
+        fi
+        rm -f $bv $bv.rc $bv.old
     fi
 fi
+rm -f $BKL $BKC
 # 安装前的 Kindle 书库清单（2026-11-13 事故后加）：新系统第一次开机完成后 after_boot（boot/lib/afterboot.sh 的 boot_data_check）
 # 逐个核对，少了就大声记日志并从上面那份安装前备份补回；核对完改名 .checked。安装器自己启动 Android 时也在这里等它核对。
 DOCS_MANIFEST=/mnt/base-us/veradroid-docs-manifest
@@ -1996,11 +2058,12 @@ chmod 755 "$VD/boot/veradroid.sh" 2>/dev/null || true
 if [ -d "$BAK/ssh" ]; then cp -a "$BAK/ssh" "$VD/ssh" 2>/dev/null || vlog "ssh keys not carried over from $BAK/ssh"; fi
 # BH081-2：程序目录里还有用户自己放的设置 / 文件，整包安装把 $VD 挪成 $BAK 后要带回来，否则每次升级都丢：
 #   autoupdate（=0 关闭自动更新）、network.conf（代理 / DNS，受限网络下没有它就更新不了）、debugboot、
-#   screensaver/ 里的自定义屏保、apps/ 里还没装的 APK（afterboot 装好才删）。包里有的同名文件以包为准。
+#   screensaver/ 里的自定义屏保、apps/ 里还没装的 APK（afterboot 装好才删）、kindle-crash/ 里从书库挪出来的 Kindle 崩溃转储
+#   （framework.sh 的 fw_tidy_crash；以前升级后留在 host.bak 里，书库核对报“少了文件”，legacy 同样修过）。包里有的同名文件以包为准。
 for f in autoupdate network.conf debugboot; do
     [ -f "$BAK/$f" ] && [ ! -e "$VD/$f" ] && cp -a "$BAK/$f" "$VD/$f" 2>/dev/null || true
 done
-for d in screensaver apps; do
+for d in screensaver apps kindle-crash; do
     [ -d "$BAK/$d" ] || continue
     mkdir -p "$VD/$d"
     for f in "$BAK/$d"/*; do

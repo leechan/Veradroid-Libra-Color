@@ -53,7 +53,10 @@ hwc_prepare() {
         fi
     fi
     if [ "$KFB_HWC" = 1 ] && [ -f "$R/system/lib/hw/hwcomposer.kindle.so" ]; then rm -f $X/hwc.off; else touch $X/hwc.off; fi
-    case "$KFB_HZ" in 60) echo 60 > $X/hz ;; *) echo 30 > $X/hz ;; esac
+    case "$KFB_HZ" in 60|20|15) echo $KFB_HZ > $X/hz ;; *) echo 30 > $X/hz ;; esac
+    # 对话框遮罩（hwcomposer.kindle 的 hwc.dim，0-255）：KFB_DIM 是百分比，off = -1（遮罩帧交给 GLES）
+    case "${KFB_DIM:-20}" in off) echo -1 > $X/hwc.dim ;; ''|*[!0-9]*) echo 51 > $X/hwc.dim ;;
+        *) d=${KFB_DIM}; [ "$d" -gt 100 ] && d=100; echo $((d * 255 / 100)) > $X/hwc.dim ;; esac
     # framework 项目（docs/framework-project.md）：只有 project/framework 分支的镜像认这些开关文件，老镜像看不见它们
     if [ "$KFB_HWC" = 1 ] && [ "${KFB_ONEPAGE:-0}" = 1 ]; then touch $X/onepage; else rm -f $X/onepage; fi
     if [ "${KFB_RGB565:-0}" = 1 ]; then touch $X/rgb565; else rm -f $X/rgb565; fi
@@ -74,7 +77,7 @@ rot_args() {   # 给 veradroid-epd / veradroid-input 的额外参数（0 度时�
 display_start() {
     [ -x "$VD/bin/veradroid-epd" ] || { t "display: veradroid-epd missing"; return 0; }
     epd_pd=-1; case "$KFB_PWRDOWN" in ""|*[!0-9]*) ;; *) epd_pd=$KFB_PWRDOWN ;; esac   # 面板掉电延时，没设 / off = 不碰
-    $VD/bin/veradroid-epd run $X/fb $X/epd.fifo $X/ctl --w ${viewWidth:-1272} --h ${viewHeight:-1696} --contrast ${KFB_CONTRAST:-1.3} --dither ${KFB_DITHER:-3} --flash ${KFB_FLASH:-0} --invert ${KFB_INVERT:-0} --lightf ${KFB_LIGHTF:-0} --darken ${KFB_DARKEN:-0} --mode ${KFB_MODE:-0} --settle ${KFB_SETTLE:-120} --hold ${KFB_HOLD:-70} --pace ${KFB_PACE:-0} --clean ${KFB_CLEAN:-0} --reagl-min ${KFB_REAGL_MIN:-85} --anim-mode ${KFB_ANIM_MODE:-1} --anim-dir ${KFB_ANIM_DIR:-2} --anim-steps ${KFB_ANIM_STEPS:-12} --anim-min ${KFB_ANIM_MIN:-60} --pwrdown $epd_pd $(rot_args) >$W/epd.log 2>&1 &
+    $VD/bin/veradroid-epd run $X/fb $X/epd.fifo $X/ctl --w ${viewWidth:-1272} --h ${viewHeight:-1696} --contrast ${KFB_CONTRAST:-1.3} --dither ${KFB_DITHER:-3} --flash ${KFB_FLASH:-0} --invert ${KFB_INVERT:-0} --lightf ${KFB_LIGHTF:-0} --darken ${KFB_DARKEN:-0} --mode ${KFB_MODE:-0} --settle ${KFB_SETTLE:-120} --hold ${KFB_HOLD:-70} --pace ${KFB_PACE:-0} --clean ${KFB_CLEAN:-0} --reagl-min ${KFB_REAGL_MIN:-35} --anim-mode ${KFB_ANIM_MODE:-1} --anim-dir ${KFB_ANIM_DIR:-2} --anim-steps ${KFB_ANIM_STEPS:-12} --anim-min ${KFB_ANIM_MIN:-60} --pwrdown $epd_pd $(rot_args) >$W/epd.log 2>&1 &
     echo $! > $W/epd.pid
     rot_deg > $W/rotate
     # 以后能不能当场转 180：0 度启动时没传 --vw，可见宽 != 行宽（PW5 无 FBInk）的机器转了会偏 12 像素，只能重启

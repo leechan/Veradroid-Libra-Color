@@ -38,7 +38,7 @@ if [ -z "$VERADROID_DETACHED" ]; then
     echo 0 > /proc/$$/oom_score_adj 2>/dev/null
     exec env -i VERADROID_DETACHED=1 PATH="$PATH" setsid sh "$0" "$@" </dev/null
 fi
-echo "== $(date) start app=${1:-$SYSTEM_APP}"
+echo "== $(date) start app=${1:-$SYSTEM_APP} up=$(cut -d' ' -f1 /proc/uptime)"
 APP=${1:-$SYSTEM_APP}
 
 # Kindle 正在关机 / 重启（/etc/upstart/shutdown.conf 第一步写 /tmp/shutdown_in_progress）：这时不能再启动——会把系统盘重新挂到
@@ -202,9 +202,9 @@ kmod_load
 imgclass_check || { splash "VeraDroid：系统镜像和这台 Kindle 的硬件不匹配，请重新安装" 40; sleep 5; exit 1; }
 # 只在模拟器上验证过的机型：独立的看护进程（开机超时 / 启动脚本中途死掉时自己回到 Kindle）+ 开机后自检（tester.sh）
 test_begin
-FRAMEWORK_AFTER_SAVE='splash_begin 正在准备 3'
+FRAMEWORK_AFTER_SAVE='splash_bg 正在准备 3'
 framework_stop || { t "cannot pause kindle ui"; exit 1; }
-splash_update 12
+[ -f $W/splash.pid ] || splash_update 12     # Kindle 界面本来就停着（重启 Android）：没有后台画面，这里画
 splash_after_stop &
 [ -x "$FBINK" ] || { t "no fbink; continuing with framebuffer/eips fallback"; FBINK=; }
 display_prepare
@@ -224,10 +224,12 @@ zram_on
 slim_apply
 readahead_on
 net_setup
+boot_mark_setup
 container_start || { log_release; sh $VD/boot/stop.sh >/dev/null 2>&1; exit 1; }
 bat_baseline       # 电量统计起点（energy.sh）
 net_start
 echo "$APP" > $X/ctl/app
+splash_wait
 splash_update 20
 boot_watch &
 echo $! > $W/boot.pid

@@ -14,6 +14,11 @@
  *                             from the picture it announced before: only those rows are converted and compared
  *     D x y w h [A|F|D|G|R]   same, but the caller names the damaged rectangle (no diff)
  *     REDRAW                  redraw the whole buffer (no flash), page 0 or the last page posted
+ *     SETTLE2 <ms>            first settle window (adaptive settle, 40; 0 = always KFB_SETTLE), see settle_first
+ *     SCROLLDU <ms>           burst fast mode: DU while large frames keep coming, 16-gray pass <ms> after (0 = off)
+ *     IMG <pct>               均衡: small changes that are >= <pct> % mid-gray (pictures) use GL16 instead of DU (0 = off)
+ *     FLIPGAP <ms>            large frames closer together than this are one page flip for the KFB_FLASH count (600; 0 = every
+ *                             large frame counts, the old behaviour)
  *     TOL <0|1>               tolerant change detection for the page-flip count / animation (see row_sig), default 1
  *     SET <gamma> <dither> <flash_every> <invert> [mode] [settle] [lightf] [darken]
  *                             display settings; lightf 0..3 / darken 0|1 (light-colour filter, see build_lut) are
@@ -27,7 +32,7 @@
  *     CLEAN <ms>              after fast (DU, 1-bit) refreshes and <ms> without a new frame, refresh those areas once
  *                             more with a 16-gray waveform (GL16, only pixels that differ change; REAGL when it is most
  *                             of the screen). 0 = off
- *     REAGL <pct>             balanced mode: frames that change at least <pct> % of the screen use REAGL instead of DU (85)
+ *     REAGL <pct>             balanced mode: frames that change at least <pct> % of the screen use REAGL instead of DU (35)
  *     BADGE <ms> <pos> <icon> <caps>|<label>[|<line 2>]   gesture badge drawn by the bridge itself (docs/gesture-hint.md);
  *                             BADGE 0 takes it down
  *     QUIT
@@ -109,6 +114,40 @@ static int g_lightf = 0;      /* 浅色过滤 0 off, 1 weak, 2 medium, 3 strong:
 static int g_darken = 0;      /* 深色加深: 1 = darker curve for everything that is not filtered to white */
 static int flash_every = 0;   /* full flashing refresh every N page flips, 0 = never by count */
 static int flip_count = 0;
+/* A "page flip" for the KFB_FLASH count is one burst of large changes, not one frame. Apps with a page-turn animation
+   (多看: slide / cover, ~10 frames of >35 % change per turn), scrolling lists and loading pictures post several large
+   frames per user action; counting each of them made the full flash come every page or two instead of every N pages
+   (the owner's "多看刷新几乎一整页一闪一闪"). A large frame within flip_gap_ms of the previous large frame belongs to the same
+   flip. FLIPGAP <ms> / --flip-gap changes it (0 = the old per-frame count). */
+static int flip_gap_ms = 600;
+static const int page_pct = 35;   /* a frame whose visible change covers this share of the screen is a page turn */
+static long last_big_ms = -100000;
+/* When the count is reached, the flash is not sent at once in the middle of a burst (it would flash an in-between
+   animation frame and the frames after it would be drawn over it without a flash again); the frame is held until the
+   picture has been still for flash_quiet_ms (at most flash_max_ms after the flip began) and the settled picture flashes. */
+static int flash_quiet_ms = 180, flash_max_ms = 1200;
+static long flash_t0 = 0;           /* when the flip that reached the count began */
+/* Adaptive settle (SETTLE2 <ms>, --settle-first): the settle merging used to wait settle_ms (KFB_SETTLE, 40..120) for
+   every frame that followed a refresh within 350 ms, so the second change of a quick interaction (the checkbox after the
+   ripple, a key after a key) waited 120 ms more. Now, when the frames of the batch name their rows (P n y0 y1, from
+   hwcomposer.kindle) and those rows are less than a fifth of the screen, the first merge window is settle_first ms; when
+   another frame comes inside it, or the change is large (a scroll, an animation, a page), the full settle_ms is used.
+   Measured on a test PW6 (mode 3, KFB_SETTLE 120): a small change 200 ms after a refresh, frame -> panel done 432 -> 350 ms. */
+static int settle_first = 40;
+/* Burst fast mode (SCROLLDU <ms>, --scroll-du; 0 = off, the default): while large frames keep coming (a scroll or drag:
+   a large frame within flip_gap_ms of the previous one) they go out with DU (1-bit, ~134 ms on a PW6) instead of
+   REAGL / AUTO (~205 ms), and once the picture has been still for <ms> the area drawn that way gets one 16-gray pass
+   (REAGL when it is most of the screen, GL16 otherwise) - the CLEAN pass, also when CLEAN itself is off. The first large
+   frame of a burst (a page turn) keeps its waveform. */
+static int burst_du_ms = 0;
+static int burst_dirty = 0;
+static int g_burst = 0;              /* set while the frame being drawn is a continuation of a burst */
+/* Waveform by content (IMG <pct>, --img-gray; 0 = off, the default): in 均衡 a small change goes out with DU, which turns a
+   picture (a cover, an avatar, a photo) into a 1-bit dot pattern. A region whose sampled pixels are mid-gray (32..223)
+   for at least <pct> % is a picture and gets GL16 (16 grays, only changed pixels, no flash, ~70 ms slower); text,
+   icons and anti-aliased edges stay DU. */
+static int img_gray_pct = 0;
+static unsigned long n_flash = 0;   /* GC16 full flashes sent, for the log */
 static long last_draw_ms = 0;   /* when we last sent something to the panel */
 static int settle_ms = 0;     /* merge frames: wait until no new frame came for this long (max 400 ms) before drawing, so scrolling / animations
                                  draw only the settled picture instead of every in-between frame */
@@ -166,8 +205,10 @@ static long cl_last = 0;
 static int g_cleaning = 0;
 /* REAGL <pct> / --reagl-min: in the balanced mode a frame whose changed area is at least this share of the screen is drawn
    with REAGL (16 grays, cleans ghosts, 205 ms on a PW6) instead of DU (2 levels, 134 ms, leaves the old picture shining
-   through when it replaces text: the "ghost under the pulled-down panel"). 85 = the old rule (only near-full-screen changes). */
-static int reagl_min = 85;
+   through when it replaces text: the "ghost under the pulled-down panel"). 85 = the old rule (only near-full-screen changes);
+   35 since fix/epd-flash: a page turn (35 % = page_pct) gets one 16-gray REAGL instead of 1-bit DU strips (a test PW6, 多看 at a large
+   font: DU strips 412 ms tap -> panel done, REAGL 426 ms). */
+static int reagl_min = 35;
 /* HINT <ms> <pct>: for the next <ms>, frames that change at least <pct> % of the screen use REAGL (one shot, from VeraHome when
    its pull-down panel opens / closes: the panel covers ~60 % of the screen, under the default 85 % rule it went out as DU and the
    page underneath shone through). Page turns outside the window keep the normal rule. */
@@ -631,6 +672,15 @@ static int wait_marker(uint32_t marker)
     return ioctl(fbfd, VD_WAIT_COMPLETE_MTK, &m) < 0 ? -errno : 0;
 }
 
+/* share (%) of mid-gray pixels, every 4th pixel of every 4th row */
+static int gray_share(const uint8_t *buf, int w, int h)
+{
+    long n = 0, g = 0;
+    for (int j = 0; j < h; j += 4)
+        for (int i = j & 3; i < w; i += 4) { uint8_t v = buf[(size_t)j * w + i]; n++; if (v >= 32 && v <= 223) g++; }
+    return n ? (int)(g * 100 / n) : 0;
+}
+
 static int push_y8(const uint8_t *buf, int x, int y, int w, int h, int mode)
 {
     FBInkConfig c = cfg;
@@ -642,13 +692,21 @@ static int push_y8(const uint8_t *buf, int x, int y, int w, int h, int mode)
        uses the fast one, otherwise a tap that touches the header and the list queues several slow refreshes */
     int large = frame_big || (long)w * h > (long)W * H * 85 / 100;
     int flash = mode == M_FULL;
-    set_wfm(&c, mode, ui_mode == 1 ? WFM_GC16 : ui_mode == 2 ? WFM_DU : ui_mode == 3 ? WFM_AUTO : (large ? WFM_REAGL : WFM_DU));
+    WFM_MODE_INDEX_T aw = ui_mode == 1 ? WFM_GC16 : ui_mode == 2 ? WFM_DU : ui_mode == 3 ? WFM_AUTO : (large ? WFM_REAGL : WFM_DU);
+    if (g_burst && mode == M_AUTO && ui_mode != 2) aw = WFM_DU;           /* burst fast mode: DU now, 16-gray pass later */
+    else if (img_gray_pct > 0 && mode == M_AUTO && ui_mode == 0 && aw == WFM_DU && w >= 48 && h >= 48 && !g_cleaning &&
+             gray_share(buf, w, h) >= img_gray_pct) aw = WFM_GL16;         /* a picture: 16 grays instead of a 1-bit dot pattern */
+    set_wfm(&c, mode, aw);
     int anim = g_cleaning ? 0 : maybe_animate(&c, w, h, flash);      /* the clean-up pass is never animated */
     long t0 = now_ms();
     if (g_cfa || g_rawmtk) c.no_refresh = true;
     int rc = fbink_print_raw_data(fbfd, buf, w, h, (size_t)w * h, (short)x, (short)y, &c);
     if ((g_cfa || g_rawmtk) && rc >= 0) rc = refresh_cfa(x, y, w, h, &c);
-    fprintf(stderr, "[%ld] epd: %dx%d+%d+%d mode=%d wfm=%d full=%d anim=%d -> %d (%ld ms)\n", t0, w, h, x, y, mode, c.wfm_mode, c.is_flashing, anim, rc, now_ms() - t0);
+    /* flash=1 only for the GC16 full refresh that really flashes (REAGL is also sent FULL but does not flash) */
+    int fl = c.is_flashing && c.wfm_mode == WFM_GC16;
+    if (fl && rc >= 0) n_flash++;
+    fprintf(stderr, "[%ld] epd: %dx%d+%d+%d mode=%d wfm=%d full=%d flash=%d anim=%d -> %d (%ld ms)%s\n", t0, w, h, x, y, mode, c.wfm_mode,
+            c.is_flashing, fl, anim, rc, now_ms() - t0, fl ? " FLASH" : "");
     if (rc >= 0) {
         n_sent++;
         busy_add(x, y, w, h, t0);
@@ -817,20 +875,25 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
     /* 整页变化：交给 MTK 控制器做硬件滑动动画（和 Kindle 原生翻页同一套 P2SW/REAGL），
        而不是拆成几块硬刷。SWIPE 命令可以强制下一次整页变化动画。 */
     if (once_dir >= 0 && now_ms() > once_until) { once_dir = -1; anim_next = 0; }
+    /* "full refresh every N pages": count only big changes (a page turn), not every small update, and a burst of them
+       (an animated page turn, a scroll) only once. The animation path counts too, otherwise it would never flash. */
+    g_burst = burst_du_ms > 0 && mode == M_AUTO && flip_total * 100 >= (long)W * H * page_pct && now_ms() - last_big_ms < flip_gap_ms;
+    if (g_burst && flash_every <= 0) last_big_ms = now_ms();    /* the count below keeps last_big_ms itself */
+    if (mode == M_FULL) flip_count = 0;
+    else if (flash_every > 0 && flip_total > (long)W * H * page_pct / 100) {
+        long t = now_ms();
+        int newflip = flip_gap_ms <= 0 || t - last_big_ms >= flip_gap_ms;
+        last_big_ms = t;
+        if (newflip && ++flip_count >= flash_every) { flip_count = 0; g_burst = 0; return 3; }   /* the caller flashes the settled picture */
+        if (timing_flag && access(timing_flag, F_OK) == 0)
+            fprintf(stderr, "[%ld] epd: flip %s %d/%d\n", t, newflip ? "new" : "same", flip_count, flash_every);
+    }
     if (g_is_mtk && mode != M_FULL && (anim_next || (anim_mode && flip_total > (long)W * H * anim_min_pct / 100))) {
-        /* 动画也算“翻了一页”：到 KFB_FLASH 页数时先做一次整屏闪刷清残影，不然动画路径永远不会全刷 */
-        if (flash_every > 0 && flip_total > (long)W * H * 35 / 100 && ++flip_count >= flash_every) {
-            flip_count = 0;
-            push_region(0, 0, W, H, M_FULL);
-            return 0;
-        }
+        /* 整页变化交给硬件滑动动画；到 KFB_FLASH 页数时上面已经改成停下来以后整屏闪刷 */
         anim_next = 1;
         push_region(0, 0, W, H, M_AUTO);
         return 0;
     }
-    /* "full refresh every N pages": count only big changes (a page turn), not every small update */
-    if (mode == M_FULL) flip_count = 0;
-    else if (flash_every > 0 && flip_total > (long)W * H * 35 / 100 && ++flip_count >= flash_every) { mode = M_FULL; flip_count = 0; }
     {
         int rm = reagl_min;
         if (hint_until && now_ms() < hint_until) { if (hint_pct < rm) rm = hint_pct; }
@@ -839,8 +902,37 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
         if (rm != reagl_min && timing_flag && access(timing_flag, F_OK) == 0)
             fprintf(stderr, "[%ld] epd: hint reagl-min %d%% (changed %ld%%)\n", now_ms(), rm, total * 100 / ((long)W * H));
     }
+    /* A page turn is one refresh of the page, not a stack of text bands. With wide line spacing (多看: ~95 px between
+       lines, more than CLGAP) a turn is found as up to MAXCL full-width strips ~70 px tall, and each strip was sent on its
+       own: in 自动 (driver AUTO) the driver only turns a region into the non-flashing GLR16 page-turn waveform when it is
+       > 1/3 wide and > 1/4 tall (docs/official-source-review.md), so every strip of gray text went out as GC16_PARTIAL and
+       flashed - the whole page blinked strip by strip on every turn; in 灰度最准 every strip was GC16_PARTIAL anyway, and in
+       均衡 (when the frame reached the REAGL share) six REAGL refreshes instead of one. So when the visible change of the
+       frame is a page turn (page_pct of the screen), its strips go out as one rectangle, and in 灰度最准 / 自动 with REAGL
+       (GLR16 FULL: 16 grays, cleans ghosts, does not flash - what the Kindle reader itself sends for a turn). 最快 keeps DU. */
+    if (mode == M_AUTO && ui_mode != 2 && nc > 1 &&
+        (frame_big || ((ui_mode == 1 || ui_mode == 3) && flip_total * 100 >= (long)W * H * page_pct))) {
+        int n0 = nc;
+        for (int i = 1; i < nc; i++) {
+            if (cx0[i] < cx0[0]) cx0[0] = cx0[i];
+            if (cy0[i] < cy0[0]) cy0[0] = cy0[i];
+            if (cx1[i] > cx1[0]) cx1[0] = cx1[i];
+            if (cy1[i] > cy1[0]) cy1[0] = cy1[i];
+        }
+        nc = 1;
+        if ((ui_mode == 1 || ui_mode == 3) && !g_burst) mode = M_REAGL;
+        if (timing_flag && access(timing_flag, F_OK) == 0)
+            fprintf(stderr, "[%ld] epd: page turn: %d strips -> one %dx%d refresh%s\n", now_ms(), n0, cx1[0] - cx0[0], cy1[0] - cy0[0],
+                    mode == M_REAGL ? " (REAGL)" : "");
+    } else if (mode == M_AUTO && !g_burst && (ui_mode == 1 || ui_mode == 3) && nc == 1 && flip_total * 100 >= (long)W * H * page_pct) {
+        mode = M_REAGL;     /* one region already: still a page turn, same non-flashing waveform */
+    }
+    if (g_burst) {
+        burst_dirty = 1;
+        if (timing_flag && access(timing_flag, F_OK) == 0) fprintf(stderr, "[%ld] epd: burst: DU, 16-gray pass when still\n", now_ms());
+    }
     for (int i = 0; i < nc; i++) push_region(cx0[i], cy0[i], cx1[i], cy1[i], mode);
-    frame_big = 0;
+    frame_big = 0; g_burst = 0;
     return 0;
 }
 
@@ -1099,8 +1191,8 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
            A deadline only while a frame is held back or a clean-up is due. */
         long deadline = -1, nowt = now_ms();
         if (held_page >= 0) deadline = held_until;
-        else if (clean_ms > 0 && cl_valid) {
-            long d = (cl_last > last_frame_ms ? cl_last : last_frame_ms) + clean_ms;
+        else if ((clean_ms > 0 || burst_dirty) && cl_valid) {
+            long d = (cl_last > last_frame_ms ? cl_last : last_frame_ms) + (clean_ms > 0 ? clean_ms : burst_du_ms);
             deadline = d > nowt ? d : nowt + (busy_any(nowt) ? 1000 : 0);      /* due but the panel is busy: the pipe wakes us */
         }
         if (bg_on && (deadline < 0 || bg_until < deadline)) deadline = bg_until;   /* gesture badge: take it down on time */
@@ -1115,23 +1207,32 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
         if (sr > 0 && pfd >= 0 && FD_ISSET(pfd, &rf)) { char junk[64]; while (read(pfd, junk, sizeof(junk)) > 0) {} panel_event = 1; }
         if (sr == 0 || (panel_event && !FD_ISSET(ffd, &rf))) {
             nowt = now_ms();
-            if (access(sleepf, F_OK) == 0) { held_page = -1; cl_valid = 0; need_full = 1; pend_y0 = -1; continue; }
+            if (access(sleepf, F_OK) == 0) { held_page = -1; cl_valid = 0; burst_dirty = 0; need_full = 1; pend_y0 = -1; continue; }
             if (held_page >= 0) {
                 int expired = nowt >= held_until;
-                if (held_why == 1 && !expired) continue;            /* a hold only ends by its deadline or a new frame */
+                if ((held_why == 1 || held_why == 3) && !expired) continue;   /* a hold only ends by its deadline or a new frame */
                 int hp = held_page, hm = held_mode;
                 held_page = -1;
                 last_draw_ms = nowt;
+                if (held_why == 3) {    /* KFB_FLASH count reached and the picture is still now: one full flash of it */
+                    if (timing_flag && access(timing_flag, F_OK) == 0)
+                        fprintf(stderr, "[%ld] epd: page-count flash after %ld ms\n", nowt, nowt - flash_t0);
+                    req_y0 = -1;
+                    show_page(fbmem, hp, M_FULL, 1, 0, 0);
+                    continue;
+                }
                 /* held small change: nothing followed, draw it. Paced frame: the panel reported a refresh done, try again
                    (it stays back if another refresh still covers it); after the safety deadline draw it anyway. */
                 if (pend_y0 >= 0) { req_y0 = pend_y0; req_y1 = pend_y1; } else req_y0 = -1;
                 if (show_page(fbmem, hp, hm, 0, 0, held_why == 2 && !expired) == 2) {
                     held_page = hp; held_mode = hm; held_why = 2;   /* keep the first deadline */
                 }
-            } else if (clean_ms > 0 && cl_valid && nowt - cl_last >= clean_ms && nowt - last_frame_ms >= clean_ms && !busy_any(nowt)) {
+            } else if ((clean_ms > 0 || burst_dirty) && cl_valid && nowt - cl_last >= (clean_ms > 0 ? clean_ms : burst_du_ms) &&
+                       nowt - last_frame_ms >= (clean_ms > 0 ? clean_ms : burst_du_ms) && !busy_any(nowt)) {
                 /* the picture has been still for a while: one 16-gray pass over what was drawn 1-bit */
                 int x0 = cl_x0, y0 = cl_y0, x1 = cl_x1, y1 = cl_y1;
-                cl_valid = 0;
+                cl_valid = 0; burst_dirty = 0;
+                if (timing_flag && access(timing_flag, F_OK) == 0) fprintf(stderr, "[%ld] epd: 16-gray pass %dx%d+%d+%d\n", nowt, x1 - x0, y1 - y0, x0, y0);
                 g_cleaning = 1;
                 if ((long)(x1 - x0) * (y1 - y0) > (long)W * H * 6 / 10) push_region(0, 0, W, H, M_REAGL);
                 else push_region(x0, y0, x1, y1, M_CLEAN);
@@ -1148,8 +1249,10 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
         int have = 0, bx0 = 0, by0 = 0, bx1 = 0, by1 = 0, mode = M_AUTO, redraw = 0, full = 0, page = -1;
         int ry0 = H, ry1 = 0, rall = 0;      /* rows named by "P n y0 y1" lines in this batch; rall: a line without rows */
         long tstart = 0;
+        int merged = 0;      /* the merge loop already waited once in this batch */
         for (;;) {
         char *line = acc, *nl;
+        int tlog = timing_flag && access(timing_flag, F_OK) == 0;
         while ((nl = strchr(line, '\n'))) {
             *nl = 0;
             int x, y, w, h;
@@ -1205,6 +1308,10 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
                 int ms, pc;
                 if (sscanf(line + 4, "%d %d", &ms, &pc) == 2 && ms > 0 && ms <= 3000 && pc >= 1 && pc <= 100) { hint_until = now_ms() + ms; hint_pct = pc; }
             }
+            else if (!strncmp(line, "SETTLE2", 7)) { int v; if (sscanf(line + 7, "%d", &v) == 1 && v >= 0 && v <= 400) settle_first = v; }
+            else if (!strncmp(line, "SCROLLDU", 8)) { int v; if (sscanf(line + 8, "%d", &v) == 1 && v >= 0 && v <= 5000) { burst_du_ms = waiter_on ? v : 0; if (!v) burst_dirty = 0; } }
+            else if (!strncmp(line, "IMG", 3)) { int v; if (sscanf(line + 3, "%d", &v) == 1 && v >= 0 && v <= 100) img_gray_pct = v; }
+            else if (!strncmp(line, "FLIPGAP", 7)) { int v; if (sscanf(line + 7, "%d", &v) == 1 && v >= 0 && v <= 5000) flip_gap_ms = v; }   /* FLIPGAP <ms>: see flip_gap_ms */
             else if (!strncmp(line, "TOL", 3)) { int v; if (sscanf(line + 3, "%d", &v) == 1) g_tolerant = v != 0; }   /* TOL <0|1>: tolerant change detection */
             else if (!strncmp(line, "REAGL", 5)) { int v; if (sscanf(line + 5, "%d", &v) == 1 && v >= 1 && v <= 100) reagl_min = v; }
             else if (!strncmp(line, "PACE", 4)) { int v; if (sscanf(line + 4, "%d", &v) == 1) pace = v != 0 && waiter_on; }
@@ -1229,6 +1336,7 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             }
             else if (sscanf(line, "P %d %c", &x, &m) >= 1) {
                 page = x & 1;
+                if (tlog) fprintf(stderr, "[%ld] epd: got %s\n", now_ms(), line);
                 { int a, b; if (sscanf(line, "P %*d %d %d", &a, &b) == 2 && b > a) { if (a < ry0) ry0 = a; if (b > ry1) ry1 = b; } else rall = 1; }
                 int mm = (sscanf(line, "P %*d %c", &m) == 1) ? (m == 'F' ? M_FULL : m == 'D' ? M_DU : m == 'G' ? M_GC16 : m == 'R' ? M_REAGL : M_AUTO) : M_AUTO;
                 if (mm == M_FULL || mode == M_AUTO) mode = mm;
@@ -1258,7 +1366,13 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             fd_set rf2;
             FD_ZERO(&rf2);
             FD_SET(ffd, &rf2);
-            struct timeval tv2 = {0, settle_ms * 1000};
+            /* adaptive settle: a short first window unless frames are already coming in a run */
+            int sw = settle_ms;
+            /* short only when the sender named the rows and they are a small band (a button, a checkbox, a line of text):
+               a scroll or an animation changes most rows and keeps the full window, also when its frames come slowly */
+            if (settle_first > 0 && settle_first < settle_ms && !merged && !rall && ry1 > ry0 && ry1 - ry0 < H / 5) sw = settle_first;
+            merged = 1;
+            struct timeval tv2 = {0, sw * 1000};
             if (select(ffd + 1, &rf2, NULL, NULL, &tv2) <= 0) break;
             ssize_t n2 = read(ffd, acc + alen, sizeof(acc) - alen - 1);
             if (n2 <= 0) break;
@@ -1269,7 +1383,7 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
 
         if (access(sleepf, F_OK) == 0) {   /* screensaver / boot splash: drop, but remember which page is the newest */
             if (page >= 0) last_page = page;
-            held_page = -1; cl_valid = 0; need_full = 1; pend_y0 = -1;
+            held_page = -1; cl_valid = 0; burst_dirty = 0; need_full = 1; pend_y0 = -1;
             continue;
         }
         /* last_draw_ms arms the settle merging for the frames that follow closely. It used to be set for every frame, also
@@ -1288,12 +1402,22 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
                that one's safety deadline. */
             int was_hold = held_page >= 0 && held_why == 1, was_paced = held_page >= 0 && held_why == 2;
             long nowt2 = now_ms();
+            if (held_page >= 0 && held_why == 3 && mode != M_FULL) {
+                /* a page-count flash is waiting for the picture to settle: this newer picture replaces it, the wait
+                   starts again (up to flash_max_ms after the flip began); nothing is drawn in between */
+                held_page = page;
+                held_until = nowt2 + flash_quiet_ms;
+                if (held_until > flash_t0 + flash_max_ms) held_until = flash_t0 + flash_max_ms;
+                continue;
+            }
             held_page = -1;
             if (rall || ry1 <= ry0) req_y0 = -1; else { req_y0 = ry0; req_y1 = ry1; }
             int r = show_page(fbmem, page, mode, mode == M_FULL, !was_hold && !was_paced, !(was_paced && nowt2 >= held_until));
             if (r == 1) { held_page = page; held_mode = mode; held_why = 1; held_until = nowt2 + hold_ms; }
-            if (r && timing_flag && access(timing_flag, F_OK) == 0) fprintf(stderr, "[%ld] epd: kept back (%s)\n", now_ms(), r == 1 ? "small change" : "panel busy");
-            else if (r == 2) { held_page = page; held_mode = mode; held_why = 2; if (!was_paced) held_until = nowt2 + 700; }
+            if (r == 3) { held_page = page; held_mode = M_FULL; held_why = 3; flash_t0 = nowt2; held_until = nowt2 + flash_quiet_ms; }
+            if (r && timing_flag && access(timing_flag, F_OK) == 0)
+                fprintf(stderr, "[%ld] epd: kept back (%s)\n", now_ms(), r == 1 ? "small change" : r == 3 ? "page-count flash, waiting for the picture to settle" : "panel busy");
+            if (r == 2) { held_page = page; held_mode = mode; held_why = 2; if (!was_paced) held_until = nowt2 + 700; }
             if (n_sent != sent0) last_draw_ms = tframe;
         }
         else if (have) push(fbmem, bx0, by0, bx1 - bx0, by1 - by0, mode);
@@ -1344,7 +1468,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--hold") && i + 1 < argc) hold_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--pace") && i + 1 < argc) pace = atoi(argv[++i]) != 0;
         else if (!strcmp(argv[i], "--clean") && i + 1 < argc) clean_ms = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--reagl-min") && i + 1 < argc) { reagl_min = atoi(argv[++i]); if (reagl_min < 1 || reagl_min > 100) reagl_min = 85; }
+        else if (!strcmp(argv[i], "--reagl-min") && i + 1 < argc) { reagl_min = atoi(argv[++i]); if (reagl_min < 1 || reagl_min > 100) reagl_min = 35; }
         else if (!strcmp(argv[i], "--anim") && i + 1 < argc) anim_mode = atoi(argv[++i]) ? 1 : 0;
         else if (!strcmp(argv[i], "--anim-mode") && i + 1 < argc) anim_mode = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--anim-dir") && i + 1 < argc) anim_dir = atoi(argv[++i]);
@@ -1353,6 +1477,10 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--skip-cfa") && i + 1 < argc) skip_cfa = atoi(argv[++i]) != 0;
         else if (!strcmp(argv[i], "--anim-min") && i + 1 < argc) anim_min_pct = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--invert") && i + 1 < argc) g_invert = atoi(argv[++i]) != 0;
+        else if (!strcmp(argv[i], "--settle-first") && i + 1 < argc) settle_first = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--scroll-du") && i + 1 < argc) burst_du_ms = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--img-gray") && i + 1 < argc) img_gray_pct = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--flip-gap") && i + 1 < argc) flip_gap_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--tolerant") && i + 1 < argc) g_tolerant = atoi(argv[++i]) != 0;
         else if (!strcmp(argv[i], "--lightf") && i + 1 < argc) g_lightf = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--darken") && i + 1 < argc) g_darken = atoi(argv[++i]) == 1;

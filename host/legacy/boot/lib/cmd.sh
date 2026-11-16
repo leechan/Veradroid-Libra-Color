@@ -128,7 +128,7 @@ wifi_connect() {
 $(wifi_saved)
 WIFI_EOF
     [ -n "$found" ] || { t "wificonnect: not a saved network"; wifi_result ok=0 "error=not saved" "essid=$hex"; return 1; }
-    [ "$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)" = 1 ] || { lipc-set-prop -i com.lab126.cmd wirelessEnable 1; sleep 2; }
+    [ "$(wifi_state)" = 1 ] || { wifi_set 1; sleep 2; }
     t "wificonnect: switching to a saved network"
     lipc-set-prop com.lab126.cmd ensureConnection "wifi:$want"
     i=0
@@ -305,7 +305,7 @@ cmd_listen() {
         bt)      type bt_cmd >/dev/null 2>&1 && bt_cmd $a ;;   # bt map volume|page|dpad|raw / bt swap 0|1（bt.sh）
         optimize) ( opt_run ) & ;;   # 面板的“优化机器状态”（opt_run）
         poke)    lipc-set-prop -i com.lab126.powerd touchScreenSaverTimeout 1 2>/dev/null ;;
-        wifi)    numeric "$a" && lipc-set-prop -i com.lab126.cmd wirelessEnable "$a" ;;
+        wifi)    case "$a" in 0|1) wifi_set "$a"; status_write ;; esac ;;   # 只开关 Wi-Fi，不动飞行模式和蓝牙（common.sh wifi_set）
         wifilist)    ( wifi_list ) & ;;
         wificonnect) ( wifi_connect "$a" ) & ;;   # 参数在 wifi_connect 里校验（十六进制、必须是已保存的网络）
         dns)     case "$a" in

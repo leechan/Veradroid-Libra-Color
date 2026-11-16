@@ -1952,7 +1952,7 @@ public class HomeActivity extends Activity {
             });
             section(list, "设备");
             localChoice(list, "后台保留应用", "前台以外最多留几个自己装的应用在后台，多出来的（最久没用的）在换应用 3 秒后停掉，省内存。应用长按 → 保持后台 的不算。",
-                Cleaner.LIMIT_KEY, Cleaner.LIMIT_L, 0, 1);
+                Cleaner.LIMIT_KEY, Cleaner.LIMIT_L, 0, Cleaner.defaultLimit());
             hostChoice(list, host, "回到 Kindle 的方式", "挂起：系统暂停在后台，再打开几秒就回到现在的界面，但 Kindle 可用内存会少一些。关闭：系统完全退出，内存全部还给 Kindle。", "RETURN_MODE", RETURN_L, RETURN_V, "freeze");
             action(list, "系统与性能", "Wi-Fi 省电、小内存模式、Kindle 界面怎么处置、应用预编译（进度和“全部优化”）。", "打开", new View.OnClickListener() {
                 @Override public void onClick(View v) { HostSettingsActivity.open(HomeActivity.this, "system"); }
@@ -2299,7 +2299,7 @@ public class HomeActivity extends Activity {
         ((LinearLayout) r.getTag()).addView(vb);
     }
 
-    private int def(String key) { return "cols".equals(key) ? 3 : "size".equals(key) || Cleaner.LIMIT_KEY.equals(key) ? 1 : "wallpaperdim".equals(key) ? 2 : 0; }
+    private int def(String key) { return "cols".equals(key) ? 3 : "size".equals(key) ? 1 : Cleaner.LIMIT_KEY.equals(key) ? Cleaner.defaultLimit() : "wallpaperdim".equals(key) ? 2 : 0; }
 
     private void localSwitch(LinearLayout list, String title, String desc, final String key, boolean def) {
         LinearLayout r = row(list, title, desc);

@@ -9,6 +9,7 @@
 | `thr.sh <等待ms> "<注入命令>"` | 一次操作期间全机每个线程用的 CPU（找谁在忙） |
 | `vm.sh` / `cyc.sh` | 换页计数（refault / pgpgin / swap）和微信读书“书架 ↔ 书”往返 |
 | `epdrestart.sh [参数]` | 只重启显示桥（Android 不动），换参数 / 换二进制做对比 |
+| `switch.sh <轮数> [等待秒]` | 应用轮换（桌面 → 微信读书 → 多看 → 静读天下）：每次切换到“最后一次 ≥30 % 屏幕的刷新”的时间、重新缺页、读盘、直接回收（docs/jank.md） |
 | `vdwf.c` | 直接发 `MXCFB_SEND_UPDATE` 量各波形的时间。**只发普通更新；滚动标志会把驱动卡死，程序里已拒绝** |
 
 显示桥在 `ctl/timing` 存在时多记两种行：`epd: frame page=N changed=K (T ms)`（每一帧到达、转换 + 比较用时）和

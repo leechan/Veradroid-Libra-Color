@@ -38,7 +38,7 @@ if [ -z "$VERADROID_DETACHED" ]; then
     echo 0 > /proc/$$/oom_score_adj 2>/dev/null
     exec env -i VERADROID_DETACHED=1 PATH="$PATH" setsid sh "$0" "$@" </dev/null
 fi
-echo "== $(date) start app=${1:-$SYSTEM_APP}"
+echo "== $(date) start app=${1:-$SYSTEM_APP} up=$(cut -d' ' -f1 /proc/uptime)"
 APP=${1:-$SYSTEM_APP}
 
 # Kindle 正在关机 / 重启（/etc/upstart/shutdown.conf 第一步写 /tmp/shutdown_in_progress）：这时不能再启动——会把系统盘重新挂到
@@ -201,9 +201,9 @@ storage_mount || { splash "VeraDroid：系统盘还在被上次的进程占用�
 kmod_load
 [ -d $R ] && [ -e $R/init -o -f $R/.demo ] || { t "no system image at $R"; splash "VeraDroid：还没有安装系统" 40; sleep 5; exit 1; }
 imgclass_check || { splash "VeraDroid：系统镜像和这台 Kindle 的硬件不匹配，请重新安装" 40; sleep 5; exit 1; }
-FRAMEWORK_AFTER_SAVE='splash_begin 正在准备 3'
+FRAMEWORK_AFTER_SAVE='splash_bg 正在准备 3'
 framework_stop || { t "cannot pause kindle ui"; exit 1; }
-splash_update 12
+[ -f $W/splash.pid ] || splash_update 12     # Kindle 界面本来就停着（重启 Android）：没有后台画面，这里画
 [ -x "$FBINK" ] || { t "no fbink; continuing with framebuffer/eips fallback"; FBINK=; }
 display_prepare
 touch $X/ctl/sleep       # 开机画面期间，显示桥不画 Android 的帧（开机完成后 splash_end 放开）
@@ -224,10 +224,12 @@ props_apply
 readahead_on
 loopdio_on
 net_setup
+boot_mark_setup
 container_start || { exec >>/tmp/veradroid-stop.log 2>&1; sh $VD/boot/stop.sh >/dev/null 2>&1; exit 1; }
 bat_baseline       # 电量统计起点（energy.sh）
 net_start
 echo "$APP" > $X/ctl/app
+splash_wait
 splash_update 20
 boot_watch &
 echo $! > $W/boot.pid

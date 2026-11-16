@@ -285,6 +285,20 @@ compile_preempt_pkg() { # pkg
 # dex2oat 是 Android 的 installd 起的，不是我们的子进程：自己的 nice 管不到它。编译期间每 2 秒把所有
 # dex2oat 线程调成 nice 19 + IO 空闲（ionice -c3；没有 ionice 就只调 nice）。内存低到危险时直接杀掉 dex2oat：
 # 编译失败只是应用继续用解释执行，总比让 lowmemorykiller 杀前台应用或让机器换页卡死好。
+# Android 里自己发起的安装（软件包安装程序、浏览器下载后点安装、pm install）走 PackageInstaller 会话：APK 先写进
+# /data/app/vmdl<会话号>.tmp/，提交后 PackageManager 要拿安装锁——锁被我们的 speed 编译拿着，就一直等到编完
+# （一台 PW6 测试机实测：编起点读书时装 2.7 MB 的 Via 等了 394 秒，用 pm install 装起点读书本身等了 364 秒）。宿主的 install
+# 命令有 compile_hold，这条路没有。会话目录存在（而且 10 分钟内动过）就当作有安装在等：停掉编译、重新排队。
+# 开机时 PackageInstallerService 会删掉残留的 vmdl*.tmp，放弃的会话也会删，所以不会被旧目录一直挡住。
+compile_session_pending() {
+    csp_now=$(date +%s)
+    for csp_d in $SYS/data/app/vmdl*.tmp; do
+        [ -d "$csp_d" ] || continue
+        csp_m=$(stat -c %Y "$csp_d" 2>/dev/null) || continue
+        [ $((csp_now - csp_m)) -lt ${COMPILE_SESSION_S:-600} ] && return 0
+    done
+    return 1
+}
 compile_babysit() { # cmd 的 pid [包]
     killed=; t0=$(cut -d. -f1 /proc/uptime)
     while kill -0 "$1" 2>/dev/null; do
@@ -292,6 +306,11 @@ compile_babysit() { # cmd 的 pid [包]
         if [ -n "$2" ] && [ -z "$killed" ] && [ "$(compile_fg)" = "$2" ]; then
             t "compile: $2 came to the foreground, stopping its dexopt (will finish after it leaves the foreground)"
             echo foreground > $W/compile.abort; compile_preempt_pkg "$2"; killed=1
+        fi
+        # Android 里有安装在等安装锁：停掉，让它先装（compile_one 重新排队）
+        if [ -n "$2" ] && [ -z "$killed" ] && compile_session_pending; then
+            t "compile: an install started inside Android is waiting for PackageManager, stopping dexopt of $2 (re-queued)"
+            echo session > $W/compile.abort; compile_preempt_pkg "$2"; killed=1
         fi
         # 用户在用、内存紧：停掉，等空闲再编
         if [ -n "$2" ] && [ -z "$killed" ] && compile_user_active && [ "$(mem_avail_mb)" -lt "$(compile_active_abort_mb)" ]; then
@@ -350,7 +369,7 @@ compile_one() { # pkg mode force
     ab=$(cat $W/compile.abort 2>/dev/null)
     if [ "$ab" = install ]; then r=aborted   # 给安装让路：compile_release 会重新排队，不算失败
     # 到了前台 / 用户在用且内存紧：不算失败，重新排队（前台时跳过，空闲时再编）
-    elif [ "$ab" = foreground ] || [ "$ab" = busy ]; then r=aborted
+    elif [ "$ab" = foreground ] || [ "$ab" = busy ] || [ "$ab" = session ]; then r=aborted
     # 超过 COMPILE_MAX_S 被停：这台机器上这个过滤器编不完（512 MB 机型上微信读书的 speed），同一个安装不再自动试（compile_needed），
     # 下面马上补 interpret-only（两分钟左右），不让应用停在没有 odex、从 apk 解释执行的状态
     elif [ "$ab" = timeout ]; then r=timeout
@@ -377,7 +396,7 @@ compile_one() { # pkg mode force
     { tail -n 199 $CLOG 2>/dev/null; echo "$pkg $dir $r $mode ${sec}s $(date +%Y%m%d-%H%M%S)"; } > $CLOG.tmp 2>/dev/null && mv -f $CLOG.tmp $CLOG
     echo "$pkg $r $sec" > $W/compile.last
     case "$ab" in
-        foreground|busy)
+        foreground|busy|session)
             sed -i "/^$pkg\( \|\$\)/d" $CQ 2>/dev/null; echo "$pkg force" >> $CQ
             echo $(( $(cat $W/compile.total 2>/dev/null || echo 0) + 1 )) > $W/compile.total
             [ "$ab" = busy ] && : > $W/compile.needidle ;;
@@ -394,7 +413,7 @@ compile_worker() {
         [ -n "$mode" ] || { compile_status state=paused reason=off "total=$(cat $W/compile.total 2>/dev/null)"; rm -f $CQ; break; }
         last=$(cat $W/compile.last 2>/dev/null)
         # 有安装 / 卸载在等 PackageManager 的锁：先让它做完
-        if compile_held; then compile_status state=waiting reason=install "index=$idx" "total=$(cat $W/compile.total 2>/dev/null)" "last=$last"; sleep 3; continue; fi
+        if compile_held || compile_session_pending; then compile_status state=waiting reason=install "index=$idx" "total=$(cat $W/compile.total 2>/dev/null)" "last=$last"; sleep 3; continue; fi
         # 冻结（回到 Kindle / 屏保）时 Android 里的命令会一直卡住：等解冻
         if [ -f $W/frozen ] || [ -f $W/saver_frozen ]; then compile_status state=waiting reason=frozen "index=$idx" "total=$(cat $W/compile.total)" "last=$last"; sleep 30; continue; fi
         if ! compile_battery_ok; then compile_status state=paused reason=battery "index=$idx" "total=$(cat $W/compile.total)" "last=$last"; t "compile: paused, battery low"; sleep 300; continue; fi

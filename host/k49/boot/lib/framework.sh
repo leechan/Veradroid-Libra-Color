@@ -98,11 +98,21 @@ fw_restore_running() {
     t "fw: $n dependent kindle services restarted"
 }
 
+# 一批 Kindle 服务并行起来，全部起好（upstart 的 start 要等任务真的跑起来）才返回。
+# 以前一个一个 start：每个要 0.3–2 秒（stored、scanner、webreader……），十来个加起来好几秒，都算在“回到书库”里（PW5 模拟器约 9 秒）。
+fw_start_many() {
+    fs_p=
+    for fs_s in "$@"; do ( start $fs_s >/dev/null 2>&1 ) & fs_p="$fs_p $!"; done
+    for fs_x in $fs_p; do wait $fs_x 2>/dev/null; done
+    return 0
+}
+
 kindle_home() {
     # 框架停过（stop）：等它和书库程序重新起来，最多 3 分钟；只暂停的情况最多 1 分钟
-    max=30; [ -n "$NOFW" ] && max=90
+    # 每 0.25 秒看一次（以前每 2 秒：书库程序好了平均还要多等 1 秒）
+    max=240; [ -n "$NOFW" ] && max=720
     i=0
-    until lipc-probe com.lab126.KPPMainApp 2>/dev/null | grep -qw go || [ $i -ge $max ]; do sleep 2; i=$((i + 1)); done
+    until lipc-probe com.lab126.KPPMainApp 2>/dev/null | grep -qw go || [ $i -ge $max ]; do usleep 250000; i=$((i + 1)); done
     if [ -f /etc/upstart/kppmainapp.conf ]; then
         lipc-set-prop com.lab126.appmgrd start "app://com.lab126.KPPMainApp?view=KPP_HOME"
     else
@@ -360,31 +370,34 @@ framework_start() {
     fw_clear_restart_counters
     NOFW=; case "$(cat $FWD/mode 2>/dev/null)" in stop|stopfail) NOFW=1 ;; esac
     fw_unfreeze
-    if [ -n "$NOFW" ]; then
-        # 框架要重新启动（冷启动约一分钟）：先告诉用户在等什么，不然屏幕上是停之前存下的那一帧，点了没反应
-        fw_wait_screen || splash "正在恢复 Kindle 界面，大约需要一分钟…" 36
-        vdkaf_stop
-        killall vdkaf 2>/dev/null      # 漏记 pid 的（被叫停的后台那一段刚起的）也不能留：它顶着 com.lab126.kaf，框架就登记不上
-        # 框架先起（别的任务有些要等它），再起其余的
-        grep -qx framework $FWD/stopped 2>/dev/null && start framework >/dev/null 2>&1
-    fi
     # 书库程序（kppmainapp）不能比框架先起来：它一启动就问 com.lab126.amazonRegistrationService（在 cvm 里）登录状态，
     # 框架刚 start、这个服务还没登记时它拿到的是“取不到状态”，于是一直显示“欢迎使用 Kindle / 请登录亚马逊账户”的未注册主页，
     # 直到它下次重启（PW5 真机：改完系统盘大小退出 Android 后出现；pw5-5192 模拟器日志："Invalid Token Status : " 空值
     # + "Error in getting registration status"，比 cvm 的 "RegisteredService ... AmazonRegistrationService" 早 9 秒）。
     # 它的 upstart 任务本来就是 "start on framework_ready"：框架停过时由 upstart 在 framework_ready 之后自己起它，我们只等；
     # 等不到（超时）才自己起，而且也要等登录服务能回答之后。
+    fw_svc=
     for s in $(cat $FWD/stopped 2>/dev/null); do
         case "$s" in framework) continue ;; kppmainapp) [ -n "$NOFW" ] && continue ;; esac
-        start $s >/dev/null 2>&1
+        fw_svc="$fw_svc $s"
     done
     if [ -n "$NOFW" ]; then
+        vdkaf_stop
+        killall vdkaf 2>/dev/null      # 漏记 pid 的（被叫停的后台那一段刚起的）也不能留：它顶着 com.lab126.kaf，框架就登记不上
+        # 框架先起（别的任务有些要等它），再并行起其余的。整段放到后台：框架冷启动是回书库最长的一段，
+        # 以前要先画完等待画面（fbink，几秒）才开始起框架，start framework 自己又要等好几秒才返回
+        ( grep -qx framework $FWD/stopped 2>/dev/null && start framework >/dev/null 2>&1; fw_start_many $fw_svc ) & fw_svp=$!
+        # 框架要重新启动（冷启动约一分钟）：告诉用户在等什么，不然屏幕上是停之前存下的那一帧，点了没反应
+        fw_wait_screen || splash "正在恢复 Kindle 界面，大约需要一分钟…" 36
         fw_wait_ready
+        wait $fw_svp 2>/dev/null
         if grep -qx kppmainapp $FWD/stopped 2>/dev/null && ! initctl status kppmainapp 2>/dev/null | grep -q "start/"; then
             t "fw: library app not started by upstart after framework_ready: starting it"
             start kppmainapp >/dev/null 2>&1
         fi
         fw_restore_running
+    else
+        fw_start_many $fw_svc
     fi
     sleep 1
     kindle_home

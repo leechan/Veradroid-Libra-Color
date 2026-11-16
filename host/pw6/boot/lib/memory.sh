@@ -151,3 +151,31 @@ readahead_restore() {
     rm -f $W/readahead.saved
     return 0
 }
+
+# 回环设备直读写（LOOP_DIO，默认 1；docs/jank.md、k49 同名函数）。PW6 的 /mnt/base-us（Android 的 rootfs 和 data 都在这里）是
+# eMMC 分区 mmcblk0p10 上的 loop0（Kindle 自己的），缓冲方式：Android 读过的每一页在页缓存里存两份（ext4 的文件页 + loop0 下面
+# 块设备的页，/proc/meminfo 的 Buffers 有 150–170 MB），loop 内核线程还多拷一遍。应用之间切换时缓存装不下几个应用的 odex，
+# 每切一次读盘几百 MB。直读写以后块设备那一份不再进缓存。loop0 是 Kindle 的：记下来，stop 时改回缓冲方式。
+loopdio_set() { # loopN 0|1
+    f=/sys/block/$1/loop/dio
+    [ -r "$f" ] || return 1
+    [ "$(cat "$f")" = "$2" ] && return 0
+    "$VD/bin/vdloopdio" "$(loop_dev $1)" $2 2>>$LOG
+}
+loopdio_on() {
+    [ "${LOOP_DIO:-1}" = 1 ] && [ -x "$VD/bin/vdloopdio" ] || return 0
+    d=$(awk '$2 == "/mnt/base-us" {print $1}' /proc/mounts | tail -1)
+    n=$(echo "${d##*/}" | sed 's/^loop//')
+    case "$d" in /dev/loop*)
+        if [ -n "$n" ] && [ "$(cat /sys/block/loop$n/loop/dio 2>/dev/null)" = 0 ] && loopdio_set loop$n 1; then
+            echo loop$n > $W/loopdio.base; t "loop dio: /mnt/base-us (loop$n) direct"
+        fi ;;
+    esac
+    return 0
+}
+loopdio_restore() {
+    [ -f $W/loopdio.base ] || return 0
+    l=$(cat $W/loopdio.base); rm -f $W/loopdio.base
+    [ -x "$VD/bin/vdloopdio" ] && loopdio_set $l 0 && t "loop dio: /mnt/base-us ($l) back to buffered"
+    return 0
+}

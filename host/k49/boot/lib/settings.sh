@@ -24,11 +24,16 @@ settings_defaults() {
     KFB_PACE=0             # 显示：跟随面板。1 = 新的一帧落在还没刷完的区域上时先不发，等面板刷完只发最新画面（滚动 / 动画按面板自己的速度走，
                            # 停下来不用再等“刷新合并”的静止时间）；开着时 KFB_SETTLE 不起作用
     KFB_CLEAN=0            # 显示：快刷（DU，黑白两级）之后画面静止这么多毫秒，把快刷过的区域用 16 级灰度补刷一遍（字的边缘、图片变细腻；不闪）。0 = 不补
-    KFB_REAGL_MIN=85       # 显示（均衡刷新方式）：一帧里变化面积达到屏幕的百分之多少就用 REAGL（16 级灰、清残影、约 205 ms）而不是 DU（黑白两级、约 134 ms、
-                           # 盖住原来的文字时会透出残影——下拉面板上的“底下那页的影子”就是这个）。85 = 以前的规则（只有接近整屏才用 REAGL）
+    KFB_REAGL_MIN=35       # 显示（均衡刷新方式）：一帧里变化面积达到屏幕的百分之多少就用 REAGL（16 级灰、清残影、约 205 ms）而不是 DU（黑白两级、约 134 ms、
+                           # 盖住原来的文字时会透出残影——下拉面板上的“底下那页的影子”就是这个）。85 = 以前的规则（只有接近整屏才用 REAGL）；35 = 一次翻页（多看 / 微信读书翻页都超过它）就用 REAGL（默认）
+    KFB_SETTLE2=40         # 显示：自适应合并。一次刷新之后紧跟着的那一帧只等这么多毫秒（按钮按下后的变化、连续打字），
+                           # 只有画面一直在变（滚动 / 动画）才等满 KFB_SETTLE。0 = 一律等 KFB_SETTLE（以前的做法）
+    KFB_SCROLLDU=0         # 显示：滚动快刷。大面积画面接连变化（滚动、拖动）时先用 DU 快刷，停下这么多毫秒后再用 16 级灰度补刷一遍。0 = 关
+    KFB_IMG=0              # 显示（均衡）：小区域变化里中间灰超过这个百分比（图片）就用 GL16（16 级灰，不闪）而不是 DU 黑白点阵。0 = 关
     KFB_HWC=1              # 系统合成：1 = 用 hwcomposer.kindle（bin/ 里带着，开机时装进系统），每帧省 30–60 ms；0 = 原来的软件 GLES 合成。重启 Android 生效
                            # 0.93 / 1.01 起所有机型默认 1（docs/framework-project.md §9.9）
     KFB_HZ=30              # KFB_HWC=1 时的界面帧率 30 或 60（60 时触摸到出帧平均少等约 20 ms，动画多画一倍的帧）。重启 Android 生效
+    KFB_DIM=20             # 对话框背后的遮罩压暗百分之几（0-100，hwcomposer 自己画；off = 交给 GLES、用应用自己的深度，以前的做法）。重启 Android 生效
     KFB_ONEPAGE=0          # framework 项目：1 = 系统合成（KFB_HWC=1）时共享缓冲只用一页（省一页 RGBX，PW6 约 8.6 MB）。要 project/framework 的镜像
                            # 512 MB 机型默认 1（settings_load 里按内存设）；1 GB 机型上对话框淡入淡出多刷约一倍，默认 0
     KFB_RGB565=0           # framework 项目：1 = 不透明的应用窗口用 RGB565 缓冲（每块缓冲省一半）。要 project/framework 的镜像
@@ -125,7 +130,7 @@ settings_load() {
     if lowmem && ! grep -qs '^KFB_ANIM_MODE=' "$SYS/settings.conf"; then KFB_ANIM_MODE=0; fi
     # 记下全局值：面板 / 设置页显示和修改的是全局设置，不能把“当前应用的单独设置”当成全局值发布出去
     # （否则在某个应用里打开面板会看到“翻页动画关 / 刷新合并关”，再点一下别的就把它存成全局了）。
-    for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN; do eval "GLOB_$k=\$$k"; done
+    for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SETTLE2 KFB_SCROLLDU KFB_IMG KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN; do eval "GLOB_$k=\$$k"; done
     [ -f "$SYS/settings.app" ] && . "$SYS/settings.app"       # 当前前台应用的显示参数（cmd.sh appdisp 写，已校验）
     smooth_apply
     # 512 MB devices: default to full exit when returning to Kindle, unless the
@@ -153,11 +158,11 @@ smooth_apply() {
         *) KFB_SMOOTH=0 ;;
     esac
 }
-epd_send_smooth() { epd_send PACE ${KFB_PACE:-0}; epd_send CLEAN ${KFB_CLEAN:-0}; epd_send REAGL ${KFB_REAGL_MIN:-85}; }
+epd_send_smooth() { epd_send PACE ${KFB_PACE:-0}; epd_send CLEAN ${KFB_CLEAN:-0}; epd_send REAGL ${KFB_REAGL_MIN:-35}; epd_send SETTLE2 ${KFB_SETTLE2:-40}; epd_send SCROLLDU ${KFB_SCROLLDU:-0}; epd_send IMG ${KFB_IMG:-0}; }
 
 # 把当前设置写给桌面看（/dev/kfb/settings）
 settings_publish() {
-    { for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN KFB_PWRDOWN KFB_HWC KFB_HZ KFB_GESTURES KFB_ROTATE RETURN_MODE LOWMEM KINDLE_UI DNS_MODE G_TL G_TR G_BL G_BR G_EDGE_BACK G_EDGE_PANEL G_TWO_TAP G_TWO_LONG G_TWO_BACK G_TWO_SLIDE G_EDGE_SENS G_BACK_EXCLUDE G_TWO_TAP_ACT G_TWO_LONG_ACT G_TAP G_TAP_KEY WIFI_PS APP_COMPILE STORAGE_AUTO TIME_12_24 GESTURE_HINT; do eval "echo $k=\${GLOB_$k:-\$$k}"; done; } > $X/settings.tmp \
+    { for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SETTLE2 KFB_SCROLLDU KFB_IMG KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN KFB_PWRDOWN KFB_HWC KFB_HZ KFB_DIM KFB_GESTURES KFB_ROTATE RETURN_MODE LOWMEM KINDLE_UI DNS_MODE G_TL G_TR G_BL G_BR G_EDGE_BACK G_EDGE_PANEL G_TWO_TAP G_TWO_LONG G_TWO_BACK G_TWO_SLIDE G_EDGE_SENS G_BACK_EXCLUDE G_TWO_TAP_ACT G_TWO_LONG_ACT G_TAP G_TAP_KEY WIFI_PS APP_COMPILE STORAGE_AUTO TIME_12_24 GESTURE_HINT; do eval "echo $k=\${GLOB_$k:-\$$k}"; done; } > $X/settings.tmp \
         && printf 'SYSTEM_FONT=%s\nSYSTEM_FONT_LIVE=%s\n' "$SYSTEM_FONT" "$(cat $W/sysfont/android 2>/dev/null)" >> $X/settings.tmp \
         && mv -f $X/settings.tmp $X/settings
 }
@@ -168,7 +173,7 @@ settings_apply() {
     sfile=$W/settings.apply.$$.$(cut -d' ' -f1 /proc/uptime | tr -d .)
     mv -f $X/ctl/settings.new "$sfile" 2>/dev/null || return 0
     touch $SYS/settings.conf
-    for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN KFB_PWRDOWN KFB_HWC KFB_HZ KFB_GESTURES KFB_ROTATE RETURN_MODE LOWMEM KINDLE_UI DNS_MODE G_TL G_TR G_BL G_BR G_EDGE_BACK G_EDGE_PANEL G_TWO_TAP G_TWO_LONG G_TWO_BACK G_TWO_SLIDE G_EDGE_SENS G_BACK_EXCLUDE G_TWO_TAP_ACT G_TWO_LONG_ACT G_TAP G_TAP_KEY WIFI_PS APP_COMPILE STORAGE_AUTO TIME_12_24 GESTURE_HINT; do
+    for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SETTLE2 KFB_SCROLLDU KFB_IMG KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN KFB_PWRDOWN KFB_HWC KFB_HZ KFB_DIM KFB_GESTURES KFB_ROTATE RETURN_MODE LOWMEM KINDLE_UI DNS_MODE G_TL G_TR G_BL G_BR G_EDGE_BACK G_EDGE_PANEL G_TWO_TAP G_TWO_LONG G_TWO_BACK G_TWO_SLIDE G_EDGE_SENS G_BACK_EXCLUDE G_TWO_TAP_ACT G_TWO_LONG_ACT G_TAP G_TAP_KEY WIFI_PS APP_COMPILE STORAGE_AUTO TIME_12_24 GESTURE_HINT; do
         v=$(sed -n "s/^$k=\([0-9A-Za-z._,]*\)\$/\1/p" "$sfile" | tail -1)
         [ -n "$v" ] || continue
         case "$k=$v" in LOWMEM=auto|LOWMEM=on|LOWMEM=off|KINDLE_UI=auto|KINDLE_UI=keep|KINDLE_UI=freeze|KINDLE_UI=stop|GESTURE_HINT=all|GESTURE_HINT=stuck|GESTURE_HINT=off|GESTURE_HINT=default) ;; LOWMEM=*|KINDLE_UI=*|GESTURE_HINT=*) continue ;; esac

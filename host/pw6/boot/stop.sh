@@ -42,13 +42,13 @@ RS=; [ -f $W/restarting ] && RS=1
 
 [ -d $FZ ] && android_thaw 2>/dev/null          # 冻着的进程收不到 SIGKILL
 ps=
-for f in watchdog sleep lipc cmd boot slirp shutw compile; do
+for f in watchdog sleep lipc cmd boot slirp shutw compile jankrec; do
     p=$(cat $W/$f.pid 2>/dev/null)
     [ "$p" = "$PPID" ] && continue              # 看门狗自己调的：它在等这个脚本跑完
     [ "$p" = "$$" ] && continue                 # vdshutwatch exec 成了本脚本：pid 就是自己
     # 先杀子进程（watchdog 的 sleep 20 之类）：父进程死了它们还会继承着打开的脚本文件，让 /mnt/base-us 卸不掉
     # 只限这几个循环：cmd 的子进程里有脱离出去的卸载 / 整包更新，不能杀
-    case "$f" in watchdog|sleep|lipc|boot|compile) [ -n "$p" ] && for c in $(pgrep -P "$p" 2>/dev/null); do kill $c 2>/dev/null && ps="$ps $c"; done ;; esac
+    case "$f" in watchdog|sleep|lipc|boot|compile|jankrec) [ -n "$p" ] && for c in $(pgrep -P "$p" 2>/dev/null); do kill $c 2>/dev/null && ps="$ps $c"; done ;; esac
     [ -n "$p" ] && kill $p 2>/dev/null && ps="$ps $p"
 done
 for p in $(pgrep -f "^unshare -m -u -i -n -p -f -- sh .*--in-ns" 2>/dev/null); do
@@ -63,7 +63,7 @@ done
 for p in $ps; do kill -9 $p 2>/dev/null; done
 kmsg "helpers and container killed"
 for p in $(pgrep -f "^[^ ]*slirp4netns .*--api-socket $W/slirp.sock" 2>/dev/null); do kill $p 2>/dev/null; done
-for f in watchdog sleep lipc cmd boot slirp shutw compile; do rm -f $W/$f.pid; done
+for f in watchdog sleep lipc cmd boot slirp shutw compile jankrec; do rm -f $W/$f.pid; done
 rm -rf $W/prefault.done $W/compile.stale $W/compile.lock $W/compile.queue $W/compile.total $W/compile.index $W/booted $W/pkglist.stamp $W/wifi.rx $W/wifi.busy
 input_stop
 display_stop
@@ -96,7 +96,8 @@ done
 while grep -q " $R " /proc/mounts; do umount -l $R || break; done
 freezer_cleanup
 kmsg "container mounts released"
-[ -n "$STALE" ] && { rm -rf $W/kfb; storage_umount; exit 0; }
+[ -n "$STALE" ] && { loopdio_restore 2>/dev/null || true; rm -rf $W/kfb; storage_umount; exit 0; }
+loopdio_restore 2>/dev/null || true
 readahead_restore 2>/dev/null || true
 zram_restore
 wifi_ps_restore

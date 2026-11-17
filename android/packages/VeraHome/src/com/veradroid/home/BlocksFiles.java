@@ -572,7 +572,7 @@ final class BlocksFiles {
         bar.addView(name, Blocks.weight(1));
         bar.addView(Blocks.button(a, "设为壁纸", false, new View.OnClickListener() { @Override public void onClick(View v) {
             d.dismiss();
-            Theme.setWallpaper(a, f, new Theme.Done() { @Override public void done(String err) { VeraToast.show(a, err == null ? "已设为壁纸（经典风格的主页显示）" : err); } });
+            Theme.setWallpaper(a, f, new Theme.Done() { @Override public void done(String err) { VeraToast.show(a, err == null ? "已设为壁纸（主页 / 首页标签显示）" : err); } });
         } }));
         View sp = new View(a);
         bar.addView(sp, Blocks.lp(dp(8), 1));

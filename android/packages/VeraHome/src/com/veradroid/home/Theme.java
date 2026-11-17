@@ -187,6 +187,38 @@ final class Theme {
 
     /** 解码原图（不超过需要的大小）→ 按铺法画到屏幕大小 → 灰度、压淡 → 8 位墨量图，并存一份缓存。 */
     private static Bitmap build(File f, int w, int h, int fit, int dim, String key) {
+        return buildInk(f, w, h, fit, 255 - VEIL_ALPHA[dim], cacheFile(key), true, false);
+    }
+
+    /**
+     * 任意一张图 → 屏幕大小的 8 位墨量图（白纸上按墨量画黑）：keep = 最深处的墨量（255 = 原图，越小越淡）。
+     * 阅读器的“阅读背景”也用这一套（和壁纸同样只解码一次、存缓存、原图不留在内存里）。在后台线程调用。
+     */
+    static Bitmap inkImage(File f, int w, int h, int keep, File cache) {
+        Bitmap b = readInk(cache, w, h);
+        return b != null ? b : buildInk(f, w, h, FIT_FILL, keep, cache, false, true);
+    }
+
+    /** Bayer 4×4 有序抖动的门限（0..15）。 */
+    static final int[] BAYER = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+
+    private static Bitmap readInk(File f, int w, int h) {
+        if (f == null || !f.isFile()) return null;
+        try {
+            Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ALPHA_8);
+            if (f.length() != b.getByteCount()) { b.recycle(); return null; }
+            byte[] buf = new byte[b.getByteCount()];
+            FileInputStream in = new FileInputStream(f);
+            int n = 0;
+            try { while (n < buf.length) { int r = in.read(buf, n, buf.length - n); if (r < 0) break; n += r; } }
+            finally { in.close(); }
+            if (n != buf.length) { b.recycle(); return null; }
+            b.copyPixelsFromBuffer(ByteBuffer.wrap(buf));
+            return b;
+        } catch (Throwable t) { return null; }
+    }
+
+    private static Bitmap buildInk(File f, int w, int h, int fit, int keep, File cache, boolean wallCache, boolean dots) {
         Bitmap src = null, rgb = null;
         try {
             BitmapFactory.Options o = new BitmapFactory.Options();
@@ -226,7 +258,6 @@ final class Theme {
             cv.drawBitmap(src, null, new RectF((w - dw) / 2, (h - dh) / 2, (w + dw) / 2, (h + dh) / 2), p);
             src.recycle(); src = null;
             // 灰度 + 白色罩子 → 墨量：ink = (255 - 亮度) * (255 - 罩子) / 255
-            int keep = 255 - VEIL_ALPHA[dim];
             Bitmap a8 = Bitmap.createBitmap(w, h, Bitmap.Config.ALPHA_8);
             int stride = a8.getRowBytes();
             byte[] out = new byte[stride * h];
@@ -237,12 +268,17 @@ final class Theme {
                 for (int x = 0; x < w; x++) {
                     int c = row[x];
                     int lum = (((c >> 16) & 0xff) * 77 + ((c >> 8) & 0xff) * 150 + (c & 0xff) * 29) >> 8;
-                    out[base + x] = (byte) ((255 - lum) * keep / 255);
+                    int ink = (255 - lum) * keep / 255;
+                    // 网点（阅读背景）：只有纯黑点和白纸。墨水屏的“对比度”会把很淡的灰直接拉成白，
+                    // 纯黑点不受影响；Bayer 4×4 有序抖动，墨量多少就是点有多密
+                    if (dots) ink = ink * 16 / 256 > BAYER[(y & 3) * 4 + (x & 3)] ? 255 : 0;
+                    out[base + x] = (byte) ink;
                 }
             }
             rgb.recycle(); rgb = null;
             a8.copyPixelsFromBuffer(ByteBuffer.wrap(out));
-            writeCache(key, out);
+            if (wallCache) writeCache(cache, out);
+            else if (cache != null) writeFile(cache, out);
             return a8;
         } catch (Throwable t) {
             android.util.Log.w("VeraHome", "wallpaper: " + t);
@@ -253,11 +289,15 @@ final class Theme {
         }
     }
 
-    private static void writeCache(String key, byte[] data) {
+    private static void writeCache(File f, byte[] data) {
         File d = cacheDir();
         File[] old = d.listFiles();
         if (old != null) for (File o : old) o.delete();   // 只留当前这一张
-        File f = cacheFile(key), tmp = new File(d, f.getName() + ".tmp");
+        writeFile(f, data);
+    }
+
+    private static void writeFile(File f, byte[] data) {
+        File tmp = new File(f.getParentFile(), f.getName() + ".tmp");
         try {
             FileOutputStream o = new FileOutputStream(tmp);
             try { o.write(data); } finally { o.close(); }

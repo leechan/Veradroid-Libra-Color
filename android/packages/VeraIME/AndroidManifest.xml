@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.veradroid.ime"
-    android:versionCode="60"
-    android:versionName="0.24.4">
+    android:versionCode="61"
+    android:versionName="0.25.1">
     <uses-sdk android:minSdkVersion="25" android:targetSdkVersion="25" />
     <application
         android:label="Vera 输入法"

@@ -214,6 +214,8 @@ touch $X/ctl/sleep       # 开机画面期间，显示桥不画 Android 的帧�
 display_start
 settings_publish
 type appprof_publish >/dev/null 2>&1 && appprof_publish   # 每个应用的显示设置：合并表给桌面看（/dev/kfb/appprof）
+# 上次运行留在系统设置里的强制显示密度（多看在前台时换的，appprof.sh）：容器起来之前抹掉，开机一律是默认密度
+type appprof_density_boot >/dev/null 2>&1 && appprof_density_boot
 touch_setup
 # 找不到触摸屏就不要继续：Android 起来也操作不了，而 Kindle 界面已经停了。恢复 Kindle 界面后退出。
 input_start || { t "no usable touch screen: stopping"; log_release; sh $VD/boot/stop.sh >/dev/null 2>&1; exit 1; }

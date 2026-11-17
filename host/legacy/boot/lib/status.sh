@@ -21,6 +21,11 @@ status_write() {
         # kindleui = Android 在前台时 Kindle 界面的处置（keep 只暂停 / freeze 后台进程冻住 / stop 框架停掉：返回 Kindle 要约一分钟）
         lowmem && echo "lowmem=1" || echo "lowmem=0"
         echo "lowmem_setting=${LOWMEM:-auto}"; echo "kindleui=$(kindle_ui_mode)"
+        # 系统更新（桌面的“检查系统更新”和“自动更新”设置用；容器里看不到 $VD）：装的版本、按类别编的系统、
+        # 自动更新方式（1 自动安装 / notify 只提醒 / 0 关闭）、只提醒时宿主发现的新版本
+        echo "sysversion=$(head -1 $VD/version 2>/dev/null | tr -cd '0-9.')"; echo "imageclass=$(head -1 $VD/image-class 2>/dev/null | tr -cd 'A-Za-z0-9_-')"
+        case "$(cat $VD/autoupdate 2>/dev/null)" in 0) echo "autoupdate=0" ;; notify) echo "autoupdate=notify" ;; *) echo "autoupdate=1" ;; esac
+        echo "update_available=$(sed -n 's/^version=//p' $VD/update.available 2>/dev/null | head -1 | tr -cd '0-9.')"
         echo "memtotal_mb=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)"; echo "memavail_mb=$(awk '/^MemAvailable:/{a=$2} /^MemFree:/{f=$2} /^Cached:/{c=$2} END{print int((a ? a : f + c) / 1024)}' /proc/meminfo)"   # 3.0 内核没有 MemAvailable
         [ -n "$warm" ] && echo "haswarmth=1" || echo "haswarmth=0"
         [ -n "$slp" ] && echo "hassleeptime=1" || echo "hassleeptime=0"

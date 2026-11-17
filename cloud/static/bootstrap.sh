@@ -1049,6 +1049,8 @@ is_installer_path() {
         documents/veradroid-pw6-*.tar.gz|documents/veradroid-k49-*.tar.gz|\
         documents/VeraDroid.sdr|documents/VeraDroid.sdr/*|documents/VeraDroid-Experimental.sdr|documents/VeraDroid-Experimental.sdr/*|\
         documents/VeraDroid-Offline.sdr|documents/VeraDroid-Offline.sdr/*|documents/bootstrap.sdr|documents/bootstrap.sdr/*) return 0 ;;
+        # 用户为了卸载自己拷进 documents 的卸载入口（安装器 / 卸载会拿掉它）：不算用户的书
+        documents/VeraDroid-Uninstall.sh*|documents/VeraDroid-Uninstall.sdr|documents/VeraDroid-Uninstall.sdr/*) return 0 ;;
     esac
     return 1
 }
@@ -2154,6 +2156,11 @@ if [ -f "$VD/VeraDroid-Launch.sh" ]; then
         && mv "$VD/.vd-launch.tmp" "$VD/VeraDroid-Launch.sh" && chmod 755 "$VD/VeraDroid-Launch.sh"
     rm -f "$VD/.vd-launch.tmp" 2>/dev/null || true
 fi
+# 卸载入口不放进书库（和启动入口挨着，容易点错）：放在程序目录 veradroid/VeraDroid-Uninstall.sh（USB 能看到）。
+# 平时在 Android 的 设置 → 设备与更新 → 卸载 VeraDroid 卸载；Android 起不来时用户用 USB 把它拷进 documents 再点（点两次）。
+if [ -f "$TMP/veradroid-pw6/entries/VeraDroid-Uninstall.sh" ]; then
+    cp "$TMP/veradroid-pw6/entries/VeraDroid-Uninstall.sh" "$VD/VeraDroid-Uninstall.sh" 2>/dev/null && chmod 755 "$VD/VeraDroid-Uninstall.sh" 2>/dev/null || true
+fi
 [ -d "$TMP/veradroid-pw6/fonts" ] && cp -a "$TMP/veradroid-pw6/fonts" "$VD/fonts"
 # 老内核用的外挂模块（kmod/<uname -r>/*.ko，boot/lib/kmod.sh 开机时加载）
 [ -d "$TMP/veradroid-pw6/kmod" ] && cp -a "$TMP/veradroid-pw6/kmod" "$VD/kmod"
@@ -2385,6 +2392,26 @@ fi
 if [ -f /mnt/base-us/veradroid-cc.db.$stamp ] && [ ! -f /var/local/cc.db ]; then
     cp -a /mnt/base-us/veradroid-cc.db.$stamp /var/local/cc.db 2>/dev/null || true
 fi
+# 卸载入口只在用户为了卸载自己拷进 documents 时才会在书库里：重新安装 / 更新以后它没用了（还会排在启动入口前面），拿掉。
+# BEGIN vd_retire_uninstall_entry
+# 只认我们自己放的那一个：固定文件名 documents/VeraDroid-Uninstall.sh（历来只用过这一个名字），普通文件（不是链接），
+# 头里是我们的标题，内容指向我们的程序目录。用户别的文件、同名但内容不是我们的文件一律不动。
+vd_retire_uninstall_entry() {
+    for d in /mnt/us/documents /mnt/base-us/documents; do
+        f=$d/VeraDroid-Uninstall.sh
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        grep -q '^# Name: VeraDroid 卸载$' "$f" 2>/dev/null && grep -q '^VD=/mnt/base-us/veradroid$' "$f" 2>/dev/null || continue
+        rm -f "$f" 2>/dev/null || continue
+        for s in "$d/VeraDroid-Uninstall.sh.sdr" "$d/VeraDroid-Uninstall.sdr"; do [ -d "$s" ] && [ ! -L "$s" ] && rm -rf "$s" 2>/dev/null; done
+        command -v vlog >/dev/null 2>&1 && vlog "library: removed the old uninstall entry $f"
+        RETIRED=1
+    done
+    return 0
+}
+# END vd_retire_uninstall_entry
+RETIRED=
+vd_retire_uninstall_entry
+[ -n "$RETIRED" ] && lipc-set-prop com.lab126.scanner doFullScan 1 2>/dev/null || true
 if [ -f "$TMP/veradroid-pw6/VeraDroid-Launch.sh" ]; then
     # Kindle's home library may use either mount; put the launcher in both so
     # returning to Kindle always finds a "VeraDroid 启动" entry.

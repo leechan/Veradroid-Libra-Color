@@ -31,12 +31,17 @@ ns_pids() {
         [ "$(readlink $d/ns/pid 2>/dev/null)" = "$ns" ] && echo ${d#/proc/}
     done
 }
+# slirp4netns（容器的网络，network.sh）在 Android 冻结期间也停下：容器里还开着的 TCP 连接让它的定时器每 0.5 秒醒一次
+# （libslirp 的 slow timer），屏保 / 回到 Kindle 时没人用它，只是白白唤醒 CPU。解冻前先放开。没有 slirp（chroot 模式）时什么都不做。
+net_pause()  { sp=$(cat $W/slirp.pid 2>/dev/null); [ -n "$sp" ] && kill -STOP "$sp" 2>/dev/null; return 0; }
+net_resume() { sp=$(cat $W/slirp.pid 2>/dev/null); [ -n "$sp" ] && kill -CONT "$sp" 2>/dev/null; return 0; }
 android_freeze() {
     freezer_setup || return 1
     sync
     if fz_signal; then
         kill -STOP $(ns_pids) 2>/dev/null
         echo FROZEN > $FZ/state
+        net_pause
         cpu_gov_set powersave 2>/dev/null || true
         return 0
     fi
@@ -44,10 +49,12 @@ android_freeze() {
     echo FROZEN > $FZ/freezer.state
     cpu_gov_set powersave 2>/dev/null || true
     i=0; while [ "$(freezer_state)" != FROZEN ] && [ $i -lt 50 ]; do usleep 100000; i=$((i + 1)); done
+    [ "$(freezer_state)" = FROZEN ] && net_pause
     [ "$(freezer_state)" = FROZEN ]
 }
 android_thaw() {
     cpu_gov_restore 2>/dev/null || true
+    net_resume
     freezer_setup || return 1
     if fz_signal; then
         kill -CONT $(ns_pids) 2>/dev/null

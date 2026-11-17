@@ -1,0 +1,25 @@
+VeraIME 拼音词库 assets/pinyin.dat
+
+由 tools/ime/gen_pinyin_dict.py 从以下数据生成（只取词、拼音、词频和一元 / 二元语言模型，换成自己的二进制格式）：
+
+- libime / fcitx5 的拼音词库 dict-20260907.tar.zst（dict_sc.txt）
+  https://download.fcitx-im.org/data/dict-20260907.tar.zst
+  SHA-256 fb75a179065e690dfc4559ce1807cbaf4fbe4f0111a5005615be9f435e6b9d76
+- libime / fcitx5 的语言模型 lm_sc.arpa-20260629.tar.zst（lm_sc.arpa，源自 sunpinyin / open-gram）
+  https://download.fcitx-im.org/data/lm_sc.arpa-20260629.tar.zst
+  SHA-256 06808333b9173e5374cf2cb5afc12d08f5625bf9abb536489cac376fc05f2e7f
+
+许可：GNU Lesser General Public License v2.1 or later（LGPL-2.1-or-later），
+见 https://github.com/fcitx/libime 的 REUSE.toml 和 LICENSES/LGPL-2.1-or-later.txt。
+Copyright 2002-2005 Yuking, 2014-2026 CSSlayer 及 libime / sunpinyin / open-gram 的贡献者。
+
+pinyin.dat 是这些数据的派生作品，按 LGPL-2.1-or-later 分发；重新生成或替换它：
+    python3 tools/ime/gen_pinyin_dict.py        （需要 python3 和 zstd，自动下载并校验上面两个文件）
+VeraIME 只通过公开的文件格式读它，可以换成任何同格式的文件。
+
+---- NOTICE / THIRD_PARTY.md entry (for the public repository; replaces the old pinyin-data / jieba line) ----
+
+  libime / fcitx5 pinyin dictionary (dict-20260907) and language model (lm_sc.arpa-20260629,
+  derived from sunpinyin / open-gram), converted into VeraIME's assets/pinyin.dat
+      LGPL-2.1-or-later  https://github.com/fcitx/libime   (see android/packages/VeraIME/assets/NOTICE-pinyin.txt;
+                         regenerate with tools/ime/gen_pinyin_dict.py)

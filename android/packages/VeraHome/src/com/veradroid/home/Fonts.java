@@ -108,6 +108,28 @@ final class Fonts {
 
     static Typeface typeface(Context c) { load(c); return cached; }
 
+    /**
+     * 换系统字体（设置里的“系统字体”和字体商店都走这里）：桌面 / 设置 / 阅读器一起换；开着“应用到所有应用”时
+     * 告诉宿主（SYSTEM_FONT），和宿主现在用着的不一样就问要不要重启 Android。path = null：回到系统默认。
+     */
+    static void setSystem(final android.app.Activity a, String path, String name) {
+        android.content.SharedPreferences prefs = Store.prefs(a, "home");
+        prefs.edit().putString("system_font_path", path).putString("system_font_name", name)
+            .putString("reader_font_path", path).putString("reader_font_name", name).commit();
+        if (!prefs.getBoolean("system_font_all", true)) return;
+        HostLink.settings("SYSTEM_FONT=" + (path == null ? "default" : path) + "\n");
+        String live = HostLink.kv(HostLink.KFB + "settings").get("SYSTEM_FONT_LIVE");
+        if ((path == null ? "" : path).equals(live == null ? "" : live)) return;
+        new VeraDialog.Builder(a).title("重启 Android").message("需要重启 Android 才能让其他应用也用这个字体（约 15 秒）。桌面和阅读器已经换好了。")
+            .negative("稍后", null).positive("现在重启", new Runnable() { @Override public void run() { HostLink.cmd("restart"); } }).show();
+    }
+
+    /** 只换阅读器的正文字体（阅读器自己的设置里存的那一份也改掉，不然它还用上次选的）。path = null：系统默认。 */
+    static void setReader(Context c, String path, String name) {
+        Store.prefs(c, "home").edit().putString("reader_font_path", path).putString("reader_font_name", name).commit();
+        Store.prefs(c, "reader").edit().putString("font", path).putString("fontName", name).commit();
+    }
+
     static Typeface bold(Context c) { load(c); return cachedBold; }
 
     static void apply(TextView t, boolean bold) {

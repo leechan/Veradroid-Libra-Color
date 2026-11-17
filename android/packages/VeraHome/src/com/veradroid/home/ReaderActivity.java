@@ -90,7 +90,14 @@ public class ReaderActivity extends Activity {
     private int availH;
     private String leftBase = "";
 
-    private static class Chapter { String title; String text; String entry; }   // entry = EPUB 里这一章的文件名（续读时先只读这一章）
+    private static class Chapter {
+        String title; String text; String entry;
+        /** EPUB 里的 id → 在 text 里的位置；块级元素（p / li / aside……）的 id 还记下结束位置和标签名（注释正文用）。 */
+        java.util.Map<String, int[]> ids = java.util.Collections.emptyMap();   // {起, 止(-1 = 不知道), 是不是注释元素 1/0, 是不是块 1/0}
+        List<Link> links = java.util.Collections.emptyList();
+    }
+    /** 正文里的一个书内链接：text[start, end) 是链接文字，target = “章节文件#id” 或 “章节文件”。 */
+    private static final class Link { int start, end; String target; boolean noteref; }   // entry = EPUB 里这一章的文件名（续读时先只读这一章）
     private static class Page { int chapter; int start; String text; }   // start = 这一页在章节文字里的起始字符位置
 
     @Override protected void onCreate(Bundle b) {
@@ -114,7 +121,9 @@ public class ReaderActivity extends Activity {
 
         // 整页是一层正文，工具栏盖在它上面（点屏幕顶部才出现）：出不出工具栏正文都不重排，墨水屏只刷工具栏那两条。
         FrameLayout pageView = new FrameLayout(this);
+        pageRoot = pageView;
         pageView.setBackgroundColor(Color.WHITE);
+        if (bgMode != 3) applyBackground();   // 图片背景在加载线程里先读好，和第一页一起出来（见 load）
         setContentView(pageView);
         Perf.measure(pageView, "reader");
 
@@ -317,6 +326,11 @@ public class ReaderActivity extends Activity {
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
+                    if (bgMode == 3 && !isPdfExt()) {
+                        // 图片背景：在排第一页之前读好（缓存文件几十毫秒），和第一页同一帧出来，不多刷一次
+                        loadBgInk();
+                        ui.post(new Runnable() { @Override public void run() { applyBackground(); } });
+                    }
                     long t0 = SystemClock.uptimeMillis();
                     // 书名书库里已经有了（Intent 带过来），不为它先解析一遍 EPUB 的 OPF
                     String given = getIntent().getStringExtra("title");
@@ -463,6 +477,7 @@ public class ReaderActivity extends Activity {
     private void turnAt(View v) {
         float w = v.getWidth(), h = v.getHeight();
         if (chromeVisible) { toggleChrome(); return; }
+        if (v == content && lastX >= 0 && followLinkAt()) return;
         if (lastX < 0 || w <= 0) { next(); return; }
         // 方块风格：点屏幕中间一块叫出工具栏（顶上一条也算）
         if (blk && lastX > w / 3f && lastX < w * 2 / 3f && lastY > h / 4f && lastY < h * 3 / 4f) { toggleChrome(); return; }
@@ -491,6 +506,16 @@ public class ReaderActivity extends Activity {
             break;
         case android.view.MotionEvent.ACTION_UP:
             if (swiped) { if (e.getX() < lastX) next(); else prev(); swiped = false; return true; }
+            // 拖动过的手指不算点按。底边上划“返回”（宿主手势，veradroid-input）在认出手势之前会先把按下交给 Android，
+            // 认出来以后用“抬起”收回这次触摸——Android 看到的是一次往上拖的点按，以前正文就先翻一页再退出。
+            // 竖着拖、斜着拖都不翻页；真正的点按抖动远小于这个距离。
+            if (!chromeVisible && (Math.abs(e.getX() - lastX) > slop / 2 || Math.abs(e.getY() - lastY) > slop / 2)) {
+                android.view.MotionEvent c = android.view.MotionEvent.obtain(e);
+                c.setAction(android.view.MotionEvent.ACTION_CANCEL);
+                super.dispatchTouchEvent(c);
+                c.recycle();
+                return true;
+            }
             break;
         case android.view.MotionEvent.ACTION_CANCEL: if (swiped) { swiped = false; return true; } break;
         }
@@ -650,11 +675,179 @@ public class ReaderActivity extends Activity {
         savePage();
     }
 
+    // ------------------------------------------------------------------ 书内链接：注释弹出来看，目录类链接跳过去（带“返回”）
+
+    private Chapter shownChap;
+    private int shownStart;
+    private final List<Link> shownLinks = new ArrayList<Link>();
+    private final List<Integer> backStack = new ArrayList<Integer>();
+    private TextView backChip;
+
+    /** 这一页上的链接交给正文控件画虚下划线、做点按判断。 */
+    private void markLinks(String chapter, int start, int len) {
+        Chapter c = null;
+        if (provChapter != null && provChapter.text == chapter) c = provChapter;
+        else for (Chapter x : chapters) if (x.text == chapter) { c = x; break; }
+        shownChap = c; shownStart = start;
+        shownLinks.clear();
+        if (c == null || c.links.isEmpty()) { content.setLinks(null); return; }
+        List<Integer> r = new ArrayList<Integer>();
+        for (Link k : c.links) {
+            if (k.end <= start || k.start >= start + len) continue;
+            shownLinks.add(k);
+            r.add(Math.max(0, k.start - start)); r.add(Math.min(len, k.end - start));
+        }
+        int[] a = new int[r.size()];
+        for (int i = 0; i < a.length; i++) a[i] = r.get(i);
+        content.setLinks(a);
+    }
+
+    private boolean followLinkAt() {
+        if (isPdf || shownLinks.isEmpty()) return false;
+        int[] loc = new int[2];
+        content.getLocationInWindow(loc);
+        int i = content.linkAt(lastX - loc[0], lastY - loc[1], dp(16));
+        if (i < 0 || i >= shownLinks.size()) return false;
+        follow(shownLinks.get(i));
+        return true;
+    }
+
+    private void follow(final Link k) {
+        int hash = k.target.indexOf('#');
+        final String entry = hash >= 0 ? k.target.substring(0, hash) : k.target;
+        final String frag = hash >= 0 ? k.target.substring(hash + 1) : "";
+        int ci = -1;
+        Chapter ch = null;
+        for (int i = 0; i < chapters.size(); i++) if (entry.equals(chapters.get(i).entry)) { ci = i; ch = chapters.get(i); break; }
+        if (ch == null && provChapter != null && entry.equals(provChapter.entry)) ch = provChapter;
+        if (ch != null) { followIn(k, ch, ci, frag); return; }
+        // 注释文件不在正文顺序里（或者整本还没读完）：单独读那一个文件，只弹出注释
+        final File f = new File(path);
+        new Thread(new Runnable() { @Override public void run() {
+            Chapter c = null;
+            try { c = loadEpubChapter(f, entry); } catch (Throwable ignored) { }
+            final Chapter fc = c;
+            ui.post(new Runnable() { @Override public void run() {
+                if (isDestroyed()) return;
+                if (fc == null) { VeraToast.show(ReaderActivity.this, "这个链接指向的内容不在书里"); return; }
+                int[] info = frag.length() > 0 ? fc.ids.get(frag) : null;
+                String t = noteText(fc, info);
+                if (t.length() == 0) { VeraToast.show(ReaderActivity.this, "这个链接指向的内容不在正文里"); return; }
+                showNote(t, -1, 0);
+            } });
+        } }, "reader-note").start();
+    }
+
+    private void followIn(Link k, Chapter ch, int ci, String frag) {
+        int[] info = frag.length() > 0 ? ch.ids.get(frag) : null;
+        int off = info == null ? 0 : info[0];
+        String label = shownChap == null ? "" : shownChap.text.substring(Math.max(0, k.start), Math.min(shownChap.text.length(), k.end)).trim();
+        // 注释：链接标了 noteref、目标是 aside / 注释类元素，或者链接只是一个短短的注释号而目标是一整段（p / li / div……）
+        boolean note = k.noteref || info != null && (info[2] == 1 || info[3] == 1 && label.length() <= 6);
+        if (note) {
+            String t = noteText(ch, info);
+            if (t.length() > 0) { showNote(t, ci, off); return; }
+        }
+        jumpTo(ci, off);
+    }
+
+    /** 注释的文字：块级元素到它结束为止；不知道结束在哪就到这一段结束。最多 1500 字。 */
+    private static String noteText(Chapter c, int[] info) {
+        if (c == null || info == null) return "";
+        int st = Math.max(0, Math.min(c.text.length(), info[0]));
+        int en = info[1] > st ? info[1] : -1;
+        if (en < 0) { en = c.text.indexOf("\n\n", st + 1); if (en < 0) en = c.text.length(); }
+        String t = c.text.substring(st, Math.min(en, st + 1500)).trim();
+        if (en > st + 1500) t += "…";
+        return t;
+    }
+
+    private void showNote(String text, final int ci, final int off) {
+        VeraDialog.Builder b = new VeraDialog.Builder(this).title("注释").message(text).negative("关闭", null);
+        if (ci >= 0 && !pages.isEmpty()) b.positive("跳到注释处", new Runnable() { @Override public void run() { jumpTo(ci, off); } });
+        b.show();
+    }
+
+    /** 跳到书里另一处，记下现在这一页：左下角出一个“返回”，点了回来。 */
+    private void jumpTo(int ci, int off) {
+        if (ci < 0) return;
+        if (pages.isEmpty()) { VeraToast.show(this, "还在分页，稍等一下再点"); return; }
+        int to = pageAt(ci, off);
+        if (to == page) return;
+        backStack.add(page);
+        while (backStack.size() > 10) backStack.remove(0);
+        page = to;
+        readPages++;
+        showText();
+        paintBackChip();
+    }
+
+    /**
+     * 翻页器 / 按键翻页（蓝牙翻页器经宿主 vdbtkeys 映射成 音量± / PageUp·Down / 方向键，见 BT_PT_MAP；宿主的轻点手势也可以发音量-）：
+     * 以前内置阅读器不认这些键，翻页器在这里没用。下一页：音量-、PageDown、→、↓、空格；上一页：音量+、PageUp、←、↑。
+     * 音量键整个吃掉（不弹系统音量条）。按住不放的自动重复不算（墨水屏上连翻几页看不清）。
+     */
+    private static int keyDir(int code) {
+        switch (code) {
+        case android.view.KeyEvent.KEYCODE_VOLUME_DOWN: case android.view.KeyEvent.KEYCODE_PAGE_DOWN: case android.view.KeyEvent.KEYCODE_DPAD_RIGHT:
+        case android.view.KeyEvent.KEYCODE_DPAD_DOWN: case android.view.KeyEvent.KEYCODE_SPACE: case android.view.KeyEvent.KEYCODE_MEDIA_NEXT:
+            return 1;
+        case android.view.KeyEvent.KEYCODE_VOLUME_UP: case android.view.KeyEvent.KEYCODE_PAGE_UP: case android.view.KeyEvent.KEYCODE_DPAD_LEFT:
+        case android.view.KeyEvent.KEYCODE_DPAD_UP: case android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+            return -1;
+        }
+        return 0;
+    }
+
+    @Override public boolean onKeyDown(int keyCode, android.view.KeyEvent event) {
+        int d = keyDir(keyCode);
+        if (d == 0) return super.onKeyDown(keyCode, event);
+        if (event.getRepeatCount() == 0) {
+            if (chromeVisible) toggleChrome();
+            if (d > 0) next(); else prev();
+        }
+        return true;
+    }
+
+    @Override public boolean onKeyUp(int keyCode, android.view.KeyEvent event) {
+        return keyDir(keyCode) != 0 || super.onKeyUp(keyCode, event);
+    }
+
+    @Override public void onBackPressed() {
+        if (!backStack.isEmpty() && !chromeVisible) { goBack(); return; }
+        super.onBackPressed();
+    }
+
+    private void goBack() {
+        if (backStack.isEmpty()) return;
+        page = Math.max(0, Math.min(pages.size() - 1, backStack.remove(backStack.size() - 1)));
+        showText();
+        paintBackChip();
+    }
+
+    private void paintBackChip() {
+        if (backChip == null) {
+            backChip = Ui.text(this, "‹ 返回", 16, true);
+            backChip.setTextColor(Color.BLACK);
+            backChip.setBackground(Blocks.plain(this));
+            int st = Blocks.stroke(this);
+            backChip.setPadding(dp(14) + st, dp(6) + st, dp(14) + st, dp(6) + st);
+            backChip.setClickable(true);
+            backChip.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { goBack(); } });
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.START);
+            lp.leftMargin = dp(12); lp.bottomMargin = dp(26);
+            ((FrameLayout) content.getParent()).addView(backChip, lp);
+        }
+        int vis = backStack.isEmpty() ? View.GONE : View.VISIBLE;
+        if (backChip.getVisibility() != vis) backChip.setVisibility(vis);
+    }
+
     /** 正文换成这一页；两端对齐时要知道这一页最后一行后面这一段是不是还没完（没完的话最后一行也拉满）。 */
     private void setPageText(CharSequence t, String chapter, int start, int end) {
         int i = start + trimEnd(chapter.substring(start, Math.min(chapter.length(), Math.max(start, end)))).length();
         while (i < chapter.length() && (chapter.charAt(i) == ' ' || chapter.charAt(i) == '\t')) i++;
         content.setContinues(i < chapter.length() && chapter.charAt(i) != '\n' && chapter.charAt(i) != '\r');
+        markLinks(chapter, start, t.length());
         content.setText(t);
     }
 
@@ -898,14 +1091,12 @@ public class ReaderActivity extends Activity {
                 String html = readEntry(z, name);
                 if (html == null) { html = readEntry(z, href); name = href; }
                 if (html == null) continue;
-                String text = stripHtml(html);
+                Chapter c = parseChapter(html, name);
+                String text = c.text;
                 if (text.length() < 8) continue;
                 total += text.length();
                 if (total > 6 * 1024 * 1024) break;
-                Chapter c = new Chapter();
                 c.title = chapterTitle(html, out.size());
-                c.text = text;
-                c.entry = name;
                 out.add(c);
             }
             return out;
@@ -920,10 +1111,8 @@ public class ReaderActivity extends Activity {
         try {
             String html = readEntry(z, entry);
             if (html == null) return null;
-            Chapter c = new Chapter();
-            c.text = stripHtml(html);
+            Chapter c = parseChapter(html, entry);
             c.title = "";
-            c.entry = entry;
             return c;
         } finally {
             try { z.close(); } catch (Exception ignored) { }
@@ -986,6 +1175,158 @@ public class ReaderActivity extends Activity {
             if (s.length() > 0) return s;
         }
         return "第 " + (index + 1) + " 章";
+    }
+
+    // ------------------------------------------------------------------ EPUB 的书内链接（注释号、目录）
+
+    /** 标记字符：私用区，书里不会有。标记夹在原来的文字里走完 stripHtml 的整套替换，最后拿掉并记下位置。 */
+    private static final char MK = '\uE000', MK_END = '\uE001';
+    private static final Pattern TAG = Pattern.compile("<(/?)([A-Za-z][\\w:.-]*)([^>]*)>");
+    private static final java.util.Set<String> BLOCKS = new java.util.HashSet<String>(java.util.Arrays.asList(
+        "p", "li", "div", "aside", "section", "dd", "dt", "td", "blockquote", "ol", "ul", "dl", "table", "body", "h1", "h2", "h3", "h4", "h5", "h6"));
+
+    /**
+     * 一章的 HTML → 文字 + id 的位置 + 书内链接。文字和以前的 stripHtml 一模一样（续读位置、书签都按字符位置记，不能变），
+     * 只是另外记下：每个带 id 的元素从哪个字开始（块级元素还有到哪里结束）、每个 &lt;a href&gt; 盖住哪几个字、指向哪里。
+     */
+    private static Chapter parseChapter(String html, String entry) {
+        Chapter c = new Chapter();
+        c.entry = entry;
+        String s = html;
+        s = s.replaceAll("(?is)<head[^>]*>.*?</head>", " ");
+        s = s.replaceAll("(?is)<script[^>]*>.*?</script>", " ");
+        s = s.replaceAll("(?is)<style[^>]*>.*?</style>", " ");
+        if (s.indexOf(MK) >= 0 || s.indexOf(MK_END) >= 0) { s = s.replace(MK, ' ').replace(MK_END, ' '); }
+        List<int[]> tags = new ArrayList<int[]>();          // {起, 止, 是闭合标签 1/0}
+        List<String> names = new ArrayList<String>(), attrsL = new ArrayList<String>();
+        Matcher m = TAG.matcher(s);
+        while (m.find()) {
+            tags.add(new int[] { m.start(), m.end(), m.group(1).length() > 0 ? 1 : 0 });
+            names.add(m.group(2).toLowerCase(Locale.US));
+            attrsL.add(m.group(3));
+        }
+        if (tags.isEmpty()) { c.text = stripHtml(s); return c; }
+        String dir = entry.contains("/") ? entry.substring(0, entry.lastIndexOf('/') + 1) : "";
+        List<String> idNames = new ArrayList<String>();
+        List<int[]> idInfo = new ArrayList<int[]>();             // {是注释 1/0, 是块 1/0}
+        List<Link> links = new ArrayList<Link>();
+        java.util.Map<Integer, List<Integer>> closeAt = new java.util.HashMap<Integer, List<Integer>>();
+        StringBuilder out = new StringBuilder(s.length() + 64);
+        int last = 0, open = -1;
+        for (int i = 0; i < tags.size(); i++) {
+            int[] t = tags.get(i);
+            String name = names.get(i), at = attrsL.get(i);
+            out.append(s, last, t[0]);
+            List<Integer> ends = closeAt.get(i);
+            if (ends != null) for (int n : ends) out.append(MK).append('X').append(n).append(MK_END);
+            if (t[2] == 1) {
+                if ("a".equals(name) && open >= 0) { out.append(MK).append('E').append(MK_END); open = -1; }
+            } else {
+                String id = attr(at, "id");
+                if (id == null && "a".equals(name)) id = attr(at, "name");
+                if (id != null && id.length() > 0) {
+                    int n = idNames.size();
+                    String type = (String.valueOf(attr(at, "epub:type")) + " " + String.valueOf(attr(at, "class")) + " " + String.valueOf(attr(at, "role"))).toLowerCase(Locale.US);
+                    boolean note = "aside".equals(name) || type.contains("note");
+                    boolean block = BLOCKS.contains(name);
+                    idNames.add(id); idInfo.add(new int[] { note ? 1 : 0, block ? 1 : 0 });
+                    out.append(MK).append('I').append(n).append(MK_END);
+                    if (block && !at.trim().endsWith("/")) {   // 找对应的闭合标签（同名的嵌套要数层数）
+                        int depth = 0;
+                        for (int j = i + 1; j < tags.size(); j++) {
+                            if (!name.equals(names.get(j))) continue;
+                            if (tags.get(j)[2] == 0) { if (!attrsL.get(j).trim().endsWith("/")) depth++; }
+                            else if (depth == 0) {
+                                List<Integer> l = closeAt.get(j);
+                                if (l == null) { l = new ArrayList<Integer>(); closeAt.put(j, l); }
+                                l.add(n);
+                                break;
+                            } else depth--;
+                        }
+                    }
+                }
+                String href = "a".equals(name) ? attr(at, "href") : null;
+                if (href != null && href.length() > 0 && !href.matches("(?i)^[a-z][a-z0-9+.-]*:.*")) {
+                    if (open >= 0) out.append(MK).append('E').append(MK_END);
+                    Link k = new Link();
+                    int hash = href.indexOf('#');
+                    String file = hash >= 0 ? href.substring(0, hash) : href, frag = hash >= 0 ? href.substring(hash + 1) : "";
+                    try { file = java.net.URLDecoder.decode(file, "UTF-8"); frag = java.net.URLDecoder.decode(frag, "UTF-8"); } catch (Throwable ignored) { }
+                    String target = file.length() == 0 ? entry : resolve(dir, file);
+                    k.target = frag.length() > 0 ? target + "#" + frag : target;
+                    String type = (String.valueOf(attr(at, "epub:type")) + " " + String.valueOf(attr(at, "class")) + " " + String.valueOf(attr(at, "role"))).toLowerCase(Locale.US);
+                    k.noteref = type.contains("noteref") || type.contains("footnote") || type.contains("endnote");
+                    open = links.size();
+                    links.add(k);
+                    out.append(MK).append('L').append(open).append(MK_END);
+                }
+            }
+            out.append(s, t[0], t[1]);
+            last = t[1];
+        }
+        out.append(s, last, s.length());
+        if (open >= 0) out.append(MK).append('E').append(MK_END);
+        String marked = stripHtml(out.toString());
+        // 拿掉标记、记下位置。只在标记的地方补做 stripHtml 本来会做的空白合并（标记把两个空格 / 换行隔开了），
+        // 别处一个字都不动：没有链接的书得到的文字和以前完全一样
+        StringBuilder t = new StringBuilder(marked.length());
+        int[] idStart = new int[idNames.size()], idEnd = new int[idNames.size()];
+        java.util.Arrays.fill(idStart, -1); java.util.Arrays.fill(idEnd, -1);
+        int[] linkStart = new int[links.size()], linkEnd = new int[links.size()];
+        java.util.Arrays.fill(linkStart, -1); java.util.Arrays.fill(linkEnd, -1);
+        int cur = -1;
+        boolean afterMark = false;
+        for (int i = 0; i < marked.length(); i++) {
+            char ch = marked.charAt(i);
+            if (ch == MK) {
+                int e = marked.indexOf(MK_END, i);
+                if (e < 0) break;
+                char kind = marked.charAt(i + 1);
+                int n = -1;
+                try { if (e > i + 2) n = Integer.parseInt(marked.substring(i + 2, e)); } catch (NumberFormatException ignored) { }
+                int pos = t.length();
+                if (kind == 'I' && n >= 0 && n < idStart.length) idStart[n] = pos;
+                else if (kind == 'X' && n >= 0 && n < idEnd.length) idEnd[n] = pos;
+                else if (kind == 'L' && n >= 0 && n < linkStart.length) { linkStart[n] = pos; cur = n; }
+                else if (kind == 'E' && cur >= 0) { linkEnd[cur] = pos; cur = -1; }
+                i = e;
+                afterMark = true;
+                continue;
+            }
+            if (afterMark) {
+                int len = t.length();
+                char prev = len > 0 ? t.charAt(len - 1) : '\n';
+                boolean ws = ch == ' ' || ch == '\t';
+                if (len == 0 && (ws || ch == '\n')) continue;
+                if (ws && (prev == ' ' || prev == '\n')) continue;
+                if (ch == '\n' && prev == '\n' && len > 1 && t.charAt(len - 2) == '\n') continue;
+                if (ch == '\n' && prev == ' ') { t.setLength(len - 1); }
+                if (!ws && ch != '\n') afterMark = false;
+            }
+            t.append(ch);
+        }
+        int n = t.length();
+        while (n > 0 && Character.isWhitespace(t.charAt(n - 1))) n--;
+        t.setLength(n);
+        c.text = t.toString();
+        java.util.Map<String, int[]> ids = new java.util.HashMap<String, int[]>();
+        for (int i = 0; i < idNames.size(); i++) {
+            if (idStart[i] < 0 || ids.containsKey(idNames.get(i))) continue;
+            int st = Math.min(idStart[i], n), en = idEnd[i] < 0 ? -1 : Math.min(idEnd[i], n);
+            ids.put(idNames.get(i), new int[] { st, en, idInfo.get(i)[0], idInfo.get(i)[1] });
+        }
+        c.ids = ids;
+        List<Link> kept = new ArrayList<Link>();
+        for (int i = 0; i < links.size(); i++) {
+            Link k = links.get(i);
+            k.start = Math.min(linkStart[i], n); k.end = Math.min(linkEnd[i] < 0 ? linkStart[i] : linkEnd[i], n);
+            if (k.start < 0) continue;
+            while (k.start < k.end && Character.isWhitespace(c.text.charAt(k.start))) k.start++;
+            while (k.end > k.start && Character.isWhitespace(c.text.charAt(k.end - 1))) k.end--;
+            if (k.end > k.start) kept.add(k);   // 图片链接之类没有字的不要
+        }
+        c.links = kept;
+        return c;
     }
 
     private static String stripHtml(String html) {
@@ -1123,6 +1464,8 @@ public class ReaderActivity extends Activity {
             indent = p.getInt("indent", 0);
             minimal = p.getBoolean("minimal", false);
             tapMode = p.getInt("tapmode", 0);
+            bgMode = Math.max(0, Math.min(BG_L.length - 1, p.getInt("bg", 0)));
+            bgImg = p.getString("bgimg", null);
         } catch (Throwable ignored) { }
     }
 
@@ -1130,10 +1473,177 @@ public class ReaderActivity extends Activity {
         try {
             prefs().edit().putInt("size", textSize).putString("font", fontPath).putString("fontName", fontName)
                 .putFloat("line", lineSpacing).putInt("margin", marginDp).putInt("align", align)
-                .putFloat("para", paraSpacing).putInt("indent", indent).putBoolean("minimal", minimal).putInt("tapmode", tapMode).commit();
+                .putFloat("para", paraSpacing).putInt("indent", indent).putBoolean("minimal", minimal).putInt("tapmode", tapMode)
+                .putInt("bg", bgMode).putString("bgimg", bgImg).commit();
             Store.prefs(this, "home").edit().putString("reader_font_path", fontPath)
                 .putString("reader_font_name", fontName).commit();
         } catch (Throwable ignored) { }
+    }
+
+    // ------------------------------------------------------------------ 阅读背景：纯白 / 浅灰 / 纸张纹理 / 自己的图片
+
+    static final String[] BG_L = { "纯白", "浅灰", "纸张", "图片" };
+    /** 图片背景最深处的墨量（255 = 原图）：压到 22% 以内（网点最密 4 / 16），黑字的对比度不受影响，墨水屏上只是一层淡淡的底纹。 */
+    private static final int BG_KEEP = 56;
+    private int bgMode;
+    private String bgImg;
+    private FrameLayout pageRoot;
+    /** 处理好的背景图（屏幕大小的 8 位墨量图），几个阅读器窗口共用；换了图 / 屏幕大小才重做。 */
+    private static Bitmap bgInk;
+    private static String bgInkKey = "";
+
+    private String bgKey(File f, int w, int h) { return f.getAbsolutePath() + "|" + f.lastModified() + "|" + f.length() + "|" + w + "x" + h + "|" + BG_KEEP + "|dots"; }
+
+    /** 后台线程：图片背景的墨量图（内存里有就用，没有读缓存文件，再没有才解码原图）。 */
+    private Bitmap loadBgInk() {
+        if (bgImg == null) return null;
+        File f = new File(bgImg);
+        if (!f.isFile()) return null;
+        android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+        int w = dm.widthPixels, h = dm.heightPixels;
+        String key = bgKey(f, w, h);
+        synchronized (ReaderActivity.class) {
+            if (bgInk != null && !bgInk.isRecycled() && key.equals(bgInkKey)) return bgInk;
+            File dir = Store.cache("readerbg");
+            File cf = new File(dir, Integer.toHexString(key.hashCode()) + ".a8");
+            if (!cf.isFile()) { File[] old = dir.listFiles(); if (old != null) for (File o : old) o.delete(); }
+            Bitmap b = Theme.inkImage(f, w, h, BG_KEEP, cf);
+            if (b == null) return null;
+            bgInk = b; bgInkKey = key;   // 旧的那张可能还画在别的阅读器窗口上：不 recycle，交给 GC
+            return b;
+        }
+    }
+
+    /**
+     * 纹理都用纯黑的小点（网点）画：墨水屏的“对比度”设置会把很淡的灰拉成白（真机上对比度 2.2 时 #EAEAEA 整个变白），纯黑点不受影响。
+     * 浅灰 = 4×4 里 2 个点（12%）；纸张 = 随机的稀疏颗粒（约 3%）。都是平铺的小块，翻页时画起来和纯色一样快。
+     */
+    private static Bitmap greyTile, paperTile;
+    private static synchronized Bitmap greyTile() {
+        if (greyTile != null) return greyTile;
+        byte[] px = new byte[16];
+        for (int i = 0; i < 16; i++) px[i] = (byte) (Theme.BAYER[i] < 2 ? 255 : 0);
+        Bitmap b = Bitmap.createBitmap(4, 4, Bitmap.Config.ALPHA_8);
+        b.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(px));
+        return greyTile = b;
+    }
+    private static synchronized Bitmap paperTile() {
+        if (paperTile != null) return paperTile;
+        int n = 256;
+        byte[] px = new byte[n * n];
+        java.util.Random r = new java.util.Random(7);
+        for (int i = 0; i < px.length; i++) if (r.nextInt(1000) < 22) px[i] = (byte) 255;
+        // 几处两三个点连在一起的小颗粒（纸浆里的杂质），不画横竖的直线：平铺以后直线会排成看得出的格子
+        for (int k = 0; k < 90; k++) {
+            int x = r.nextInt(n), y = r.nextInt(n);
+            px[y * n + x] = (byte) 255;
+            px[((y + r.nextInt(2)) % n) * n + (x + 1) % n] = (byte) 255;
+        }
+        Bitmap b = Bitmap.createBitmap(n, n, Bitmap.Config.ALPHA_8);
+        b.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(px));
+        return paperTile = b;
+    }
+
+    /**
+     * 阅读背景：平铺的网点第一次画的时候铺成一张屏幕大小的 8 位墨量图（软件渲染下平铺着画每次要 30 ms 左右），
+     * 之后和图片背景一样：白底上按墨量贴一张 8 位图（测试机实测 10–15 ms；合成成 RGB_565 再贴反而要 20 ms，要做格式转换）。
+     * 铺好的图几个阅读器窗口共用，换了背景 / 屏幕大小才重做。
+     */
+    private static Bitmap spread, spreadFrom;
+    private static int spreadW, spreadH;
+
+    private static synchronized Bitmap spread(Bitmap tile, int w, int h) {
+        if (spread != null && !spread.isRecycled() && spreadFrom == tile && spreadW == w && spreadH == h) return spread;
+        int tw = tile.getWidth(), th = tile.getHeight();
+        byte[] t = new byte[tile.getRowBytes() * th];
+        tile.copyPixelsToBuffer(java.nio.ByteBuffer.wrap(t));
+        Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ALPHA_8);
+        int stride = b.getRowBytes(), trb = tile.getRowBytes();
+        byte[] out = new byte[stride * h];
+        for (int y = 0; y < h; y++) {
+            int src = (y % th) * trb, dst = y * stride;
+            for (int x = 0; x < w; x += tw) System.arraycopy(t, src, out, dst + x, Math.min(tw, w - x));
+        }
+        b.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(out));
+        spread = b; spreadFrom = tile; spreadW = w; spreadH = h;
+        return b;
+    }
+
+    private static final class BgDrawable extends android.graphics.drawable.Drawable {
+        private final Bitmap ink; private final boolean tile;
+        private final android.graphics.Paint p = new android.graphics.Paint();
+        private int logged;
+        BgDrawable(Bitmap ink, boolean tile) { this.ink = ink; this.tile = tile; p.setColor(Color.BLACK); }
+        @Override public void draw(android.graphics.Canvas c) {
+            long t0 = logged < 3 ? System.nanoTime() : 0;
+            android.graphics.Rect r = getBounds();
+            c.drawColor(Color.WHITE);
+            if (ink.isRecycled() || r.width() <= 0 || r.height() <= 0) return;
+            Bitmap b = tile ? spread(ink, r.width(), r.height()) : ink;
+            if (r.width() == b.getWidth() && r.height() == b.getHeight()) c.drawBitmap(b, r.left, r.top, p);
+            else c.drawBitmap(b, null, r, p);
+            // 前几次记一下画背景用了多久（翻页时多出来的就是这一点）
+            if (logged < 3) { logged++; android.util.Log.i("VeraPerf", "reader bg " + (tile ? "tile" : "image") + " draw " + (System.nanoTime() - t0) / 1000 + " us"); }
+        }
+        @Override public void setAlpha(int a) { }
+        @Override public void setColorFilter(android.graphics.ColorFilter f) { }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.OPAQUE; }
+    }
+
+    /** 按 bgMode 换背景。图片背景还没处理好时先白底，后台做好再贴（只有第一次选图时会这样）。 */
+    private void applyBackground() {
+        if (pageRoot == null) return;
+        // 有背景图时整页都由 pageRoot 画（不透明），窗口自己的白底不用再涂一遍（每翻一页省一次整屏填充）
+        getWindow().setBackgroundDrawable(bgMode == 0 ? new android.graphics.drawable.ColorDrawable(Color.WHITE) : null);
+        if (bgMode == 1) pageRoot.setBackground(new BgDrawable(greyTile(), true));
+        else if (bgMode == 2) pageRoot.setBackground(new BgDrawable(paperTile(), true));
+        else if (bgMode == 3) {
+            Bitmap b = bgInk;
+            File f = bgImg == null ? null : new File(bgImg);
+            android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+            if (b != null && f != null && bgKey(f, dm.widthPixels, dm.heightPixels).equals(bgInkKey)) { pageRoot.setBackground(new BgDrawable(b, false)); return; }
+            pageRoot.setBackgroundColor(Color.WHITE);
+            new Thread(new Runnable() { @Override public void run() {
+                final Bitmap nb = loadBgInk();
+                ui.post(new Runnable() { @Override public void run() {
+                    if (isDestroyed() || bgMode != 3) return;
+                    if (nb == null) { VeraToast.show(ReaderActivity.this, "背景图片打不开，先用白底"); return; }
+                    pageRoot.setBackground(new BgDrawable(nb, false));
+                } });
+            } }, "reader-bg").start();
+        } else pageRoot.setBackgroundColor(Color.WHITE);
+    }
+
+    private void setBg(int mode) {
+        if (mode == 3 && (bgImg == null || !new File(bgImg).isFile())) { pickBgImage(); return; }
+        bgMode = mode; saveStyle(); applyBackground();
+    }
+
+    /** 选背景图：和桌面壁纸同一批文件夹（VeraDroid/wallpaper、Pictures、Download、Kindle 的 documents……）。 */
+    private void pickBgImage() {
+        new Thread(new Runnable() { @Override public void run() {
+            final List<File> imgs = Theme.findImages();
+            ui.post(new Runnable() { @Override public void run() {
+                if (isDestroyed()) return;
+                if (imgs.isEmpty()) {
+                    new VeraDialog.Builder(ReaderActivity.this).title("阅读背景")
+                        .message("没有找到图片。\n\n用传书网页上传，或者把 jpg / png 放进内部存储的 VeraDroid/wallpaper 文件夹、Kindle 的 documents 文件夹，再来选。")
+                        .positive("知道了", null).show();
+                    return;
+                }
+                String[] names = new String[imgs.size()];
+                for (int i = 0; i < names.length; i++) names[i] = imgs.get(i).getName() + "\n" + Theme.placeLabel(imgs.get(i)) + " · " + Math.max(1, imgs.get(i).length() / 1024) + " KB";
+                new VeraDialog.Builder(ReaderActivity.this).title("选择背景图片").items(names, new VeraDialog.OnPick() {
+                    @Override public void onPick(int which) {
+                        bgImg = imgs.get(which).getAbsolutePath();
+                        bgMode = 3; saveStyle();
+                        VeraToast.show(ReaderActivity.this, "正在处理背景图片…");
+                        applyBackground();
+                        if (sheetOpen == 3) openSheet(3);
+                    }
+                }).negative("取消", new Runnable() { @Override public void run() { if (sheetOpen == 3) openSheet(3); } }).show();
+            } });
+        } }, "reader-bg-pick").start();
     }
 
     private void applyStyle() {
@@ -1222,24 +1732,20 @@ public class ReaderActivity extends Activity {
         box.setBackgroundColor(Color.WHITE);
         sv.addView(box);
 
-        TextView h = Ui.text(this, "显示", 24, true);
+        TextView h = Ui.text(this, "排版与字体", 24, true);
         box.addView(h);
         box.addView(Ui.rule(this, 1, Color.BLACK));
 
-        box.addView(Ui.text(this, "字体", 17, true));
-        List<Books.Font> fonts = Books.fonts();
-        for (final Books.Font f : fonts) {
-            boolean on = (f.path == null && fontPath == null) || (f.path != null && f.path.equals(fontPath));
-            View b = Ui.button(this, f.name, 15, on, new View.OnClickListener() {
-                @Override public void onClick(View v) {
-                    fontPath = f.path; fontName = f.name;
-                    saveStyle(); rebuildKeepPosition(); d.dismiss();
-                }
-            });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.topMargin = dp(4);
-            box.addView(b, lp);
-        }
+        // 字体单独一层（点了出列表）：字体多的时候，整张单子不用再上下翻
+        LinearLayout fontRow = new LinearLayout(this);
+        fontRow.setOrientation(LinearLayout.HORIZONTAL);
+        fontRow.setGravity(Gravity.CENTER_VERTICAL);
+        fontRow.setPadding(0, dp(6), 0, dp(2));
+        fontRow.addView(Ui.text(this, "字体", 17, true), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        fontRow.addView(Ui.button(this, fontName + "  ›", 15, false, new View.OnClickListener() {
+            @Override public void onClick(View v) { d.dismiss(); fontList(); }
+        }));
+        box.addView(fontRow);
 
         box.addView(Ui.text(this, "字号", 17, true));
         LinearLayout sizeRow = new LinearLayout(this);
@@ -1301,6 +1807,17 @@ public class ReaderActivity extends Activity {
         alignRow.addView(both, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         box.addView(alignRow);
 
+        box.addView(Ui.text(this, "阅读背景", 17, true));
+        LinearLayout bgRow = new LinearLayout(this);
+        bgRow.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < BG_L.length; i++) {
+            final int m = i;
+            bgRow.addView(Ui.button(this, i == 3 && bgMode == 3 ? "换图片" : BG_L[i], 14, bgMode == i, new View.OnClickListener() {
+                @Override public void onClick(View v) { d.dismiss(); if (m == 3 && bgMode == 3) pickBgImage(); else setBg(m); }
+            }), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        }
+        box.addView(bgRow);
+
         View close = Ui.button(this, "关闭", 16, true, new View.OnClickListener() {
             @Override public void onClick(View v) { d.dismiss(); }
         });
@@ -1312,7 +1829,24 @@ public class ReaderActivity extends Activity {
         d.show();
         w.setGravity(Gravity.BOTTOM);
         w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, (int) (getResources().getDisplayMetrics().heightPixels * 0.55));
+        w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    /** “排版与字体”的第二层：字体列表（当前的选中），选了就换、回到正文。 */
+    private void fontList() {
+        final List<Books.Font> fonts = Books.fonts();
+        String[] names = new String[fonts.size()];
+        int cur = 0;
+        for (int i = 0; i < names.length; i++) {
+            Books.Font f = fonts.get(i);
+            names[i] = f.name;
+            if ((f.path == null && fontPath == null) || (f.path != null && f.path.equals(fontPath))) cur = i;
+        }
+        new VeraDialog.Builder(this).title("字体").items(names, new VeraDialog.OnPick() {
+            @Override public void onPick(int which) {
+                fontPath = fonts.get(which).path; fontName = fonts.get(which).name; saveStyle(); rebuildKeepPosition();
+            }
+        }).selected(cur).negative("返回", new Runnable() { @Override public void run() { displayDialog(); } }).show();
     }
 
 
@@ -1684,6 +2218,10 @@ public class ReaderActivity extends Activity {
             @Override public void onStep(int i) { HostLink.settings("KFB_FLASH=" + BlocksSettings.FLASH_V[i] + "\n"); } }));
         sheetRow("极简全屏", "Minimal mode", new Blocks.Switch(this, minimal, new Icons.Toggle.Listener() { @Override public void onToggle(boolean on) {
             minimal = on; saveStyle(); if (footView != null) footView.setVisibility(on ? View.INVISIBLE : View.VISIBLE); } }));
+        sheetRow("阅读背景", "Background", new Blocks.Stepper(this, BG_L, bgMode, new Blocks.Stepper.Listener() {
+            @Override public void onStep(int i) { setBg(i); } }));
+        if (bgMode == 3) sheetRow("背景图片", "Image", Blocks.button(this, "换一张", false, new View.OnClickListener() {
+            @Override public void onClick(View v) { pickBgImage(); } }));
     }
 
     /** 模式：反色、翻页动画、点按翻页的方式。 */

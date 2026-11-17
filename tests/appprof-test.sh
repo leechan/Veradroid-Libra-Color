@@ -20,7 +20,7 @@ done
 bad=$(grep -v '^[[:space:]]*\(#\|$\)' host/pw6/boot/appprofiles.conf | sed 's/[[:space:]]*#.*//' | while read -r p s rest; do
     [ -n "$rest" ] && { echo "extra field: $p"; continue; }
     pp=${p%\*}; appprof_valid_pkg "$pp" || { echo "bad package: $p"; continue; }
-    printf '%s\n' "$s" | tr ';' '\n' | while read -r kv; do printf '%s\n' "$kv" | grep -Eq "$APPPROF_RE" || echo "bad setting $p: $kv"; done
+    printf '%s\n' "$s" | tr ';' '\n' | while read -r kv; do printf '%s\n' "$kv" | grep -Eq "$APPPROF_RE|^DENSITY=(auto1080|[1-6][0-9][0-9])\$" || echo "bad setting $p: $kv"; done
 done)
 [ -z "$bad" ] || fail "appprofiles.conf: $bad"
 dup=$(grep -v '^[[:space:]]*\(#\|$\)' host/pw6/boot/appprofiles.conf | awk '{print $1}' | sort | uniq -d)
@@ -60,4 +60,39 @@ expect "H KFB_MODE=1;KFB_FLASH=6;"
 expect "I 0"
 expect "J 0"
 expect "K global"
+# display density (DENSITY=auto1080): IWindowManager mocked; one call per real change, reset on home, settings file scrubbed
+for hw in 1272:376 1236:366 1072:317 1264:374 1448:429; do
+    w=${hw%%:*}; d=${hw#*:}
+    got=$(VD=$T/vd SYS=$T/sys W=$T/w X=$T/w/kfb WIDTH=$w sh -c '
+        t() { :; }; . host/pw6/boot/lib/appprof.sh; rm -f $W/density.*
+        appprof_wm() { case "$1" in 6) echo "Result: Parcel(00000000 00000001 $(printf %08x $WIDTH) 000006a0 '"'"'....'"'"')" ;; 10) echo "Result: Parcel(00000000 0000012c   '"'"'....'"'"')" ;; esac; }
+        appprof_density_want com.duokan.einkreader')
+    [ "$got" = "$d" ] || fail "auto1080 for width $w: got '$got', want $d"
+done
+rm -f $T/w/density.* $T/w/appprof.pkg
+mkdir -p $T/sys/data/system/users/0
+printf '%s\n' '<settings version="131">' '  <setting id="477" name="display_density_forced" value="377" package="android" />' '</settings>' > $T/sys/data/system/users/0/settings_secure.xml
+dout=$(VD=$T/vd SYS=$T/sys W=$T/w X=$T/w/kfb sh -c '
+    t() { :; }; settings_load() { :; }
+    . host/pw6/boot/lib/appprof.sh
+    appprof_wm() { echo "WM $*" >> $W/wm.log; case "$1" in 6) echo "Result: Parcel(00000000 00000001 000004f8 000006a0 '"'"'....'"'"')" ;; 10) echo "Result: Parcel(00000000 0000012c   '"'"'....'"'"')" ;; *) echo "Result: Parcel(00000000    '"'"'....'"'"')" ;; esac; }
+    calls() { grep -c "^WM 1[23] " $W/wm.log 2>/dev/null || echo 0; }
+    appprof_density_boot; echo "S $(grep -c "value=\"\"" $SYS/data/system/users/0/settings_secure.xml)"
+    appprof_fg com.duokan.einkreader; echo "P $(cat $W/density.cur) $(calls)"
+    appprof_fg com.duokan.reader; echo "Q $(cat $W/density.cur) $(calls)"
+    appprof_fg com.tencent.weread.eink; echo "R $(cat $W/density.cur 2>/dev/null || echo default) $(calls)"
+    appprof_fg home; echo "U $(calls)"
+    appprof_fg com.duokan.reader; appprof_density_reset; appprof_density_reset; echo "V $(cat $W/density.cur 2>/dev/null || echo default) $(calls)"
+    appprof_fg com.duokan.reader; echo "Y $(cat $W/density.cur) $(calls) $(cat $X/density.fg)"     # same package after a reset (thaw): density back
+    echo "Z $(cat $X/density.apps 2>/dev/null | tr "\n" " ")"
+')
+out=$dout
+expect "S 1"
+expect "P 376 1"
+expect "Q 376 1"
+expect "R default 2"
+expect "U 2"
+expect "V default 4"
+expect "Y 376 5 com.duokan.reader"
+expect "Z com.duokan.reader com.duokan.einkreader "
 echo "appprof: ok"

@@ -126,8 +126,24 @@ public class HomeActivity extends Activity {
     /** 这是盖在应用上面的单独设置页（SettingsActivity），不是桌面。 */
     boolean standalone;
 
+    /**
+     * 显示密度（宿主 appprof.sh：多看在前台时临时换成 320 × 屏宽 / 1080）：桌面自己不跟着重建。以前每换一次密度桌面整个重建一次——
+     * 它就在多看下面，重建中的窗口先交出一帧黑底、再一帧大一号的桌面，显示桥照画（PW6 实测：回桌面时 大号桌面 → 半张 → 整屏黑 → 正确的桌面）。
+     * 现在 manifest 里声明自己处理 density：换过去又换回来什么都不做；回到桌面后密度真的和建界面时不一样（用户改了系统密度之类）才重建。
+     */
+    private int builtDpi;
+    private final Runnable densityCheck = new Runnable() { @Override public void run() {
+        if (resumed && getResources().getConfiguration().densityDpi != builtDpi) recreate();
+    } };
+    @Override public void onConfigurationChanged(android.content.res.Configuration c) {
+        super.onConfigurationChanged(c);
+        handler.removeCallbacks(densityCheck);
+        if (resumed && c.densityDpi != builtDpi) handler.postDelayed(densityCheck, 1500);
+    }
+
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        builtDpi = getResources().getConfiguration().densityDpi;
         Stats.pruneAsync(this);   // 偏好文件里过期的每日统计和已删书的进度键（一天最多一次，后台）
         standalone = getClass() != HomeActivity.class;
         // If VeraHome itself dies, queue a system diagnostic upload before the
@@ -250,6 +266,9 @@ public class HomeActivity extends Activity {
         // 方块风格的“继续阅读”：刚离开的第三方应用最后的画面，趁主页还没画先从显示缓冲里取一张缩略图
         if (Blocks.on(this) && leftForApp && !standalone) { leftForApp = false; try { BlocksCards.captureLastApp(this, BlocksCards.lastForeground(this)); } catch (Throwable t) { android.util.Log.w("VeraHome", "lastapp: " + t); } }
         resumed = true;
+        // 离开时密度被换过（多看），回来时宿主马上会换回默认（fg home）：等一会儿还不一样才重建（densityCheck）
+        handler.removeCallbacks(densityCheck);
+        if (getResources().getConfiguration().densityDpi != builtDpi) handler.postDelayed(densityCheck, 1500);
         InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
         if (imm != null) imm.hideSoftInputFromWindow(getWindow().getDecorView().getWindowToken(), 0);
         StatusBarService.setSuppressed(true);
@@ -266,13 +285,18 @@ public class HomeActivity extends Activity {
             // 从阅读器 / 应用回来：进度、时间在窗口重新画出来之前就同步改好，不留到之后再补一次
             if (libReady && Lib.refreshProgress(this) && libPage != null) { if (mainTab == TAB_LIB) libPage.refresh(); else libPage.refreshSoon(); }
             refreshStatus();
-            if (blocks != null && Blocks.on(this)) blocks.dataChanged();
+            if (blocks != null && Blocks.on(this)) { blocks.dataChanged(); blocksWall(blocks.current()); }
+            // 自动更新选了“只提醒”而宿主发现了新版本：列出更新内容让用户选。上面刚让宿主重写状态（status），等它写完再看
+            handler.removeCallbacks(updateNotice);
+            handler.postDelayed(updateNotice, 2000);
         }
         if (libReady) Lib.scan(this, 20000);
         handler.removeCallbacks(tick);
         handler.postDelayed(tick, 60000 - System.currentTimeMillis() % 60000 + 200);
         showUploadResult();
     }
+
+    private final Runnable updateNotice = new Runnable() { @Override public void run() { if (resumed && !isFinishing()) SysUpdate.maybeNotify(HomeActivity.this); } };
 
     /** 这次离开主页是去开别的应用（不是自己的阅读器 / 设置页），回来时才取它的画面。 */
     private boolean leftForApp, ownStart;
@@ -498,7 +522,6 @@ public class HomeActivity extends Activity {
         Perf.measure(page, "blocks main");
         inSettings = false;
         if (blocks == null) { blocks = new BlocksHome(this); if (!standalone) BlocksCards.startListening(this); }
-        applyWallpaper(false);
         refreshStatus();
         if (appsLoadedAt == 0 || prefs.getInt("sort", 0) != loadedSort) reload();
         blocks.show(key < 0 ? blocks.current() : key);
@@ -539,20 +562,32 @@ public class HomeActivity extends Activity {
         int sw = getResources().getDisplayMetrics().widthPixels, sh = getResources().getDisplayMetrics().heightPixels;
         // 只拿已经处理好的那张，主线程不等后台的处理、也不自己解码（Theme.wallpaperIfReady）。还没好就先白底，
         // 后台做好后再贴一次（只重试一次：图打不开时不会来回转）。
+        wallHome = home;
         Drawable w = home ? Theme.wallpaperIfReady(this, sw, sh) : null;
         if (w != null) page.setBackground(w); else page.setBackgroundColor(Color.WHITE);
         if (home && w == null && Theme.hasWallpaper() && !wallPending) {
             wallPending = true;
             Theme.prepareAsync(this, new Runnable() { @Override public void run() {
                 wallPending = false;
-                if (isFinishing() || mainTab != TAB_HOME || !key.equals(wallApplied)) return;   // 已经换了页面 / 设置
+                if (isFinishing() || !wallHome || !key.equals(wallApplied)) return;   // 已经换了页面 / 设置
                 Drawable d = Theme.wallpaperIfReady(HomeActivity.this, getResources().getDisplayMetrics().widthPixels,
                                                     getResources().getDisplayMetrics().heightPixels);
                 if (d != null) page.setBackground(d);
             } });
         }
     }
-    private boolean wallPending;
+    private boolean wallPending, wallHome;
+
+    /**
+     * 方块风格：壁纸只铺在“首页”标签下面（和经典风格只在主页显示一样），卡片按“卡片遮盖”画成实心白 / 半透明白。
+     * 方块的根控件本身不涂底色，底下就是 page 的背景（白纸或壁纸）。BlocksHome.show 每次换页都会叫这里；
+     * 壁纸只取已经在后台处理好的那张（Theme.wallpaperIfReady），主线程不解码。
+     */
+    void blocksWall(int key) {
+        boolean on = key == BlocksHome.HOME && !standalone && Theme.hasWallpaper();
+        Blocks.veil = on ? Blocks.wallCardAlpha(this) : 255;
+        applyWallpaper(on);
+    }
 
     private void showHome() { if (standalone) { finish(); return; } showMain(mainTab); }
 
@@ -1303,18 +1338,8 @@ public class HomeActivity extends Activity {
         box(title, msg, new String[] { "取消", "确定" }, new Runnable[] { null, yes });
     }
 
-    void fullUpdateDialog() {
-        new VeraDialog.Builder(this)
-            .title("完整更新")
-            .message("检查服务器最新版本：已是最新就直接启动；有新版本优先下载增量补丁，补丁不可用才下整包。数据、书架、绑定账号保留。")
-            .negative("取消", null)
-            .positive("检查并更新", new Runnable() {
-                @Override public void run() {
-                    HostLink.cmd("fullupdate");
-                    say("已开始下载整包，几秒后会退出 Android");
-                }
-            }).show();
-    }
+    /** 检查系统更新：先列出新版本的更新内容，用户选“更新”才开始（SysUpdate）。 */
+    void fullUpdateDialog() { SysUpdate.check(this); }
 
     private void fontDialog() {
         final java.util.List<Books.Font> fonts = Books.fonts();
@@ -1367,7 +1392,7 @@ public class HomeActivity extends Activity {
             }
         };
         ((LinearLayout) r.getTag()).addView(bs ? new Blocks.Switch(this, on[0] == 1, wl) : new Icons.Toggle(this, on[0] == 1, wl));
-        action(list, "已保存的网络", "列出在 Kindle 上保存过的 Wi-Fi，点一个就切换过去。下拉面板里长按 Wi-Fi 磁贴也能打开。", "选择", new View.OnClickListener() {
+        action(list, "Wi-Fi 网络", "列出在 Kindle 上保存过的 Wi-Fi，点一个就切换过去；“附近的网络”可以输入密码连接新网络。下拉面板里长按 Wi-Fi 磁贴也能打开。", "选择", new View.OnClickListener() {
             @Override public void onClick(View v) { WifiActivity.open(HomeActivity.this); }
         });
     }
@@ -1697,7 +1722,7 @@ public class HomeActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         // 状态文件里设置页只用到 Wi-Fi 开关（电量之类每次都在变，算进来缓存就永远用不上）
         sb.append(new java.util.TreeMap<String, String>(HostLink.kv(HostLink.KFB + "settings"))).append('|')
-          .append(HostLink.kv(HostLink.CTL + "status").get("wifi")).append('|');
+          .append(HostLink.kv(HostLink.CTL + "status").get("wifi")).append('|').append(SysUpdate.mode()).append('|');
         for (Map.Entry<String, ?> e : new java.util.TreeMap<String, Object>(prefs.getAll()).entrySet()) {
             String k = e.getKey();
             // 和设置页显示无关、又经常变的键：应用最近打开时间、检查更新的时间、每应用显示 / 字号、收件箱同步、书库的排序筛选
@@ -1861,6 +1886,9 @@ public class HomeActivity extends Activity {
                 boolean all = prefs.getBoolean("system_font_all", true);
                 ((LinearLayout) r.getTag()).addView(bs ? new Blocks.Switch(this, all, tl) : new Icons.Toggle(this, all, tl));
             }
+            action(list, "字体商店", "下载大家分享的字体（都经过审核），可以设为系统字体或阅读字体，也可以在这里删除下载的字体。", "打开", new View.OnClickListener() {
+                @Override public void onClick(View v) { FontStoreActivity.open(HomeActivity.this); }
+            });
             action(list, "导入字体", "在传输网页上传 .ttf/.otf，会自动进入字体库；再回这里选择。", "打开传输", new View.OnClickListener() {
                 @Override public void onClick(View v) { startActivity(new Intent(HomeActivity.this, TransferActivity.class)); }
             });
@@ -1920,13 +1948,14 @@ public class HomeActivity extends Activity {
             section(list, "壁纸与图标");
             final boolean hasWall = Theme.hasWallpaper();
             action(list, "桌面壁纸", (hasWall ? "当前：已设置。" : "当前：没有壁纸（白底）。")
-                + "从内部存储的 VeraDroid/wallpaper、Pictures、Download 或 Kindle 的 documents 里选一张图；传书网页的“主题”页也能上传。转成灰度，只在主页显示。",
+                + "从内部存储的 VeraDroid/wallpaper、Pictures、Download 或 Kindle 的 documents 里选一张图；传书网页的“主题”页也能上传。转成灰度，只在主页（方块风格是“首页”标签）显示。",
                 "选择", new View.OnClickListener() {
                 @Override public void onClick(View v) { pickWallpaper(); }
             });
             if (hasWall) {
                 localChoice(list, "壁纸铺法", "铺满：放大到盖满屏幕，多出来的裁掉；完整显示：整张图都看得到，空出来的地方留白；原大小：不缩放，放在正中间。", "wallmode", WALLMODE_L, 0, 0);
                 localChoice(list, "壁纸深浅", "20% 最淡，文字最清楚；原图最深。", "wallpaperdim", DIM_L, 0, 2);
+                localChoice(list, "卡片遮盖（方块风格）", "方块风格的首页上，卡片怎么盖住壁纸。实心白卡片：卡片里是白纸，文字最清楚，壁纸只在卡片之间露出来；半透明、通透：卡片里也透出一点壁纸。", Blocks.WALLCARD_KEY, Blocks.WALLCARD_L, 0, 0);
                 action(list, "不用壁纸", "回到白底。图片文件不会被删掉。", "去掉", new View.OnClickListener() {
                     @Override public void onClick(View v) { Theme.clearWallpaper(); themeVer = Theme.version(); wallApplied = ""; showSettings(); }
                 });
@@ -1972,8 +2001,18 @@ public class HomeActivity extends Activity {
             action(list, "绑定账号", "在网站“我的设备”生成 6 位绑定码，填到这里；绑定后可以在后台看到机器和版本。", "绑定", new View.OnClickListener() {
                 @Override public void onClick(View v) { bindDialog(); }
             });
-            action(list, "检查完整系统更新", "检查最新 VeraDroid 整机版本；已最新不会重装，有新版本优先走增量补丁，失败再回退整包。系统更新会短暂退出 Android。", "检查", new View.OnClickListener() {
+            action(list, "检查完整系统更新", "检查最新 VeraDroid 整机版本；有新版本先列出更新内容，再由你选“更新”或“以后再说”。有增量补丁时只下载变了的部分。系统更新会短暂退出 Android。", "检查", new View.OnClickListener() {
                 @Override public void onClick(View v) { fullUpdateDialog(); }
+            });
+            action(list, "自动更新", "自动安装：在你回到 Kindle、不用 Android 时自动装新版本（默认）；只提醒：发现新版本时在桌面列出更新内容，由你决定装不装；关闭：只在你自己检查时更新。当前：" + SysUpdate.MODE_L[SysUpdate.mode()] + "。",
+                "选择", new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    new VeraDialog.Builder(HomeActivity.this).title("自动更新").items(SysUpdate.MODE_L, new VeraDialog.OnPick() {
+                        @Override public void onPick(int which) {
+                            SysUpdate.setMode(HomeActivity.this, which, new View.OnClickListener() { @Override public void onClick(View x) { showSettings(); } });
+                        }
+                    }).selected(SysUpdate.mode()).negative("取消", null).show();
+                }
             });
             section(list, "设备");
             localChoice(list, "后台保留应用", "前台以外最多留几个自己装的应用在后台，多出来的（最久没用的）在换应用 3 秒后停掉，省内存。应用长按 → 保持后台 的不算。",

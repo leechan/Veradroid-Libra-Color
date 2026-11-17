@@ -158,6 +158,21 @@ static int remap(int code) {
     return d > 0 ? KEY_VOLUMEDOWN : KEY_VOLUMEUP;   /* volume (default) */
 }
 
+/*
+ * 翻页动画的方向（显示桥的 KFB_ANIM_MODE=1 “跟随手势”）：方向只从显示桥收到的 DIR 来，以前只有触摸前端
+ * （veradroid-input：左划 / 点右半边 = 2，右划 / 点左半边 = 3）会发，翻页器的按键从来不发，所以按“上一页”时
+ * 动画还是上一次触摸留下的方向（多半是从右往左）。按下翻页键时和触摸前端一样先发一个方向提示：
+ * 下一页 2（从右往左滑入），上一页 3。只是提示，不强制动画；显示桥不在时什么都不做。
+ */
+static void epd_dir(int d) {
+    int fd = open("/dev/shm/veradroid/kfb/epd.fifo", O_WRONLY | O_NONBLOCK);
+    if (fd < 0) return;
+    char b[16];
+    int n = snprintf(b, sizeof b, "DIR %d\n", d > 0 ? 2 : 3);
+    if (write(fd, b, n) < 0) { /* bridge not reading */ }
+    close(fd);
+}
+
 static void run_action(const char *a, const char *arg) {
     if (!action) return;
     pid_t p = fork();
@@ -349,6 +364,7 @@ static void handle(struct dev *dv) {
             if (c == KEY_BRIGHTNESSUP || c == KEY_BRIGHTNESSDOWN) { if (v) run_action("light", c == KEY_BRIGHTNESSUP ? "+" : "-"); continue; }
             if (c == KEY_POWER) continue;               /* Kindle Remote "sleep": Kindle's powerd owns sleep */
             int m = remap(c);
+            if (v == 1) { int d = direction(c); if (d) epd_dir(swap_dir ? -d : d); }   /* before Android draws the new page */
             emit(btkeys, EV_KEY, m, v); emit(btkeys, EV_SYN, SYN_REPORT, 0);
             if (v == 1) lg("key %d -> %d", c, m);
         }

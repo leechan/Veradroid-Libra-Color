@@ -269,7 +269,7 @@ docs_list() { # [dir]
     ( cd "${1:-$DOCS_DIR}/.." 2>/dev/null && find documents -type f 2>/dev/null ) | grep -v \
         -e '^documents/VeraDroid\.sh' -e '^documents/VeraDroid-Experimental\.sh' -e '^documents/VeraDroid-Offline\.sh' \
         -e '^documents/bootstrap\.sh' -e '^documents/veradroid-.*\.tar\.gz' -e '\.partial$' -e '\.tmp$' \
-        -e '^documents/VeraDroid\.sdr/' -e '^documents/VeraDroid-Experimental\.sdr/' -e '^documents/VeraDroid-Offline\.sdr/' -e '^documents/bootstrap\.sdr/' | sort
+        -e '^documents/VeraDroid\.sdr/' -e '^documents/VeraDroid-Experimental\.sdr/' -e '^documents/VeraDroid-Offline\.sdr/' -e '^documents/bootstrap\.sdr/' -e '^documents/VeraDroid-Uninstall\.s' | sort
 }
 docs_snapshot() { docs_list > $W/docs.before 2>/dev/null; }
 # $1 = 清单文件（docs_list 的格式）。全部还在返回 0；少了就大声记下来，能从安装前备份恢复的恢复（tar -k：绝不覆盖现有文件）

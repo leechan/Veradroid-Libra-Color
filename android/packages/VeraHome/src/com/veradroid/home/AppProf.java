@@ -111,6 +111,40 @@ final class AppProf {
         if (!host()) return;
         HostLink.epd("LAUNCH " + LAUNCH_MS);
         fg(pkg);
+        if (wantsDensity(pkg)) awaitHost(pkg);
+    }
+
+    /** 宿主要给这个应用换显示密度（appprof.sh 发布的 density.apps：内置表里带 DENSITY 的包名，可以以 * 结尾）。老宿主没有这个文件。 */
+    static boolean wantsDensity(String pkg) {
+        try {
+            BufferedReader r = new BufferedReader(new FileReader(HostLink.KFB + "density.apps"));
+            try {
+                String k;
+                while ((k = r.readLine()) != null) {
+                    k = k.trim();
+                    if (k.equals(pkg) || (k.endsWith("*") && pkg.startsWith(k.substring(0, k.length() - 1)))) return true;
+                }
+            } finally { r.close(); }
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    /**
+     * 等宿主处理完这次 "fg"（它把包名写进 density.fg）再 startActivity：系统密度在应用的 Activity 建起来之前就换好，
+     * 不然 Activity 先按旧密度建、马上又整个重建一次（多看冷启动多出一帧黑屏、慢 1–2 秒，PW6 实测）。平时约 0.1 秒，最多等 0.5 秒。
+     */
+    static void awaitHost(String pkg) {
+        long end = android.os.SystemClock.uptimeMillis() + 500;
+        File f = new File(HostLink.KFB + "density.fg");
+        while (android.os.SystemClock.uptimeMillis() < end) {
+            try {
+                BufferedReader r = new BufferedReader(new FileReader(f));
+                String v = r.readLine();
+                r.close();
+                if (v != null && v.trim().equals(pkg)) return;
+            } catch (Exception ignored) { }
+            android.os.SystemClock.sleep(10);
+        }
     }
 
     /** spec："" = 删掉用户的（回到内置推荐 / 全局），"-" = 全跟随，否则 KEY=v;KEY=v */

@@ -22,30 +22,37 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
-import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import java.io.BufferedReader;
+import android.content.SharedPreferences;
+import android.content.res.AssetFileDescriptor;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.io.StringWriter;
+import java.io.Writer;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 
 /**
- * A small black-and-white IME for the e-ink panel: English QWERTY, and a pinyin mode with a compact
- * character/phrase dictionary.  It deliberately has no animations, no popups and no glossy graphics:
- * every key press is one local e-ink refresh, and candidates are committed with a single tap.
+ * A small black-and-white IME for the e-ink panel: English QWERTY, and a pinyin mode that decodes whole phrases
+ * and sentences (PinyinDecoder over assets/pinyin.dat), suggests the next word after a commit (联想) and learns
+ * what the user types (UserDict, files/userdict.txt).  It deliberately has no animations, no popups and no glossy
+ * graphics: every key press is one local e-ink refresh, and the candidate bar is one view that redraws only itself.
  */
 public class VeraImeService extends InputMethodService {
     private static final String TAG = "VeraIME";
 
-    private LinearLayout root, candidatesRow, keyboard;
-    private HorizontalScrollView candidateScroll;
-    private TextView composing;
+    private LinearLayout root, keyboard;
+    private CandidateBar bar;
+    private TextView composing, optionsKey;
     private final List<TextView> letterKeys = new ArrayList<TextView>();
     private TextView shiftKey, modeKey, spaceKey;
     private int rowH = 140;
@@ -62,16 +69,38 @@ public class VeraImeService extends InputMethodService {
     private String lastCopied;
     private TextView selectKey;
     private final StringBuilder pinyin = new StringBuilder();
-    private final Map<String, String> charMap = new HashMap<String, String>();
-    private final Map<String, String> wordMap = new HashMap<String, String>();
-    private final List<String> charKeys = new ArrayList<String>();
-    private final List<String> candidates = new ArrayList<String>();
+
+    // ---- pinyin engine
+    private PinyinDict dict;
+    private PinyinDecoder decoder;
+    private UserDict user;
+    /** a candidate chosen for the first part of the pinyin; the rest is still being chosen */
+    private static final class Pick {
+        final String text, raw;
+        final PinyinDecoder.Cand cand;
+        Pick(String t, String r, PinyinDecoder.Cand c) { text = t; raw = r; cand = c; }
+    }
+    private final ArrayList<Pick> picks = new ArrayList<Pick>();
+    private boolean justPicked;
+    /** non-null: the bar shows words that may follow the last commit (联想) */
+    private List<PinyinDecoder.Cand> predictions;
+    /** the last committed phrase: context for decoding and suggestions; -1 / null = unknown */
+    private int ctxId = -1;
+    private String ctxText;
+    private boolean awaitSel;
+    private int ctxAt = -1;
+    // ---- options (the 选项 key in the top line)
+    private boolean optionsMode, predictOn = true, learnOn = true;
+    private long clearArmed;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
 
     @Override public void onCreate() {
         super.onCreate();
-        loadDictionary();
+        SharedPreferences sp = getSharedPreferences("ime", MODE_PRIVATE);
+        predictOn = sp.getBoolean("predict", true);
+        learnOn = sp.getBoolean("learn", true);
+        openEngine();
     }
 
     private int dp(float v) {
@@ -141,21 +170,21 @@ public class VeraImeService extends InputMethodService {
         composing = text("", 18, true);
         composing.setSingleLine(true);
         top.addView(composing, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView hint = text("中文/English", 12, false);
-        hint.setTextColor(Color.GRAY);
-        top.addView(hint);
+        optionsKey = text("选项", 16, false);
+        optionsKey.setGravity(Gravity.CENTER);
+        optionsKey.setPadding(dp(14), 0, dp(6), 0);
+        optionsKey.setSoundEffectsEnabled(false);
+        optionsKey.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { openOptions(!optionsMode); }
+        });
+        top.addView(optionsKey, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
         root.addView(top, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, topH));
 
-        candidateScroll = new HorizontalScrollView(this);
-        candidateScroll.setHorizontalScrollBarEnabled(false);
-        candidateScroll.setFillViewport(false);
-        candidatesRow = new LinearLayout(this);
-        candidatesRow.setOrientation(LinearLayout.HORIZONTAL);
-        candidatesRow.setGravity(Gravity.CENTER_VERTICAL);
-        candidatesRow.setPadding(dp(4), 0, dp(4), 0);
-        candidateScroll.addView(candidatesRow, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        root.addView(candidateScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, candH));
+        bar = new CandidateBar(this);
+        bar.setListener(new CandidateBar.Listener() {
+            @Override public void onPick(int index) { pick(index); }
+        });
+        root.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, candH));
 
         keyboard = new LinearLayout(this);
         keyboard.setOrientation(LinearLayout.VERTICAL);
@@ -169,6 +198,9 @@ public class VeraImeService extends InputMethodService {
     @Override public void onStartInput(EditorInfo info, boolean restarting) {
         super.onStartInput(info, restarting);
         pinyin.setLength(0);
+        picks.clear();
+        predictions = null;
+        clearContext();
         selecting = false; selAnchor = -1;
         // 变体是枚举值，不是位：以前按位与 PASSWORD(0x80)，网页输入框(0xa0)、搜索过滤框(0xb0)也被当成密码框切成英文，
         // 而且之后所有普通输入框都一直是英文。现在密码 / 网址 / 邮箱框临时用英文，别的框回到用户自己选的模式。
@@ -188,7 +220,7 @@ public class VeraImeService extends InputMethodService {
             if (symbols) { chinese = false; numeric = false; }
         }
         if (root != null) {
-            buildKeyboard();
+            if (!page().equals(builtPage) || keyboard.getChildCount() == 0) buildKeyboard();
             updateKeyLabels();
             updateCandidates();
         }
@@ -199,6 +231,7 @@ public class VeraImeService extends InputMethodService {
      *  stays, so copy in one field and paste in the next works without reopening it. */
     @Override public void onFinishInputView(boolean finishingInput) {
         super.onFinishInputView(finishingInput);
+        if (optionsMode) { optionsMode = false; if (root != null) { buildKeyboard(); updateCandidates(); } }
         if (editMode) {
             EditorInfo ei = getCurrentInputEditorInfo();
             editHiddenAt = SystemClock.uptimeMillis();
@@ -217,6 +250,7 @@ public class VeraImeService extends InputMethodService {
      */
     @Override public void onWindowHidden() {
         super.onWindowHidden();
+        saveUser();
         toBridge("HINT 2500 5\n");
     }
 
@@ -257,8 +291,24 @@ public class VeraImeService extends InputMethodService {
 
     @Override public void onFinishInput() {
         pinyin.setLength(0);
+        picks.clear();
+        predictions = null;
+        saveUser();
         super.onFinishInput();
     }
+
+    /** The cursor moved somewhere we did not put it: the last commit is no context any more, 联想 goes away. */
+    @Override public void onUpdateSelection(int oldSelStart, int oldSelEnd, int newSelStart, int newSelEnd,
+                                            int candidatesStart, int candidatesEnd) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd);
+        if (awaitSel) { awaitSel = false; ctxAt = newSelEnd; return; }
+        if (ctxAt >= 0 && (newSelStart != ctxAt || newSelEnd != ctxAt)) {
+            clearContext();
+            if (predictions != null && pinyin.length() == 0 && picks.isEmpty()) { predictions = null; updateCandidates(); }
+        }
+    }
+
+    private void clearContext() { ctxId = -1; ctxText = null; ctxAt = -1; awaitSel = false; }
 
     @Override public boolean onEvaluateFullscreenMode() {
         return false;
@@ -266,96 +316,316 @@ public class VeraImeService extends InputMethodService {
 
     // ------------------------------------------------------------------ dictionary
 
-    private void loadDictionary() {
-        BufferedReader r = null;
+    /**
+     * Map assets/pinyin.dat (stored uncompressed in the APK: aapt -0 .dat) read-only: the dictionary costs no heap and
+     * only the pages a lookup touches count towards the process' memory.  Then the user's own dictionary.
+     */
+    private void openEngine() {
+        long t0 = SystemClock.uptimeMillis();
         try {
-            r = new BufferedReader(new InputStreamReader(getAssets().open("pinyin.tsv"), "UTF-8"));
-            String line;
-            while ((line = r.readLine()) != null) {
-                if (line.length() == 0 || line.charAt(0) == '#') continue;
-                int a = line.indexOf('\t');
-                int b = line.indexOf('\t', a + 1);
-                if (a < 0 || b < 0) continue;
-                String type = line.substring(0, a);
-                String key = line.substring(a + 1, b);
-                String val = line.substring(b + 1);
-                if ("C".equals(type)) {
-                    charMap.put(key, val);
-                    charKeys.add(key);
-                } else if ("W".equals(type)) {
-                    wordMap.put(key, val);
+            ByteBuffer buf;
+            AssetFileDescriptor fd = null;
+            try { fd = getAssets().openFd("pinyin.dat"); } catch (Exception compressed) { }
+            if (fd != null) {
+                FileInputStream in = fd.createInputStream();
+                buf = in.getChannel().map(FileChannel.MapMode.READ_ONLY, fd.getStartOffset(), fd.getLength());
+                in.close();
+            } else {                            // stored compressed after all: read it once into native memory
+                InputStream in = getAssets().open("pinyin.dat");
+                java.io.ByteArrayOutputStream o = new java.io.ByteArrayOutputStream(1 << 22);
+                byte[] b = new byte[65536];
+                for (int n; (n = in.read(b)) > 0; ) o.write(b, 0, n);
+                in.close();
+                buf = ByteBuffer.allocateDirect(o.size());
+                buf.put(o.toByteArray()).flip();
+            }
+            dict = new PinyinDict(buf);
+            decoder = new PinyinDecoder(dict);
+            user = new UserDict(dict);
+            decoder.setUser(user);
+            File f = userFile();
+            if (f.exists()) {
+                InputStreamReader r = new InputStreamReader(new FileInputStream(f), "UTF-8");
+                try { user.load(r); } finally { r.close(); }
+            }
+            Log.i(TAG, "pinyin: " + dict.nWords + " words, " + dict.nBi + " bigrams, user " + user.phraseCount() + "/"
+                + user.pairCount() + ", " + (SystemClock.uptimeMillis() - t0) + " ms" + (fd == null ? " (compressed asset)" : ""));
+        } catch (Throwable t) {
+            Log.e(TAG, "pinyin dictionary not usable, letters are committed as typed", t);
+            dict = null; decoder = null;
+        }
+    }
+
+    private File userFile() { return new File(getFilesDir(), "userdict.txt"); }
+
+    /** Write the user dictionary if it changed: built on this thread (small), written by another, atomically. */
+    private long lastSave;
+
+    private void saveUser() {
+        if (user == null || !user.dirty) return;
+        lastSave = SystemClock.uptimeMillis();
+        final StringWriter w = new StringWriter();
+        try { user.save(w); } catch (Exception e) { return; }
+        user.dirty = false;
+        final File f = userFile(), tmp = new File(f.getPath() + ".tmp");
+        new Thread("VeraIME-save") {
+            @Override public void run() {
+                synchronized (VeraImeService.class) {
+                    try {
+                        Writer o = new OutputStreamWriter(new FileOutputStream(tmp), "UTF-8");
+                        try { o.write(w.toString()); } finally { o.close(); }
+                        if (!tmp.renameTo(f)) Log.w(TAG, "userdict: rename failed");
+                    } catch (Exception e) { Log.w(TAG, "userdict: " + e); }
                 }
             }
-        } catch (Throwable ignored) {
-        } finally {
-            if (r != null) try { r.close(); } catch (Exception ignored) { }
-        }
-        Collections.sort(charKeys);
+        }.start();
+    }
+
+    private void clearUser() {
+        if (user != null) user.clear();
+        clearContext();
+        synchronized (VeraImeService.class) { userFile().delete(); }
+        if (user != null) user.dirty = false;
+        Log.i(TAG, "userdict cleared");
     }
 
     // ------------------------------------------------------------------ candidates
 
-    private void addCandidate(String s) {
-        if (s == null || s.length() == 0 || candidates.contains(s)) return;
-        candidates.add(s);
+    private boolean composingNow() { return pinyin.length() > 0 || !picks.isEmpty(); }
+
+    private int contextId() {
+        if (!picks.isEmpty()) return picks.get(picks.size() - 1).cand.lastId();
+        return ctxId;
     }
 
     private void updateCandidates() {
-        if (candidatesRow == null || composing == null) return;
-        candidatesRow.removeAllViews();
-        candidates.clear();
+        if (bar == null || composing == null) return;
+        if (optionsMode) { composing.setText("输入法选项"); bar.setSource(null); return; }
         if (editMode) {
             composing.setText(selecting ? "编辑 · 选择中：用方向键扩大选区" : "编辑");
+            bar.setSource(null);
             return;
         }
         if (!chinese) {
             composing.setText("English");
+            bar.setSource(null);
             return;
         }
-        String key = pinyin.toString();
-        composing.setText(key.length() == 0 ? "拼音输入" : key);
-        if (key.length() == 0) {
-            return;
-        }
-
-        String words = wordMap.get(key);
-        if (words != null) for (String w : words.split("\\|")) addCandidate(w);
-        String chars = charMap.get(key);
-        if (chars != null) for (int i = 0; i < chars.length(); i++) addCandidate(String.valueOf(chars.charAt(i)));
-
-        // partial syllable: show common characters whose pinyin starts with what has been typed.
-        if (candidates.isEmpty()) {
-            for (String k : charKeys) {
-                if (!k.startsWith(key)) continue;
-                String v = charMap.get(k);
-                if (v != null) for (int i = 0; i < v.length() && i < 2; i++) addCandidate(String.valueOf(v.charAt(i)));
-                if (candidates.size() >= 12) break;
-            }
-        }
-
-        for (int i = 0; i < candidates.size() && i < 16; i++) {
-            final String c = candidates.get(i);
-            TextView t = text(c, 24, false);
-            t.setGravity(Gravity.CENTER);
-            t.setPadding(dp(12), 0, dp(12), 0);
-            t.setBackground(keyBackground());
-            t.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { commit(c); }
+        if (!composingNow()) {
+            final List<PinyinDecoder.Cand> p = predictions;
+            composing.setText(p != null ? "联想" : "拼音输入");
+            bar.setSource(p == null ? null : new CandidateBar.Source() {
+                @Override public boolean has(int i) { return i < p.size(); }
+                @Override public String get(int i) { return p.get(i).text; }
             });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
-            lp.setMargins(dp(2), dp(2), dp(2), dp(2));
-            candidatesRow.addView(t, lp);
+            return;
         }
+        predictions = null;
+        StringBuilder line = new StringBuilder();
+        for (Pick p : picks) line.append(p.text);
+        if (line.length() > 0 && pinyin.length() > 0) line.append(' ');
+        line.append(pinyin);
+        composing.setText(line);
+        if (decoder == null) { bar.setSource(null); return; }
+        long t0 = SystemClock.uptimeMillis();
+        decoder.decode(pinyin.toString(), contextId());
+        final PinyinDecoder dec = decoder;
+        bar.setSource(new CandidateBar.Source() {
+            @Override public boolean has(int i) { return dec.has(i); }
+            @Override public String get(int i) { return dec.get(i).text; }
+        });
+        if (Log.isLoggable(TAG, Log.DEBUG))
+            Log.d(TAG, "decode " + pinyin + " " + (SystemClock.uptimeMillis() - t0) + " ms, " + dec.visited + " nodes; bar " + bar.describe());
+    }
+
+    /** A candidate was tapped (or chosen with space / punctuation). */
+    private void pick(int index) {
+        if (!composingNow()) {
+            List<PinyinDecoder.Cand> p = predictions;
+            if (p == null || index >= p.size()) return;
+            PinyinDecoder.Cand c = p.get(index);
+            String prev = ctxText;
+            commitRaw(c.text);
+            if (learnOn && user != null) user.learnPair(prev, c.text);
+            ctxId = c.lastId();
+            ctxText = c.text;
+            suggest();
+            return;
+        }
+        if (decoder == null || !decoder.has(index)) return;
+        PinyinDecoder.Cand c = decoder.get(index);
+        choose(c);
+        if (hasLetters()) { justPicked = true; updateCandidates(); }
+        else finish();
+    }
+
+    /** take candidate c for the first c.end characters of the pinyin (and the separators after them) */
+    private void choose(PinyinDecoder.Cand c) {
+        int used = Math.min(c.end, pinyin.length());
+        while (used < pinyin.length() && pinyin.charAt(used) == '\'') used++;
+        picks.add(new Pick(c.text, pinyin.substring(0, used), c));
+        pinyin.delete(0, used);
+    }
+
+    private boolean hasLetters() {
+        for (int i = 0; i < pinyin.length(); i++) if (PinyinDecoder.isLetter(pinyin.charAt(i))) return true;
+        return false;
+    }
+
+    /** Everything is chosen: commit it, learn it, show what may follow. */
+    private void finish() {
+        StringBuilder t = new StringBuilder();
+        for (Pick p : picks) t.append(p.text);
+        String text = t.toString();
+        if (learnOn && user != null && decoder != null) {
+            // every phrase chosen gets cheaper; several choices make one new phrase of the user's own
+            StringBuilder key = new StringBuilder();
+            boolean whole = true;
+            for (Pick p : picks) {
+                int[] syl = decoder.syllables(p.cand);
+                if (syl == null) { whole = false; continue; }
+                for (int s : syl) key.append((char) s);
+                user.learn(syl, p.text);
+            }
+            if (whole && picks.size() > 1 && key.length() == text.length()) {
+                int[] syl = new int[key.length()];
+                for (int i = 0; i < syl.length; i++) syl[i] = key.charAt(i);
+                user.learn(syl, text);
+            }
+            user.learnPair(ctxText, text);
+        }
+        int last = picks.isEmpty() ? -1 : picks.get(picks.size() - 1).cand.lastId();
+        if (last < 0 && decoder != null && !picks.isEmpty() && text.length() > 0) {
+            // a phrase of the user's own: the dictionary's followers of its last character
+            int[] syl = decoder.syllables(picks.get(picks.size() - 1).cand);
+            if (syl != null && syl.length > 0) last = dict.find(new int[] { syl[syl.length - 1] }, text.substring(text.length() - 1));
+        }
+        picks.clear();
+        pinyin.setLength(0);
+        justPicked = false;
+        commitRaw(text);
+        ctxId = last;
+        ctxText = text;
+        suggest();
+        // also while the keyboard stays up for a long time (it is saved when it hides), at most once a minute
+        if (user != null && user.dirty && SystemClock.uptimeMillis() - lastSave > 60000) saveUser();
+    }
+
+    /** choose the best candidate until nothing is left (space, punctuation) */
+    private void finishAll() {
+        for (int guard = 0; guard < 64 && hasLetters(); guard++) {
+            if (decoder == null || (decoder.decode(pinyin.toString(), contextId()) != null && !decoder.has(0))) {
+                picks.add(new Pick(pinyin.toString().replace("'", ""), pinyin.toString(), new PinyinDecoder.Cand()));
+                pinyin.setLength(0);
+                break;
+            }
+            choose(decoder.get(0));
+        }
+        if (!picks.isEmpty()) finish();
+        else { pinyin.setLength(0); updateCandidates(); }
+    }
+
+    /** 联想: what may follow the last commit, in the bar */
+    private void suggest() {
+        predictions = null;
+        if (predictOn && decoder != null && (ctxId >= 0 || ctxText != null)) {
+            long t0 = SystemClock.uptimeMillis();
+            List<PinyinDecoder.Cand> p = decoder.predict(ctxId, ctxText, 40);
+            if (!p.isEmpty()) predictions = p;
+            t0 = SystemClock.uptimeMillis() - t0;
+            updateCandidates();
+            if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "predict " + ctxText + " " + t0 + " ms; bar " + bar.describe());
+            return;
+        }
+        updateCandidates();
+    }
+
+    /** any key but a candidate: the suggestions go */
+    private void dismiss() {
+        if (predictions != null) { predictions = null; if (!composingNow()) updateCandidates(); }
+    }
+
+    // ------------------------------------------------------------------ options
+
+    private void openOptions(boolean on) {
+        if (on) {
+            pinyin.setLength(0);
+            picks.clear();
+            predictions = null;
+            editMode = false;
+        }
+        optionsMode = on;
+        clearArmed = 0;
+        buildKeyboard();
+        updateCandidates();
+    }
+
+    private void setPref(String k, boolean v) {
+        getSharedPreferences("ime", MODE_PRIVATE).edit().putBoolean(k, v).apply();
+    }
+
+    /** Options page, same 4-row height as the letters:  联想 / 学习 / 清除输入记录 / 返回键盘 */
+    private void buildOptions() {
+        LinearLayout r1 = row();
+        final TextView pk = editButton(r1, "联想（上屏后显示可能的下一个词）：" + (predictOn ? "开" : "关"), 1f, null);
+        pk.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                predictOn = !predictOn; setPref("predict", predictOn);
+                pk.setText("联想（上屏后显示可能的下一个词）：" + (predictOn ? "开" : "关"));
+            }
+        });
+        keyboard.addView(r1, rowParams());
+        LinearLayout r2 = row();
+        final TextView lk = editButton(r2, "记住我打的词：" + (learnOn ? "开" : "关"), 1f, null);
+        lk.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                learnOn = !learnOn; setPref("learn", learnOn);
+                lk.setText("记住我打的词：" + (learnOn ? "开" : "关"));
+            }
+        });
+        keyboard.addView(r2, rowParams());
+        LinearLayout r3 = row();
+        final TextView ck = editButton(r3, clearLabel(), 1f, null);
+        ck.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                long now = SystemClock.uptimeMillis();
+                if (clearArmed > 0 && now - clearArmed < 5000) {
+                    clearUser();
+                    clearArmed = 0;
+                    ck.setText("已清除输入记录");
+                } else {
+                    clearArmed = now;
+                    ck.setText("再点一次确认清除（不能恢复）");
+                }
+            }
+        });
+        keyboard.addView(r3, rowParams());
+        LinearLayout r4 = row();
+        editButton(r4, "返回键盘", 1f, new View.OnClickListener() { @Override public void onClick(View v) { openOptions(false); } });
+        keyboard.addView(r4, rowParams());
+    }
+
+    private String clearLabel() {
+        int n = user == null ? 0 : user.phraseCount() + user.pairCount();
+        return "清除输入记录（" + n + " 条）";
     }
 
     // ------------------------------------------------------------------ keyboard
 
+    /** which page the keyboard shows now; onStartInput does not rebuild an identical one */
+    private String builtPage;
+
+    private String page() {
+        return optionsMode ? "options" : editMode ? "edit" : symbols ? "symbols" : numeric ? "numeric" : "letters";
+    }
+
     private void buildKeyboard() {
+        builtPage = page();
         keyboard.removeAllViews();
         letterKeys.clear();
         selectKey = null;
 
+        if (optionsMode) { buildOptions(); return; }
         if (editMode) { buildEditPanel(); return; }
         if (symbols) { buildSymbolKeyboard(); return; }
         if (numeric) {
@@ -387,7 +657,11 @@ public class VeraImeService extends InputMethodService {
 
         LinearLayout row4 = row();
         modeKey = key("中", 1.4f, new View.OnClickListener() {
-            @Override public void onClick(View v) { chinese = !chinese; userChinese = chinese; pinyin.setLength(0); updateKeyLabels(); updateCandidates(); }
+            @Override public void onClick(View v) {
+                if (chinese && composingNow()) finishAll();
+                chinese = !chinese; userChinese = chinese; pinyin.setLength(0); predictions = null; clearContext();
+                updateKeyLabels(); updateCandidates();
+            }
         });
         row4.addView(modeKey);
         row4.addView(key("，", 1f, new View.OnClickListener() { @Override public void onClick(View v) { punct("，"); } }));
@@ -481,6 +755,9 @@ public class VeraImeService extends InputMethodService {
 
     private void openEdit(boolean on) {
         pinyin.setLength(0);            // unfinished pinyin is dropped, never left half-typed under the panel
+        picks.clear();
+        predictions = null;
+        optionsMode = false;
         InputConnection c = ic();
         if (c != null) c.finishComposingText();
         editMode = on;
@@ -745,11 +1022,9 @@ public class VeraImeService extends InputMethodService {
         row.addView(b);
     }
 
+    /** a row of keys: pixel edges computed from the row's width (KeyRow), the same 3 dp gaps as before */
     private LinearLayout row() {
-        LinearLayout r = new LinearLayout(this);
-        r.setOrientation(LinearLayout.HORIZONTAL);
-        r.setGravity(Gravity.CENTER);
-        return r;
+        return new KeyRow(this, 2 * dp(3), dp(2));
     }
 
     private LinearLayout.LayoutParams rowParams() {
@@ -782,11 +1057,18 @@ public class VeraImeService extends InputMethodService {
 
     private InputConnection ic() { return getCurrentInputConnection(); }
 
+    /** commit text that is not a candidate choice: not a context for what follows */
     private void commit(String s) {
+        if (chinese && composingNow()) finishAll();
+        commitRaw(s);
+        clearContext();
+        dismiss();
+    }
+
+    private void commitRaw(String s) {
         InputConnection c = ic();
         if (c != null) c.commitText(s, 1);
-        pinyin.setLength(0);
-        updateCandidates();
+        awaitSel = true;
     }
 
     private void letter(char c) {
@@ -794,18 +1076,29 @@ public class VeraImeService extends InputMethodService {
             String s = String.valueOf(shift ? Character.toUpperCase(c) : Character.toLowerCase(c));
             commit(s);
             if (shift) { shift = false; updateKeyLabels(); }
-        } else {
+        } else if (pinyin.length() < PinyinDecoder.MAX_LETTERS) {
+            predictions = null;             // the context stays: what was committed last helps decoding
+            justPicked = false;
             pinyin.append(Character.toLowerCase(c));
             updateCandidates();
         }
     }
 
     private void backspace() {
-        if (chinese && pinyin.length() > 0) {
-            pinyin.deleteCharAt(pinyin.length() - 1);
+        if (chinese && composingNow()) {
+            if ((justPicked || pinyin.length() == 0) && !picks.isEmpty()) {
+                Pick p = picks.remove(picks.size() - 1);       // undo the last choice
+                pinyin.insert(0, p.raw);
+                justPicked = !picks.isEmpty() && justPicked;
+            } else {
+                pinyin.deleteCharAt(pinyin.length() - 1);
+                justPicked = false;
+            }
             updateCandidates();
             return;
         }
+        clearContext();
+        dismiss();
         InputConnection c = ic();
         if (c == null) return;
         // 选中了文字（全选 / 选择 + 方向键）：退格删掉选中的部分。deleteSurroundingText 只删选区前面的一个字
@@ -814,26 +1107,36 @@ public class VeraImeService extends InputMethodService {
         else c.deleteSurroundingText(1, 0);
     }
 
+    /** space: the first candidate (normally the whole sentence); nothing typed: a space */
     private void space() {
-        if (chinese) {
-            if (!candidates.isEmpty()) { commit(candidates.get(0)); return; }
-            if (pinyin.length() > 0) { commit(pinyin.toString()); return; }
-            commit(" ");
-        } else {
-            commit(" ");
+        if (chinese && composingNow()) {
+            if (decoder != null && hasLetters() && decoder.has(0)) pick(0);
+            else finishAll();
+            return;
         }
+        commit(" ");
     }
 
+    /** ， 。: the best sentence, then the mark */
     private void punct(String s) {
-        if (chinese && pinyin.length() > 0) { commit(candidates.isEmpty() ? pinyin.toString() : candidates.get(0)); return; }
         commit(s);
     }
 
+    /** enter while typing pinyin: what is chosen plus the letters as typed (names, English words) */
     private void enter() {
-        if (chinese && (!candidates.isEmpty() || pinyin.length() > 0)) {
-            commit(candidates.isEmpty() ? pinyin.toString() : candidates.get(0));
+        if (chinese && composingNow()) {
+            StringBuilder t = new StringBuilder();
+            for (Pick p : picks) t.append(p.text);
+            t.append(pinyin.toString().replace("'", ""));
+            picks.clear();
+            pinyin.setLength(0);
+            justPicked = false;
+            commit(t.toString());
+            updateCandidates();
             return;
         }
+        clearContext();
+        dismiss();
         if (!sendDefaultEditorAction(true)) {
             InputConnection c = ic();
             if (c != null) c.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));

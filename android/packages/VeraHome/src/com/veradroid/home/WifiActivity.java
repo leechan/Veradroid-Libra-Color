@@ -23,9 +23,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 已保存的无线网络：Kindle（com.lab126.wifid）里存过的网络，点一个就切过去。
- * 列表和切换都交给宿主（wifilist / wificonnect），这里只显示：ctl/wifi.list 一行一个，第一个字符 '*' = 当前连着的。
- * 网络名以 UTF-8 十六进制发给宿主，宿主只认已保存的名字。不轮询：用 inotify 等文件出现。
+ * 无线网络：Kindle（com.lab126.wifid）里存过的网络，点一个就切过去；“附近的网络”扫一遍，没连过的输入密码就能连。
+ * 列表、扫描和切换都交给宿主（wifilist / wifiscan / wificonnect），这里只显示：ctl/wifi.list 一行一个，第一个字符 '*' = 当前连着的；
+ * ctl/wifi.scan 一行一个（已保存 y/n、要密码 y/n、信号、加密、名字，用 TAB 分开）。
+ * 网络名以 UTF-8 十六进制发给宿主。新网络的密码不走命令通道（所有应用都能写、会进日志），用 HostReq 的 wifipsk 交给宿主。
+ * 不轮询：用 inotify 等文件出现。
  */
 public class WifiActivity extends Activity {
     private static final String LOADING = "正在读取…";
@@ -61,15 +63,18 @@ public class WifiActivity extends Activity {
         hd.addView(Icons.bar(this, Icons.Kind.BACK, 28, new View.OnClickListener() {
             @Override public void onClick(View v) { finish(); }
         }));
-        TextView t = Ui.text(this, "已保存的 Wi-Fi", 24, true); t.setPadding(dp(10), 0, 0, 0);
+        TextView t = Ui.text(this, "Wi-Fi 网络", 24, true); t.setPadding(dp(10), 0, 0, 0);
         hd.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        hd.addView(Ui.button(this, "附近的网络", 16, false, new View.OnClickListener() {
+            @Override public void onClick(View v) { scan(); }
+        }));
         hd.addView(Ui.button(this, "刷新", 16, false, new View.OnClickListener() {
             @Override public void onClick(View v) { status.setText(LOADING); HostLink.cmd("wifilist"); }
         }));
         root.addView(hd);
         root.addView(Ui.rule(this, 2, Color.BLACK));
 
-        TextView hint = Ui.text(this, "这里列出在 Kindle 上连过并保存的网络，点一个就切换过去。要加新网络，请回到 Kindle 的设置里连接一次。", 14, false);
+        TextView hint = Ui.text(this, "下面是在 Kindle 上连过并保存的网络，点一个就切换过去。要连新的网络，点“附近的网络”，选一个输入密码。", 14, false);
         hint.setTextColor(Color.DKGRAY); hint.setPadding(0, dp(8), 0, dp(4));
         root.addView(hint);
         status = Ui.text(this, LOADING, 15, false); status.setPadding(0, dp(6), 0, dp(6));
@@ -92,13 +97,20 @@ public class WifiActivity extends Activity {
 
     private void buildBlocks(LinearLayout root) {
         root.setPadding(0, Blocks.statusInset(this), 0, dp(10));
-        root.addView(Blocks.activityHead(this, "Network / saved", "已保存的 Wi-Fi", Blocks.button(this, "刷新", false, new View.OnClickListener() {
+        LinearLayout btns = new LinearLayout(this);
+        btns.addView(Blocks.button(this, "附近", false, new View.OnClickListener() {
+            @Override public void onClick(View v) { scan(); }
+        }));
+        View gap = new View(this);
+        btns.addView(gap, new LinearLayout.LayoutParams(dp(8), 1));
+        btns.addView(Blocks.button(this, "刷新", false, new View.OnClickListener() {
             @Override public void onClick(View v) { status.setText(LOADING); HostLink.cmd("wifilist"); }
-        })));
+        }));
+        root.addView(Blocks.activityHead(this, "Network / Wi-Fi", "Wi-Fi 网络", btns));
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(16), 0, dp(16), 0);
-        TextView hint = Ui.text(this, "这里列出在 Kindle 上连过并保存的网络，点一个就切换过去。要加新网络，请回到 Kindle 的设置里连接一次。", 13, false);
+        TextView hint = Ui.text(this, "下面是在 Kindle 上连过并保存的网络，点一个就切换过去。要连新的网络，点右上角“附近”，选一个输入密码。", 13, false);
         body.addView(hint);
         status = Ui.text(this, LOADING, 15, true);
         status.setPadding(0, dp(8), 0, dp(8));
@@ -114,7 +126,7 @@ public class WifiActivity extends Activity {
                 return Blocks.listRow(WifiActivity.this, Icons.Kind.WIFI, n, on ? "当前网络" : null, right);
             }
         });
-        paged.setEmpty(Blocks.empty(this, Icons.Kind.WIFI, "没有读到已保存的网络", "先在 Kindle 的设置里连一次 Wi-Fi", false));
+        paged.setEmpty(Blocks.empty(this, Icons.Kind.WIFI, "没有读到已保存的网络", "点右上角“附近”，选一个网络输入密码", false));
         body.addView(paged, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         root.addView(body, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         setContentView(root);
@@ -124,7 +136,7 @@ public class WifiActivity extends Activity {
     private void startWatch() {
         watch = new CtlWatch.Listener() {
             @Override public void onCtl(final String path) {
-                if (!"wifi.list".equals(path) && !"wifi.result".equals(path)) return;
+                if (!"wifi.list".equals(path) && !"wifi.result".equals(path) && !"wifi.scan".equals(path)) return;
                 handler.post(new Runnable() { @Override public void run() { changed(path); } });
             }
         };
@@ -144,17 +156,28 @@ public class WifiActivity extends Activity {
     private void changed(String file) {
         if (isFinishing()) return;
         if ("wifi.list".equals(file)) { render(read("wifi.list")); return; }
+        if ("wifi.scan".equals(file)) { if (scanning) showScan(read("wifi.scan")); return; }
         Map<String, String> m = HostLink.kv(HostLink.CTL + "wifi.result");
         String name = unhex(m.get("essid"));
         if (name == null) name = pending == null ? "" : pending;
         if ("1".equals(m.get("ok"))) status.setText("已连接：" + name);
         else {
             String e = m.get("error");
-            String why = "timeout".equals(e) ? "30 秒内没有连上（不在范围内或密码已变）"
-                : "not saved".equals(e) ? "Kindle 里没有这个已保存的网络" : "网络名无法处理";
-            status.setText("切换失败：" + why);
+            boolean fresh = newNet != null && newNet.equals(name);
+            String why = "timeout".equals(e) ? (fresh ? "40 秒内没有连上：密码可能不对，或者信号太弱" : "40 秒内没有连上：可能不在信号范围内，或者路由器的密码改过（改过的话请在 Kindle 设置里重新连一次）")
+                : "auth".equals(e) ? "密码不对，路由器拒绝了连接，请重新输入"
+                : "notfound".equals(e) ? "附近没有找到这个网络，靠近路由器后再试"
+                : "needpsk".equals(e) ? "这个网络需要密码"
+                : "badpsk".equals(e) ? "密码要 8–63 个字符，不能含有英文引号 \" 或反斜杠 \\"
+                : "create".equals(e) ? "Kindle 的 Wi-Fi 服务没有接受这个网络，请在 Kindle 设置里连接"
+                : "wifioff".equals(e) ? "Wi-Fi 打不开（飞行模式是不是开着？）"
+                : "not saved".equals(e) ? "Kindle 里没有这个已保存的网络"
+                : "网络名里有特殊字符，请在 Kindle 设置里连接";
+            String back = unhex(m.get("restored")), kept = unhex(m.get("kept"));
+            status.setText("连接 " + name + " 失败：" + why + (back != null && back.length() > 0 ? "。已回到原来的网络 " + back + "。"
+                : kept != null && kept.length() > 0 ? "。仍连着原来的网络 " + kept + "。" : "。"));
         }
-        pending = null;
+        pending = null; newNet = null;
     }
 
     private String read(String name) {
@@ -186,7 +209,7 @@ public class WifiActivity extends Activity {
         }
         list.removeAllViews();
         List<String> names = new ArrayList<String>();
-        String current = null;
+        current = null;
         for (String l : raw.split("\n")) {
             if (l.length() < 2) continue;
             String n = l.substring(1);
@@ -221,14 +244,99 @@ public class WifiActivity extends Activity {
         }
     }
 
+    // ------------------------------------------------------------------ 附近的网络
+
+    private boolean scanning;
+    private String newNet;   // 刚输入密码的新网络（连不上时提示可能是密码不对）
+
+    private void scan() {
+        if (pending != null) { status.setText("正在切换到 " + pending + "，请稍等…"); return; }
+        scanning = true;
+        status.setText("正在搜索附近的网络…（几秒钟）");
+        new java.io.File(HostLink.CTL + "wifi.scan").delete();
+        HostLink.cmd("wifiscan");
+        handler.postDelayed(new Runnable() { @Override public void run() {
+            if (scanning && !isFinishing()) { scanning = false; status.setText("没有搜到附近的网络（Wi-Fi 是不是关着？）"); }
+        } }, 15000);
+    }
+
+    private void showScan(String raw) {
+        scanning = false;
+        final List<String[]> nets = new ArrayList<String[]>();
+        for (String l : raw.split("\n")) {
+            String[] f = l.split("\t", 5);
+            if (f.length == 5 && f[4].length() > 0) nets.add(f);
+        }
+        if (nets.isEmpty()) { status.setText("附近没有搜到网络。"); return; }
+        status.setText("");
+        String[] labels = new String[nets.size()];
+        for (int i = 0; i < labels.length; i++) {
+            String[] f = nets.get(i);
+            int sig = 0;
+            try { sig = Integer.parseInt(f[2]); } catch (NumberFormatException ignored) { }
+            String bars = "▮▮▮▮▮".substring(0, Math.max(0, Math.min(5, sig))) + "▯▯▯▯▯".substring(0, 5 - Math.max(0, Math.min(5, sig)));
+            String kind = f[4].equals(current) ? "已连接" : "y".equals(f[0]) ? "已保存" : "y".equals(f[1]) ? "需要密码" : "开放网络（不加密）";
+            labels[i] = f[4] + "\n" + bars + "  " + kind;
+        }
+        new VeraDialog.Builder(this).title("附近的网络").items(labels, new VeraDialog.OnPick() {
+            @Override public void onPick(int which) {
+                String[] f = nets.get(which);
+                if (f[4].equals(current)) return;
+                if ("y".equals(f[0]) || !"y".equals(f[1])) connect(f[4]);
+                else askPassword(f[4], f[3]);
+            }
+        }).negative("取消", null).show();
+    }
+
+    private void askPassword(final String name, String mgmt) {
+        if (mgmt != null && mgmt.toUpperCase(java.util.Locale.US).contains("WEP")) { status.setText(name + " 用的是 WEP 加密，请在 Kindle 设置里连接"); return; }
+        final android.widget.EditText in = new android.widget.EditText(this);
+        in.setSingleLine(true);
+        // 墨水屏上看不见输入的字很容易输错：密码直接显示（Kindle 自己的“显示密码”也是这样）
+        in.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        in.setHint("密码");
+        new VeraDialog.Builder(this).title("连接 " + name).message("输入这个网络的密码。连上以后 Kindle 会把它存为已保存的网络（密码不上传）。")
+            .view(in).negative("取消", null).positive("连接", new Runnable() { @Override public void run() {
+                final String pw = in.getText().toString();
+                if (pw.length() < 8 || pw.length() > 63) { status.setText("密码要 8–63 个字符"); return; }
+                if (pw.indexOf('"') >= 0 || pw.indexOf('\\') >= 0) { status.setText("密码里有英文引号 \" 或反斜杠 \\：这种密码请在 Kindle 设置里连接"); return; }
+                final String hn = hex(name);
+                if (hn == null) { status.setText("这个网络名太长或含有特殊字符，无法连接"); return; }
+                pending = name; newNet = name;
+                status.setText("正在连接 " + name + "…（最多 40 秒）");
+                new Thread(new Runnable() { @Override public void run() {
+                    String hp = hexAny(pw);
+                    byte[] r = HostReq.run(WifiActivity.this, "wifipsk", hn, hp, 8000);
+                    final boolean ok = r != null && new String(r).contains("ok=1");
+                    handler.post(new Runnable() { @Override public void run() {
+                        if (isFinishing()) return;
+                        if (!ok) { pending = null; newNet = null; status.setText("没能把密码交给系统（宿主没有回应），请再试一次"); return; }
+                        sendConnect(name, hn);
+                    } });
+                } }, "wifi-psk").start();
+            } }).show();
+    }
+
+    private static String hexAny(String s) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            for (byte x : s.getBytes("UTF-8")) { int v = x & 0xff; sb.append(Character.forDigit(v >> 4, 16)).append(Character.forDigit(v & 15, 16)); }
+            return sb.toString();
+        } catch (Exception e) { return ""; }
+    }
+
     private void connect(String name) {
         if (pending != null) { status.setText("正在切换到 " + pending + "，请稍等…"); return; }
         String hex = hex(name);
         if (hex == null) { status.setText("这个网络名太长或含有特殊字符，无法切换"); return; }
         pending = name;
-        status.setText("正在切换到 " + name + "…（最多 30 秒）");
+        status.setText("正在切换到 " + name + "…（最多 40 秒）");
+        sendConnect(name, hex);
+    }
+
+    private void sendConnect(String name, String hex) {
         HostLink.cmd("wificonnect " + hex);
-        // 宿主没写回 wifi.result（老宿主、宿主出错）时别一直卡在“请稍等”：45 秒后放开
+        // 宿主没写回 wifi.result（老宿主、宿主出错）时别一直卡在“请稍等”：90 秒后放开
         final String asked = name;
         handler.postDelayed(new Runnable() {
             @Override public void run() {
@@ -236,7 +344,7 @@ public class WifiActivity extends Activity {
                 pending = null;
                 status.setText("切换到 " + asked + " 没有回音，可以再试一次");
             }
-        }, 45000);
+        }, 90000);
     }
 
     /** UTF-8 字节的小写十六进制；宿主最多接受 32 字节（SSID 上限），控制字符不发。 */

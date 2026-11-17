@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.veradroid.home"
-    android:versionCode="76"
-    android:versionName="0.30.0">
+    android:versionCode="81"
+    android:versionName="0.33.0">
     <uses-sdk android:minSdkVersion="25" android:targetSdkVersion="25" />
     <uses-permission android:name="android.permission.MANAGE_ACTIVITY_STACKS" />
     <uses-permission android:name="android.permission.INTERNET" />
@@ -49,7 +49,7 @@
             android:stateNotNeeded="true"
             android:excludeFromRecents="true"
             android:screenOrientation="nosensor"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenSize">
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout|density">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
@@ -93,6 +93,12 @@
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize" />
         <activity
             android:name=".StoreActivity"
+            android:theme="@android:style/Theme.Holo.Light.NoActionBar"
+            android:excludeFromRecents="true"
+            android:screenOrientation="nosensor"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize" />
+        <activity
+            android:name=".FontStoreActivity"
             android:theme="@android:style/Theme.Holo.Light.NoActionBar"
             android:excludeFromRecents="true"
             android:screenOrientation="nosensor"

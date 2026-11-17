@@ -203,13 +203,15 @@ final class Books {
             if (fs == null) continue;
             for (File f : fs) {
                 String n = f.getName().toLowerCase(Locale.US);
-                if (!(n.endsWith(".ttf") || n.endsWith(".otf"))) continue;
+                if (n.startsWith(".") || !(n.endsWith(".ttf") || n.endsWith(".otf") || n.endsWith(".ttc"))) continue;
                 // Kindle 自带的字体有几十个文件（各种字重、各国文字）：只挑常用的几种。
                 // 用户自己导入的字体（Fonts，传书网页上传进来的）一个不漏地列出来——以前这里也套了同一个过滤，
                 // 文件名里没有 song / heiti / kai 的导入字体在“系统字体”里看不到。
                 if (dir.endsWith("/KindleFonts") && !wanted(n)) continue;
                 if (f.length() < 1024) continue;   // 空文件 / 没传完
-                String label = label(f.getName());
+                // 字体商店下载的：用商店里的名字（文件名是给宿主用的字母数字）
+                String shop = dir.endsWith("/Fonts") ? FontStoreActivity.displayName(f.getName()) : null;
+                String label = shop != null ? shop : label(f.getName());
                 boolean dup = false;
                 for (Font o : out) if (o.name.equals(label)) { dup = true; break; }
                 if (!dup) out.add(new Font(label, f.getAbsolutePath()));

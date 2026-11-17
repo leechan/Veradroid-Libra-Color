@@ -170,7 +170,6 @@ class PageScrollView extends ScrollView {
     }
 
     private final boolean blocks = Blocks.on(getContext());
-    private final android.graphics.Paint white = new android.graphics.Paint();
 
     /**
      * 条目（内容坐标的 [上, 下]），按从上到下：内容的每个子控件；比七成屏幕还高的竖排分组（LinearLayout，设置页的长分组）
@@ -200,20 +199,21 @@ class PageScrollView extends ScrollView {
      * 方块风格：这一屏最下面没显示全的那一条用白色盖住（它会是下一页的第一条），屏幕上不出现半行。
      */
     @Override protected void dispatchDraw(android.graphics.Canvas c) {
-        super.dispatchDraw(c);
-        if (!blocks || getChildCount() == 0) return;
-        int y = getScrollY(), h = getHeight();
-        int content = getChildAt(0).getHeight();
-        if (content <= h) return;
-        for (int[] it : leaves()) {
-            if (it[1] > y + h) {
-                if (it[0] > y && it[0] < y + h) {
-                    white.setColor(android.graphics.Color.WHITE);
-                    c.drawRect(0, it[0], getWidth(), y + h, white);
+        int cut = -1;
+        if (blocks && getChildCount() > 0) {
+            int y = getScrollY(), h = getHeight();
+            if (getChildAt(0).getHeight() > h) {
+                for (int[] it : leaves()) {
+                    if (it[1] > y + h) { if (it[0] > y && it[0] < y + h) cut = it[0]; break; }
                 }
-                break;
             }
         }
+        if (cut < 0) { super.dispatchDraw(c); return; }
+        // 不画那一条（以前是盖一块白色）：底下是什么就露出什么——方块首页有壁纸时盖白会在壁纸上留一块白条
+        c.save();
+        c.clipRect(0, getScrollY(), getWidth(), cut);
+        super.dispatchDraw(c);
+        c.restore();
     }
 
     /** page() 为了让最后一页从条目顶边开始而在内容底下垫的空白；回到第一页时去掉。 */

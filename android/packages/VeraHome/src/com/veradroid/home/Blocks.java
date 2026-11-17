@@ -137,7 +137,7 @@ final class Blocks {
             if (sh > 0) { c.drawRect(l + sh, bt, b.right, b.bottom, p); c.drawRect(r, t + sh, b.right, bt, p); }
             if (filled) c.drawRect(l, t, r, bt, p);
             else {
-                p.setColor(Color.WHITE); c.drawRect(l, t, r, bt, p); p.setColor(Color.BLACK);
+                fillWhite(c, l, t, r, bt, p); p.setColor(Color.BLACK);
                 c.drawRect(l, t, r, t + st, p); c.drawRect(l, bt - st, r, bt, p);
                 c.drawRect(l, t, l + st, bt, p); c.drawRect(r - st, t, r, bt, p);
                 if (inner > 0) {
@@ -147,6 +147,52 @@ final class Blocks {
                 }
             }
         }
+        @Override public void setAlpha(int a) { }
+        @Override public void setColorFilter(android.graphics.ColorFilter f) { }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    /**
+     * 首页有壁纸时卡片里面的白底有多“实”（255 = 实心白，壁纸只在卡片之间露出来）。只有首页画在壁纸上，
+     * 别的页面底下是白纸，半透明的白和实心白画出来一样，所以用一个全局值就够了（HomeActivity.blocksWall 设）。
+     */
+    static volatile int veil = 255;
+    static final String WALLCARD_KEY = "blk_wallcard";
+    static final String[] WALLCARD_L = { "实心白卡片", "半透明", "通透" };
+    /**
+     * 半透明不用半透明的白（墨水屏的“对比度”会把淡灰拉成白，半透明和实心看起来一样），而是“纱窗”：
+     * 4×4 里 12 个（半透明）/ 8 个（通透）像素涂白，其余露出壁纸。值 = 涂白的像素数，16 = 实心。
+     */
+    private static final int[] WALLCARD_A = { 16, 12, 8 };
+    static int wallCardAlpha(Context c) {
+        int m = 0;
+        try { m = Store.prefs(c, "home").getInt(WALLCARD_KEY, 0); } catch (Throwable ignored) { }
+        return WALLCARD_A[m < 0 || m >= WALLCARD_A.length ? 0 : m] >= 16 ? 255 : WALLCARD_A[m];
+    }
+    private static final android.util.SparseArray<android.graphics.BitmapShader> SCREENS = new android.util.SparseArray<android.graphics.BitmapShader>();
+    /** 按 veil 填白：255 = 实心；否则用“纱窗”网点。 */
+    static void fillWhite(Canvas c, int l, int t, int r, int b, Paint p) {
+        int v = veil;
+        p.setColor(Color.WHITE);
+        if (v >= 16) { c.drawRect(l, t, r, b, p); return; }
+        android.graphics.BitmapShader sh = SCREENS.get(v);
+        if (sh == null) {
+            byte[] px = new byte[16];
+            for (int i = 0; i < 16; i++) px[i] = (byte) (Theme.BAYER[i] < v ? 255 : 0);
+            android.graphics.Bitmap bm = android.graphics.Bitmap.createBitmap(4, 4, android.graphics.Bitmap.Config.ALPHA_8);
+            bm.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(px));
+            sh = new android.graphics.BitmapShader(bm, android.graphics.Shader.TileMode.REPEAT, android.graphics.Shader.TileMode.REPEAT);
+            SCREENS.put(v, sh);
+        }
+        p.setShader(sh);
+        c.drawRect(l, t, r, b, p);
+        p.setShader(null);
+    }
+
+    /** 没有框的一块白底，跟着 {@link #veil}（首页标题行压在壁纸上时用）。 */
+    static final class Veil extends android.graphics.drawable.Drawable {
+        private final Paint p = new Paint();
+        @Override public void draw(Canvas c) { android.graphics.Rect r = getBounds(); fillWhite(c, r.left, r.top, r.right, r.bottom, p); }
         @Override public void setAlpha(int a) { }
         @Override public void setColorFilter(android.graphics.ColorFilter f) { }
         @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
@@ -415,7 +461,7 @@ final class Blocks {
      * 这几页自己在 onResume 里把状态栏藏起来了（setSuppressed），不用让。
      */
     static int statusInset(android.app.Activity a) {
-        if (a instanceof StatsActivity || a instanceof StorageActivity || a instanceof StoreActivity || a instanceof InboxActivity
+        if (a instanceof StatsActivity || a instanceof StorageActivity || a instanceof StoreActivity || a instanceof FontStoreActivity || a instanceof InboxActivity
             || a instanceof TransferActivity || a instanceof HomeActivity) return 0;
         try { if (!Store.prefs(a, "home").getBoolean("statusbar", true)) return 0; } catch (Throwable ignored) { }
         return dp(a, 18);

@@ -17,6 +17,39 @@ ensure_installd_dirs() {
 trust_unlock() {
     adb_sh 'service call trust 5' >/dev/null 2>&1
 }
+# 桌面（VeraHome）和输入法（VeraIME）是镜像里的系统应用，开机 dexopt 只给它们 verify-profile（解释执行 + JIT）：
+# 方块主页第一次画 1.5–2.2 s（Voyage 模拟器）。编成 speed 以后同一台 0.9–1.05 s，之后两次重搭 1.3–1.8 s -> 0.8–0.9 s、0.6–0.7 -> 0.35 s。
+# 编一次约 10 秒（Voyage 模拟器 dex2oat，odex 3 MB），换了镜像（升级）以后开机 dexopt 会把它打回 verify-profile，所以每次开机看一眼
+# dalvik-cache 里 odex 的过滤器（直接读 OAT 头，不起 JVM），不是 speed 就在开机 90 秒后低优先级编一次。冻结 / 屏保时不编。
+home_aot() {
+    for ap in VeraHome:com.veradroid.home VeraIME:com.veradroid.ime; do
+        o=$SYS/data/dalvik-cache/arm/system@priv-app@${ap%%:*}@${ap%%:*}.apk@classes.dex
+        [ -f "$o" ] || o=$SYS/data/dalvik-cache/arm/system@app@${ap%%:*}@${ap%%:*}.apk@classes.dex
+        # PW6 / k49 镜像：系统应用开机时根本不做 dexopt（dalvik-cache 里没有它们的 odex，内存里解压 dex 解释执行，0.98 真机实测），
+        # 这时也编一次（f=none）；编完 odex 就在上面第一个路径
+        f=none
+        [ -f "$o" ] && f=$(dd if="$o" bs=4096 count=4 2>/dev/null | tr '\0' '\n' | sed -n '/^compiler-filter$/{n;p;q;}')
+        case "$f" in speed|everything) continue ;; esac
+        # 一次只跑一个 dex2oat：应用的预编译（compile.sh）正在编、或者别的 dex2oat 在跑时等它们做完（PW4 模拟器：和微信读书的编译
+        # 撞在一起、换页时，编桌面用了 1205 秒，单独编 9 秒；0.98 门禁 PW6 第一次开机两边也叠在一起）。只是排着队等前台应用的
+        # 工作进程不算忙（以前等 compile.pid，会被它挡满 30 分钟）。最多等 30 分钟，冻结 / 屏保时不编。编的时候写 $W/aot.pid，
+        # 预编译的工作进程看到就先不开始下一个。
+        hw=0
+        while pidof dex2oat >/dev/null 2>&1 || [ "$(sed -n 's/^state=//p' $X/ctl/compile.status 2>/dev/null)" = running ] || [ -f $W/frozen ] || [ -f $W/saver_frozen ]; do
+            hw=$((hw + 1)); [ $hw -gt 180 ] && { t "aot: ${ap#*:} skipped (compiler busy for 30 min)"; return 0; }
+            sleep 10
+        done
+        read -r ah _ < /proc/self/stat; echo "$ah" > $W/aot.pid
+        a0=$(cut -d' ' -f1 /proc/uptime)
+        adb_sh "cmd package compile -m speed -f ${ap#*:}" > $W/aot.out 2>&1 &
+        ac=$!
+        # 和应用的预编译一样：dex2oat 调成 nice 19 + IO 空闲、内存危险时停掉（compile.sh）
+        type compile_babysit >/dev/null 2>&1 && compile_babysit $ac   # 不带包名：桌面本来就在前台、一直在跑
+        wait $ac; rm -f $W/aot.pid
+        r=$(tr -d '\r' < $W/aot.out | tail -1)
+        t "aot: ${ap#*:} ${f:-?} -> speed: $r ($(awk -v a=$a0 -v b=$(cut -d' ' -f1 /proc/uptime) 'BEGIN{printf "%.0f", b-a}') s)"
+    done
+}
 adb_sh() {
     # Refresh into a live container; never run host sh if vd_in fails (empty prefix).
     pref=$(vd_in) || return 1
@@ -402,6 +435,7 @@ RDME
         t "after_boot: VeraIME enabled"
     fi
     [ -n "$AB_ONCE" ] && [ -n "$ABV" ] && echo "$ABV" > $ABM
+    ( sleep 90; home_aot ) </dev/null >>$LOG 2>&1 &
     # 可选 DNS：settings.conf 里的 DNS_MODE 在开机后重新应用到 netd（DHCP 会把它改回自动）
     dns_apply
     # 12 / 24 小时制跟 Kindle（tz.sh；值没变就不写）

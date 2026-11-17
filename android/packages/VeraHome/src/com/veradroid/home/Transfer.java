@@ -546,7 +546,7 @@ final class Transfer {
     private static boolean isApk(String name) { return name.toLowerCase(Locale.US).endsWith(".apk"); }
     private static boolean isFont(String name) {
         String n = name.toLowerCase(Locale.US);
-        return n.endsWith(".ttf") || n.endsWith(".otf");
+        return n.endsWith(".ttf") || n.endsWith(".otf") || n.endsWith(".ttc");
     }
 
     /** What to do with a finished file: apk -> install, anything else stays where it is. */

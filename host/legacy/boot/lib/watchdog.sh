@@ -115,6 +115,8 @@ do_exit() {
     t "return to kindle requested"
     if [ "$RETURN_MODE" = freeze ] && [ -d $FZ ]; then
         touch $X/ctl/sleep
+        # 多看在前台时换过的显示密度：冻结前换回默认（显示桥已经挡住，看不到重排；解冻时再按前台应用换回去，appprof.sh）
+        type appprof_density_reset >/dev/null 2>&1 && appprof_density_reset
         if android_freeze; then
             touch $W/frozen
             cpu_gov_restore 2>/dev/null || true   # android_freeze 切到 powersave 是给屏保用的；回到 Kindle 界面要恢复原来的调速器

@@ -32,6 +32,9 @@ appprof_publish() {
          END { for (i = 1; i <= n; i++) { p = ord[i]; if (p in u) print p, (p in b ? "ub" : "u"), u[p]; else print p, "b", b[p] } }' \
         "$@" 2>/dev/null > $X/appprof.tmp
     chmod 644 $X/appprof.tmp 2>/dev/null; mv -f $X/appprof.tmp $X/appprof
+    # 要换显示密度的包（内置表里带 DENSITY 的规则，可以以 * 结尾）：桌面打开它们之前等宿主换好密度（/dev/kfb/density.apps）
+    awk '/^[ \t]*(#|$)/ { next } { sub(/[ \t]*#.*/, "") } $2 ~ /(^|;)DENSITY=/ { print $1 }' "$VD/boot/appprofiles.conf" > $X/density.apps.tmp 2>/dev/null
+    chmod 644 $X/density.apps.tmp 2>/dev/null; mv -f $X/density.apps.tmp $X/density.apps
 }
 
 # 这个包现在该用的 spec（没有 = 空）：用户的精确匹配 > 内置精确匹配 > 内置前缀匹配（最长的前缀）
@@ -51,12 +54,19 @@ appprof_src() {
         END { print s }' $X/appprof 2>/dev/null
 }
 
+# 告诉桌面这次 fg 处理完了（密度已经换好）：桌面打开要换密度的应用时，先等到这一行再 startActivity（AppProf.launching）
+appprof_ack() { echo "$1" > $X/density.fg.tmp 2>/dev/null && chmod 644 $X/density.fg.tmp && mv -f $X/density.fg.tmp $X/density.fg; }
+
 appprof_fg() {
     ap_pkg=$1
     [ "$ap_pkg" = com.veradroid.home ] && ap_pkg=home
     [ "$ap_pkg" = home ] || appprof_valid_pkg "$ap_pkg" || return 0
-    [ "$ap_pkg" = "$(cat $W/appprof.pkg 2>/dev/null)" ] && return 0
+    # 同一个包：显示参数不动；密度照样核对一次（返回 Kindle 时换回了默认，解冻后再打开同一个应用要换回去；没变化就什么都不做）
+    [ "$ap_pkg" = "$(cat $W/appprof.pkg 2>/dev/null)" ] && { appprof_density_fg "$ap_pkg"; appprof_ack "$ap_pkg"; return 0; }
     echo "$ap_pkg" > $W/appprof.pkg
+    # 显示密度先换（应用要在画第一帧之前拿到新的配置）；和下面的显示桥参数互不相干，“same as before”也照样要看
+    appprof_density_fg "$ap_pkg"
+    appprof_ack "$ap_pkg"
     ap_spec=; [ "$ap_pkg" = home ] || ap_spec=$(appprof_spec "$ap_pkg")
     ap_new=$(appprof_lines "$ap_spec")
     # 用户在全局里明确选了“不全刷”（settings.conf 里 KFB_FLASH=0）：内置推荐不能替他打开按页数全刷（0.96 用户反馈“更新后会黑屏全刷”）。
@@ -112,4 +122,90 @@ appprof_set() {
 }
 
 # 启动时：合并表发布出来；上次停在某个应用时留下的 settings.app 不带进新的一次（开机时前台是桌面）
-appprof_init() { rm -f $SYS/settings.app $W/appprof.pkg; appprof_publish; }
+appprof_init() { rm -f $SYS/settings.app $W/appprof.pkg; appprof_density_boot; appprof_publish; }
+
+# ---- 显示密度：规则里的 DENSITY=auto1080 | <数字>（只认内置表 appprofiles.conf，用户的设置存不了这个键）----
+# 多看（com.duokan.reader / com.duokan.einkreader）自己把阅读页的密度改成 320 × 屏宽 / 1080（PW6 1272 → 376），系统是 300：
+# 字按 376 画、版面按 300 排，右边和下面的字出了屏幕。它在前台时把系统密度临时换成同一个值（auto1080），离开就换回默认。
+# 实现：容器里 service call window（IWindowManager，原生程序，约 50 ms；wm density 要起 app_process，约 1 秒）
+#   12 = setForcedDisplayDensityForUser(display, density, user)   13 = clearForcedDisplayDensityForUser(display, user)
+#   10 = getInitialDisplayDensity(display)                         6 = getInitialDisplaySize(display, out Point)
+# 系统会把强制密度存进 Settings.Secure display_density_forced（/data/system/users/0/settings_secure.xml），重启后还在：
+# 开机前（appprof_density_boot，容器起来之前）和停止后（stop.sh）都把它从文件里抹掉——留下一个 376 别的应用就全都变样。
+# $W/density.cur = 现在生效的强制密度（空 / 没有 = 默认）；只有值真的变了才调一次（一次前台变化最多一次密度变化）。
+APPPROF_DENSITY_SETTINGS="$SYS/data/system/users/0/settings_secure.xml"
+
+# 内置表里这个包的 DENSITY 值（精确匹配 > 最长前缀），没有就空
+appprof_density_rule() {
+    awk -v p="$1" '/^[ \t]*(#|$)/ { next }
+        { sub(/[ \t]*#.*/, ""); k = $1; d = ""; n = split($2, a, ";")
+          for (i = 1; i <= n; i++) if (a[i] ~ /^DENSITY=/) d = substr(a[i], 9)
+          if (k == p) { ex = d; hit = 1 }
+          else if (k ~ /\*$/) { pre = substr(k, 1, length(k) - 1); if (index(p, pre) == 1 && length(pre) > best) { best = length(pre); pd = d } } }
+        END { print (hit ? ex : pd) }' "$VD/boot/appprofiles.conf" 2>/dev/null
+}
+
+# service call 的回复 "Result: Parcel(00000000 00000001 000004f8 000006a0 '....')" → 十进制的各个字（不含开头的异常码）
+appprof_parcel_words() { sed -n 's/^Result: Parcel(\([0-9a-f ]*\).*/\1/p' | awk '{ for (i = 2; i <= NF; i++) print $i }' | while read -r w; do echo $((0x$w)); done; }
+appprof_wm() { type vd_in >/dev/null 2>&1 || return 1; ad_in=$(vd_in) || return 1; vd_timeout 3 $ad_in /system/bin/service call window "$@" 2>/dev/null; }   # Android 没在跑：什么都不做
+
+# 这个包要的密度（数字）；空 = 默认。auto1080 = 320 × 屏宽 / 1080 舍去小数（屏宽取 Android 的原始显示宽度，开机后算一次）
+appprof_density_want() {
+    ad_r=; [ "$1" = home ] || ad_r=$(appprof_density_rule "$1")
+    case "$ad_r" in
+        auto1080)
+            ad_w=$(cat $W/density.width 2>/dev/null)
+            if [ -z "$ad_w" ]; then
+                ad_w=$(appprof_wm 6 i32 0 | appprof_parcel_words | sed -n 2p)   # 1 = Point 不为空，接着是 x y
+                case "$ad_w" in ''|*[!0-9]*) return 0 ;; esac
+                [ "$ad_w" -ge 400 ] 2>/dev/null || return 0
+                echo "$ad_w" > $W/density.width
+            fi
+            ad_n=$(( 320 * ad_w / 1080 )) ;;   # 取整舍去小数：多看就是这样算的（PW6 实测 376 正好，377 时右边 / 下面各空出 3–4 像素黑边）
+        ''|*[!0-9]*) return 0 ;;
+        *) ad_n=$ad_r ;;
+    esac
+    [ "$ad_n" -ge 100 ] && [ "$ad_n" -le 640 ] 2>/dev/null || return 0
+    # 和系统原本的密度一样：不用强制
+    ad_i=$(cat $W/density.initial 2>/dev/null)
+    if [ -z "$ad_i" ]; then ad_i=$(appprof_wm 10 i32 0 | appprof_parcel_words | head -1); case "$ad_i" in ''|*[!0-9]*) ad_i= ;; *) echo "$ad_i" > $W/density.initial ;; esac; fi
+    [ "$ad_n" = "$ad_i" ] && return 0
+    echo "$ad_n"
+}
+
+# 换密度时前台应用（和后台它自己的其它页面）要重建。打开应用 / 从“切换应用”回去时，桌面先发 fg、等宿主换好密度（density.fg）
+# 再 startActivity / moveTaskToFront，应用直接按新密度建，不多重建一次；显示桥的 LAUNCH 挡住纯色的启动窗口。
+# 桌面（VeraHome HomeActivity）自己处理密度变化、不重建（以前每次都重建一次，交出黑底和大一号的半张画面）。
+# 把强制密度设成 $1（空 = 恢复默认）；和现在一样就什么都不做
+appprof_density_set() {
+    ad_cur=$(cat $W/density.cur 2>/dev/null)
+    [ "$1" = "$ad_cur" ] && return 0
+    if [ -n "$1" ]; then appprof_wm 12 i32 0 i32 "$1" i32 0 | grep -q '^Result: Parcel(00000000 ' || { t "density: setting $1 failed"; return 1; }
+    else appprof_wm 13 i32 0 i32 0 | grep -q '^Result: Parcel(00000000 ' || { t "density: reset failed"; rm -f $W/density.cur; return 1; }; fi
+    if [ -n "$1" ]; then echo "$1" > $W/density.cur; else rm -f $W/density.cur; fi
+    t "density: ${1:-default}${ad_cur:+ (was $ad_cur)}"
+}
+
+appprof_density_fg() { appprof_density_set "$(appprof_density_want "$1")"; }
+
+# 返回 Kindle（冻结之前，显示桥已经被 ctl/sleep 挡住）：恢复默认。解冻后桌面打开 ctl/app 里的应用 / 回桌面时发 fg，按那个应用再换。
+appprof_density_reset() { [ -s $W/density.cur ] && appprof_density_set ""; return 0; }
+
+# 从系统设置文件里抹掉强制密度（Android 没在跑的时候：开机前、停止后）。原子替换，保留属主 / 权限；AtomicFile 的 .bak 也一样处理
+appprof_density_scrub() {
+    rm -f $W/density.cur $W/density.width $W/density.initial
+    for ad_f in "$APPPROF_DENSITY_SETTINGS" "$APPPROF_DENSITY_SETTINGS.bak"; do
+        [ -f "$ad_f" ] && grep -q 'name="display_density_forced" value="[0-9]' "$ad_f" 2>/dev/null || continue
+        # 属主（system 1000:1000）一定要保留：root 的 600 文件 system_server 读不了，整个 Secure 设置会被当成空的。
+        # 老机型的 busybox 可能没有 stat：用 ls -ln；还拿不到就原地写回（同一个 inode，属主 / 权限不变）
+        ad_o=$(stat -c '%u:%g' "$ad_f" 2>/dev/null) || ad_o=; ad_m=$(stat -c '%a' "$ad_f" 2>/dev/null) || ad_m=
+        [ -n "$ad_o" ] || ad_o=$(ls -ln "$ad_f" 2>/dev/null | awk '$3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ { print $3 ":" $4 }')
+        if sed 's/\(name="display_density_forced" value="\)[0-9]*"/\1"/' "$ad_f" > "$ad_f.vdtmp" && [ -s "$ad_f.vdtmp" ] &&
+           if [ -n "$ad_o" ]; then chown "$ad_o" "$ad_f.vdtmp" && chmod "${ad_m:-600}" "$ad_f.vdtmp" && mv -f "$ad_f.vdtmp" "$ad_f"
+           else cat "$ad_f.vdtmp" > "$ad_f" && rm -f "$ad_f.vdtmp"; fi; then
+            t "density: removed a saved forced density from ${ad_f##*/}"
+        else rm -f "$ad_f.vdtmp"; t "density: could not clean ${ad_f##*/}"; fi
+    done
+    return 0
+}
+appprof_density_boot() { appprof_density_scrub; }

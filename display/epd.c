@@ -7,7 +7,8 @@
  * hwtcon driver through FBInk (GPLv3, https://github.com/NiLuJe/FBInk), choosing a waveform per update.
  *
  * Protocol on the FIFO (one command per line):
- *     P n [A|F|D|G|R]         page n of the shared buffer is the new picture; we diff it against what is on the
+ *     P n [A|F|D|G|R]         page n of the shared buffer is the new picture (n = 2: <dir of shm>/fb2, hwcomposer.kindle's
+ *                             own page for frames with a dim layer); we diff it against what is on the
  *                             panel and refresh only the changed rectangle (mode: A auto, F full flashing GC16,
  *                             D fast DU, G GC16, R REAGL)
  *     P n y0 y1               the same, and the sender (hwcomposer.kindle) promises that only rows y0 <= y < y1 differ
@@ -41,6 +42,10 @@
  *                             the app's theme background, white or black) are not drawn; the last picture stays and
  *                             after 600 ms a small "加载中" badge goes on it. The first frame with real content (or the
  *                             end of <ms>) ends it. LAUNCH 0 ends it at once
+ *     QPASS <ms>              picture quality pass: a picture area that got a 1-bit / AUTO / animated refresh or several
+ *                             overlapping ones gets one REAGL (FULL) once the picture was still for <ms> (300; 0 = off),
+ *                             see qpass_ms
+ *     VERIFY                  test aid: log whether the newest page differs from what was sent to the panel
  *     ANIMHOLD <ms>           page-slide hold: a first frame that changes only a strip along a screen edge (a slide / cover page
  *                             animation starting) is held and merged with the frames that follow until none came for <ms>
  *                             (180; 0 = off), see anim_quiet_ms
@@ -117,6 +122,29 @@ static uint8_t dither = 3;   /* 0 off, anything else on: the MTK / EPDC hardware
 static volatile sig_atomic_t quit = 0;
 static uint8_t *cur_y8 = NULL, *prev_y8 = NULL;   /* what we want / what is on the panel */
 static int prev_valid = 0, last_page = 0;
+/* page 2 = <dir of shm>/fb2, a third picture that only hwcomposer.kindle writes (frames with a dim layer: SurfaceFlinger
+   draws its own GLES veil into both framebuffer pages, see android/hwcomposer/hwc_kindle.c). Mapped when first named. */
+static const uint8_t *fb2map = NULL;
+static char fb2path[600];
+static int fb2_ok(void)
+{
+    if (fb2map) return 1;
+    if (!fb2path[0]) return 0;
+    int fd = open(fb2path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    struct stat sb;
+    void *m = MAP_FAILED;
+    if (fstat(fd, &sb) == 0 && (size_t)sb.st_size >= (size_t)W * H * 4) m = mmap(NULL, (size_t)W * H * 4, PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);
+    if (m == MAP_FAILED) return 0;
+    fb2map = m;
+    return 1;
+}
+static const uint8_t *page_base(const uint8_t *shm, int page)
+{
+    if (page == 2 && fb2_ok()) return fb2map;
+    return shm + (size_t)(page & 1) * W * H * 4;
+}
 static double g_gamma = 1.3;
 static int g_invert = 0;      /* 1: invert the picture (white on black) */
 static int g_lightf = 0;      /* 浅色过滤 0 off, 1 weak, 2 medium, 3 strong: light pixels become pure white (build_lut) */
@@ -156,6 +184,24 @@ static int g_burst = 0;              /* set while the frame being drawn is a con
    for at least <pct> % is a picture and gets GL16 (16 grays, only changed pixels, no flash, ~70 ms slower); text,
    icons and anti-aliased edges stay DU. */
 static int img_gray_pct = 0;
+/* Picture quality pass (QPASS <ms>, --qpass; 0 = off, default 300). A picture that loads in steps (微信读书 covers and
+   illustrations: placeholder, then the picture, in 2-4 overlapping refreshes 70-170 ms apart, each sent while the previous
+   one is still running on the panel), or that went out 1-bit (DU in 均衡, the driver's AUTO choice, a swipe), stayed
+   half drawn / ghosted on the panel until the next page-count flash (KPW5 report, 0.96): the partial waveforms only drive
+   the pixels whose value changed, so nothing ever repaints the pixels the colliding updates left behind. Now every
+   refresh that is not already a full-quality update (REAGL / GC16 FULL) remembers the part of it that holds a picture
+   (32x32 tiles that are mostly mid-gray, img_box). When that part got a 1-bit / animated refresh, a refresh sent
+   while an earlier one of the same pixels was still running (collision), or two or more refreshes that overlap without
+   one covering the other (a picture drawn in bands), it gets one REAGL (FULL: every pixel driven, no flash; GL16 FULL on 4-bit i.MX panels) of
+   what is on the panel once no frame came for <ms> and the panel is idle. Text (no picture tiles) and page turns that
+   already went out as REAGL never get it. */
+static int qpass_ms = 300;
+static int qp_x0, qp_y0, qp_x1, qp_y1, qp_valid = 0, qp_n = 0, qp_lowq = 0;
+static long qp_last = 0, qp_done = -100000;
+static unsigned long n_qpass = 0;
+/* at most one pass per qp_gap_ms: an app that animates without end (晋江's first-start guide, a loading spinner next to
+   a picture) pauses for more than qpass_ms between its loops, and a pass every pause would only add refreshes */
+#define QP_GAP_MS 2000
 static unsigned long n_flash = 0;   /* GC16 full flashes sent, for the log */
 static long last_draw_ms = 0;   /* when we last sent something to the panel */
 static int settle_ms = 0;     /* merge frames: wait until no new frame came for this long (max 400 ms) before drawing, so scrolling / animations
@@ -512,7 +558,7 @@ static int busy_any(long now)
     return n;
 }
 
-enum { M_AUTO, M_FULL, M_DU, M_GC16, M_REAGL, M_CLEAN };
+enum { M_AUTO, M_FULL, M_DU, M_GC16, M_REAGL, M_CLEAN, M_QPASS };
 
 /* waveform + update mode for one refresh. FBInk maps is_flashing to UPDATE_MODE_FULL. REAGL is always FULL (see the
    header: that is what the driver and the Kindle UI do, and it does not flash). WFM_AUTO stays PARTIAL so the driver
@@ -526,6 +572,7 @@ static void set_wfm(FBInkConfig *c, int mode, WFM_MODE_INDEX_T auto_wfm)
     case M_GC16:  c->wfm_mode = WFM_GC16; break;
     case M_REAGL: c->wfm_mode = WFM_REAGL; break;
     case M_CLEAN: c->wfm_mode = WFM_GL16; break;      /* PARTIAL: only pixels whose gray level differs are driven */
+    case M_QPASS: c->wfm_mode = no_reagl ? WFM_GL16 : WFM_REAGL; c->is_flashing = true; break;   /* FULL: every pixel */
     default:      c->wfm_mode = auto_wfm; break;
     }
     if (c->wfm_mode == WFM_REAGL && no_reagl) c->wfm_mode = WFM_GL16;
@@ -726,6 +773,66 @@ static int gray_share(const uint8_t *buf, int w, int h)
     return n ? (int)(g * 100 / n) : 0;
 }
 
+/* the bounding box (relative to buf) of the 32x32 tiles that are a picture: at least half of the sampled pixels (every 2nd
+   pixel of every 2nd row) mid-gray. Anti-aliased text has far less (CJK at 1272x1696: 5-20 % per tile). Returns the
+   number of picture tiles; fewer than 4 (a 64x64 icon) do not count, nor tiles scattered thinly over a large box. */
+#define QP_TILE 32
+static int img_box(const uint8_t *buf, int w, int h, int *bx0, int *by0, int *bx1, int *by1)
+{
+    int n = 0, x0 = w, y0 = h, x1 = 0, y1 = 0;
+    for (int ty = 0; ty + QP_TILE / 2 <= h; ty += QP_TILE)
+        for (int tx = 0; tx + QP_TILE / 2 <= w; tx += QP_TILE) {
+            int ex = tx + QP_TILE < w ? tx + QP_TILE : w, ey = ty + QP_TILE < h ? ty + QP_TILE : h, s = 0, g = 0;
+            for (int j = ty; j < ey; j += 2) {
+                const uint8_t *r = buf + (size_t)j * w;
+                for (int i = tx + (j & 2 ? 1 : 0); i < ex; i += 2) { s++; if (r[i] >= 40 && r[i] <= 215) g++; }
+            }
+            if (s && g * 2 >= s) {
+                n++;
+                if (tx < x0) x0 = tx;
+                if (ty < y0) y0 = ty;
+                if (ex > x1) x1 = ex;
+                if (ey > y1) y1 = ey;
+            }
+        }
+    if (n < 4) return 0;
+    /* a picture is a solid block of such tiles; gray text (晋江: anti-aliased #555 strokes) makes a few scattered ones
+       over a whole page. At least a quarter of the tiles in the box must be picture tiles. */
+    long bt = (long)((x1 - x0 + QP_TILE - 1) / QP_TILE) * ((y1 - y0 + QP_TILE - 1) / QP_TILE);
+    if ((long)n * 4 < bt) return 0;
+    *bx0 = x0; *by0 = y0; *bx1 = x1; *by1 = y1;
+    return n;
+}
+/* remember a refresh of the panel rectangle (x, y, w, h) from buf for the quality pass; full = it was a full-quality update */
+static void qp_note(const uint8_t *buf, int x, int y, int w, int h, int full, int lowq, long t)
+{
+    if (qpass_ms <= 0 || g_cleaning) return;
+    if (full) {      /* a REAGL / GC16 FULL that covers the remembered picture leaves nothing to do */
+        if (qp_valid && x <= qp_x0 && y <= qp_y0 && x + w >= qp_x1 && y + h >= qp_y1) { qp_valid = 0; qp_n = 0; qp_lowq = 0; }
+        return;
+    }
+    int a0, b0, a1, b1, nt;
+    /* a refresh that covers the whole remembered area replaced what was there: an animation frame with a gray shadow,
+       a placeholder, a picture that is now gone. Only what this refresh brings counts from here on. */
+    if (qp_valid && x <= qp_x0 && y <= qp_y0 && x + w >= qp_x1 && y + h >= qp_y1) { qp_valid = 0; qp_n = 0; qp_lowq = 0; }
+    if (w < QP_TILE * 2 || h < QP_TILE * 2 || !(nt = img_box(buf, w, h, &a0, &b0, &a1, &b1))) return;
+    a0 += x; a1 += x; b0 += y; b1 += y;
+    if (timing_flag && access(timing_flag, F_OK) == 0)
+        fprintf(stderr, "[%ld] epd: picture %dx%d+%d+%d (%d tiles)%s\n", t, a1 - a0, b1 - b0, a0, b0, nt, lowq ? " low quality" : "");
+    if (!qp_valid) { qp_x0 = a0; qp_y0 = b0; qp_x1 = a1; qp_y1 = b1; qp_valid = 1; qp_n = 1; qp_lowq = lowq; }
+    else {
+        if (a0 < qp_x1 && a1 > qp_x0 && b0 < qp_y1 && b1 > qp_y0) qp_n++;   /* overlaps a picture refreshed before: a picture loading in steps */
+        if (a0 < qp_x0) qp_x0 = a0;
+        if (b0 < qp_y0) qp_y0 = b0;
+        if (a1 > qp_x1) qp_x1 = a1;
+        if (b1 > qp_y1) qp_y1 = b1;
+        qp_lowq |= lowq;
+    }
+    qp_last = t;
+}
+static int qp_due(void) { return qpass_ms > 0 && qp_valid && (qp_lowq || qp_n >= 2); }
+static long qp_at(void) { long d = qp_last + qpass_ms; return d > qp_done + QP_GAP_MS ? d : qp_done + QP_GAP_MS; }
+
 static int push_y8(const uint8_t *buf, int x, int y, int w, int h, int mode)
 {
     FBInkConfig c = cfg;
@@ -754,7 +861,17 @@ static int push_y8(const uint8_t *buf, int x, int y, int w, int h, int mode)
             c.is_flashing, fl, anim, rc, now_ms() - t0, fl ? " FLASH" : "");
     if (rc >= 0) {
         n_sent++;
+        /* sent while an earlier refresh of the same pixels is still running on the panel: the driver merges the two
+           (collision) and the partial waveforms leave pixels between the two pictures */
+        int coll = !g_cleaning && qpass_ms > 0 && busy_overlap(x, y, x + w, y + h, t0) > 0;
         busy_add(x, y, w, h, t0);
+        {   /* quality pass bookkeeping: REAGL (sent FULL) and the GC16 FULL flash are full quality; GL16 FULL is full quality
+               only where it stands in for REAGL (4-bit i.MX). 1-bit, swipes and collisions count as low quality. */
+            int fullq = c.is_flashing && (c.wfm_mode == WFM_GC16 || c.wfm_mode == WFM_REAGL || c.wfm_mode == WFM_GLRC16 ||
+                                          c.wfm_mode == WFM_GL16);
+            int lowq = c.wfm_mode == WFM_DU || c.is_animated || coll;   /* AUTO picks a 16-gray waveform for gray content itself */
+            qp_note(buf, x, y, w, h, fullq && !c.is_animated, lowq, t0);
+        }
         if (c.wfm_mode == WFM_DU && mode != M_CLEAN) {          /* remember what was drawn 1-bit, for CLEAN */
             if (!cl_valid) { cl_x0 = x; cl_y0 = y; cl_x1 = x + w; cl_y1 = y + h; cl_valid = 1; }
             else {
@@ -858,8 +975,8 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
 {
     long tc0 = now_ms();
     last_page = page;
-    if (g_rot) rgba_to_y8_rot(shm + (size_t)page * LW * LH * 4, 0, 0, g_rot == 180 ? VW : LW, LH, cur_y8);
-    else if (fy1 > fy0) rgba_to_y8_opaque(shm + (size_t)page * W * H * 4, W * 4, 0, fy0, W, fy1 - fy0, cur_y8 + (size_t)fy0 * W);
+    if (g_rot) rgba_to_y8_rot(page_base(shm, page), 0, 0, g_rot == 180 ? VW : LW, LH, cur_y8);
+    else if (fy1 > fy0) rgba_to_y8_opaque(page_base(shm, page), W * 4, 0, fy0, W, fy1 - fy0, cur_y8 + (size_t)fy0 * W);
     if (!prev_valid || force_full) {
         if (mode == M_FULL) flip_count = 0;
         push_region(0, 0, W, H, mode);
@@ -1215,7 +1332,7 @@ static unsigned long n_launch_held = 0;
 static int page_blank(const uint8_t *shm, int page)
 {
     if (g_rot) return 0;
-    const uint8_t *img = shm + (size_t)page * W * H * 4;
+    const uint8_t *img = page_base(shm, page);
     int hist[16] = {0};
     for (int y = 0; y < H; y += 64)
         for (int x = 0; x < W; x += 64) { const uint8_t *p = img + ((size_t)y * W + x) * 4; hist[((p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8) >> 4]++; }
@@ -1255,6 +1372,50 @@ static void launch_badge(void)
     bg_command(a);
 }
 
+/* the quality pass (see qpass_ms): one full-quality refresh of the remembered picture area, from what is on the panel
+   (prev_y8: a newer frame that is still held back must not be drawn by it) */
+static void qp_run(long now)
+{
+    int x0 = qp_x0 & ~7, y0 = qp_y0, x1 = (qp_x1 + 7) & ~7, y1 = qp_y1;
+    if (x1 > W) x1 = W;
+    if (y1 > H) y1 = H;
+    int w = x1 - x0, h = y1 - y0, n = qp_n, lq = qp_lowq;
+    qp_valid = 0; qp_n = 0; qp_lowq = 0;
+    if (w <= 0 || h <= 0 || !prev_valid) return;
+    uint8_t *tmp = malloc((size_t)w * h);
+    if (!tmp) return;
+    for (int j = 0; j < h; j++) memcpy(tmp + (size_t)j * w, prev_y8 + (size_t)(y0 + j) * W + x0, (size_t)w);
+    fprintf(stderr, "[%ld] epd: quality pass %dx%d+%d+%d (%d refreshes%s, still %ld ms)\n", now, w, h, x0, y0, n,
+            lq ? ", low quality" : "", now - qp_last);
+    g_cleaning = 1;
+    if (push_y8(tmp, x0, y0, w, h, M_QPASS) >= 0) n_qpass++;
+    qp_done = now;
+    g_cleaning = 0;
+    free(tmp);
+}
+
+/* VERIFY: convert the whole newest page and compare it with what we think is on the panel (test aid: a frame whose change
+   was missed shows up as differing rows) */
+static void verify_page(const uint8_t *shm)
+{
+    if (g_rot || !prev_valid) { fprintf(stderr, "epd: verify: n/a\n"); return; }
+    uint8_t *t = malloc((size_t)W * H);
+    if (!t) return;
+    rgba_to_y8_opaque(page_base(shm, last_page), W * 4, 0, 0, W, H, t);
+    long px = 0; int r0 = -1, r1 = -1, x0 = W, x1 = 0;
+    for (int y = 0; y < H; y++) {
+        const uint8_t *a = t + (size_t)y * W, *b = prev_y8 + (size_t)y * W;
+        if (!memcmp(a, b, W)) continue;
+        if (r0 < 0) r0 = y;
+        r1 = y + 1;
+        for (int x = 0; x < W; x++) if (a[x] != b[x]) { px++; if (x < x0) x0 = x; if (x + 1 > x1) x1 = x + 1; }
+    }
+    if (bg_on || bg_drawn) fprintf(stderr, "epd: verify: (gesture badge up)\n");
+    if (r0 < 0) fprintf(stderr, "[%ld] epd: verify page=%d: panel picture matches\n", now_ms(), last_page);
+    else fprintf(stderr, "[%ld] epd: verify page=%d: %ld px differ in %dx%d+%d+%d\n", now_ms(), last_page, px, x1 - x0, r1 - r0, x0, r0);
+    free(t);
+}
+
 static int cmd_run(const char *shm, const char *fifo, const char *ctl)
 {
     int sfd = open(shm, O_RDWR | O_CREAT, 0666);
@@ -1282,7 +1443,9 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             strcpy(sl, "/page");
             FILE *f = fopen(pf, "r");
             int v;
-            if (f) { if (fscanf(f, "%d", &v) == 1) last_page = v & 1; fclose(f); }
+            if (f) { if (fscanf(f, "%d", &v) == 1) last_page = v == 2 ? 2 : v & 1; fclose(f); }
+            strcpy(sl, "/fb2");
+            snprintf(fb2path, sizeof(fb2path), "%s", pf);
         }
     }
 
@@ -1317,6 +1480,12 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             long d = (cl_last > last_frame_ms ? cl_last : last_frame_ms) + (clean_ms > 0 ? clean_ms : burst_du_ms);
             deadline = d > nowt ? d : nowt + (busy_any(nowt) ? 1000 : 0);      /* due but the panel is busy: the pipe wakes us */
         }
+        if (held_page < 0 && qp_due()) {      /* quality pass: once the picture is still and the panel idle */
+            long d = (qp_last > last_frame_ms ? qp_last : last_frame_ms) + qpass_ms;
+            if (d < qp_at()) d = qp_at();
+            if (d < nowt) d = busy_any(nowt) ? nowt + 1000 : nowt;
+            if (deadline < 0 || d < deadline) deadline = d;
+        }
         if (bg_on && (deadline < 0 || bg_until < deadline)) deadline = bg_until;   /* gesture badge: take it down on time */
         int sr;
         if (deadline >= 0) {
@@ -1329,7 +1498,7 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
         if (sr > 0 && pfd >= 0 && FD_ISSET(pfd, &rf)) { char junk[64]; while (read(pfd, junk, sizeof(junk)) > 0) {} panel_event = 1; }
         if (sr == 0 || (panel_event && !FD_ISSET(ffd, &rf))) {
             nowt = now_ms();
-            if (access(sleepf, F_OK) == 0) { held_page = -1; cl_valid = 0; burst_dirty = 0; need_full = 1; pend_y0 = -1; continue; }
+            if (access(sleepf, F_OK) == 0) { held_page = -1; cl_valid = 0; burst_dirty = 0; need_full = 1; pend_y0 = -1; qp_valid = 0; continue; }
             if (held_page >= 0) {
                 int expired = nowt >= held_until;
                 if (held_why == 4) {   /* launch hold: the badge after 600 ms, then wait for content / the end of LAUNCH */
@@ -1366,16 +1535,23 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
                 if (show_page(fbmem, hp, hm, 0, 0, held_why == 2 && !expired) == 2) {
                     held_page = hp; held_mode = hm; held_why = 2;   /* keep the first deadline */
                 }
+            } else if (qp_due() && nowt >= qp_at() && nowt - last_frame_ms >= qpass_ms && !busy_any(nowt) &&
+                       !((clean_ms > 0 || burst_dirty) && cl_valid)) {
+                qp_run(nowt);
             } else if ((clean_ms > 0 || burst_dirty) && cl_valid && nowt - cl_last >= (clean_ms > 0 ? clean_ms : burst_du_ms) &&
                        nowt - last_frame_ms >= (clean_ms > 0 ? clean_ms : burst_du_ms) && !busy_any(nowt)) {
                 /* the picture has been still for a while: one 16-gray pass over what was drawn 1-bit */
                 int x0 = cl_x0, y0 = cl_y0, x1 = cl_x1, y1 = cl_y1;
                 cl_valid = 0; burst_dirty = 0;
                 if (timing_flag && access(timing_flag, F_OK) == 0) fprintf(stderr, "[%ld] epd: 16-gray pass %dx%d+%d+%d\n", nowt, x1 - x0, y1 - y0, x0, y0);
+                /* a picture inside it that is due for the quality pass: the same refresh, sent FULL (one refresh, not two) */
+                int big = (long)(x1 - x0) * (y1 - y0) > (long)W * H * 6 / 10;
+                int qin = qp_due() && qp_x0 >= x0 && qp_y0 >= y0 && qp_x1 <= x1 && qp_y1 <= y1;
                 g_cleaning = 1;
-                if ((long)(x1 - x0) * (y1 - y0) > (long)W * H * 6 / 10) push_region(0, 0, W, H, M_REAGL);
-                else push_region(x0, y0, x1, y1, M_CLEAN);
+                if (big) push_region(0, 0, W, H, M_REAGL);
+                else push_region(x0, y0, x1, y1, qin ? M_QPASS : M_CLEAN);
                 g_cleaning = 0;
+                if (big || qin) { qp_valid = 0; qp_n = 0; qp_lowq = 0; qp_done = nowt; }
             }
             continue;
         }
@@ -1399,6 +1575,8 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             if (!strcmp(line, "QUIT")) quit = 1;
             else if (!strcmp(line, "REDRAW")) redraw = 1;
             else if (!strcmp(line, "FULL")) full = 1;
+            else if (!strcmp(line, "VERIFY")) verify_page(fbmem);
+            else if (!strncmp(line, "QPASS", 5)) { int v; if (sscanf(line + 5, "%d", &v) == 1 && v >= 0 && v <= 5000) { qpass_ms = v; if (!v) qp_valid = 0; } }
             else if (!strncmp(line, "ROT ", 4)) {
                 int r = atoi(line + 4);
                 if ((r == 0 || r == 90 || r == 180 || r == 270) && r % 180 == g_rot % 180 && r != g_rot) {
@@ -1494,7 +1672,7 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
                 }
             }
             else if (sscanf(line, "P %d %c", &x, &m) >= 1) {
-                page = x & 1;
+                page = x == 2 ? (fb2_ok() ? 2 : last_page) : x & 1;
                 if (tlog) fprintf(stderr, "[%ld] epd: got %s\n", now_ms(), line);
                 { int a, b; if (sscanf(line, "P %*d %d %d", &a, &b) == 2 && b > a) { if (a < ry0) ry0 = a; if (b > ry1) ry1 = b; } else rall = 1; }
                 int mm = (sscanf(line, "P %*d %c", &m) == 1) ? (m == 'F' ? M_FULL : m == 'D' ? M_DU : m == 'G' ? M_GC16 : m == 'R' ? M_REAGL : M_AUTO) : M_AUTO;
@@ -1542,7 +1720,7 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
 
         if (access(sleepf, F_OK) == 0) {   /* screensaver / boot splash: drop, but remember which page is the newest */
             if (page >= 0) last_page = page;
-            held_page = -1; cl_valid = 0; burst_dirty = 0; need_full = 1; pend_y0 = -1;
+            held_page = -1; cl_valid = 0; burst_dirty = 0; need_full = 1; pend_y0 = -1; qp_valid = 0;
             continue;
         }
         /* last_draw_ms arms the settle merging for the frames that follow closely. It used to be set for every frame, also
@@ -1569,6 +1747,7 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
                 if (blank) {
                     if (!launch_t0) { launch_t0 = nowt2; fprintf(stderr, "[%ld] epd: launch hold: blank frame kept off the panel\n", nowt2); }
                     n_launch_held++;
+                    need_full = 1;      /* the rows the next frame names are relative to this blank frame, not to the panel */
                     held_page = page; held_mode = mode; held_why = 4;
                     held_until = launch_badged ? launch_until : launch_t0 + 600 < launch_until ? launch_t0 + 600 : launch_until;
                     last_page = page;
@@ -1669,6 +1848,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--settle-first") && i + 1 < argc) settle_first = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--scroll-du") && i + 1 < argc) burst_du_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--img-gray") && i + 1 < argc) img_gray_pct = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--qpass") && i + 1 < argc) qpass_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--flip-gap") && i + 1 < argc) flip_gap_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--tolerant") && i + 1 < argc) g_tolerant = atoi(argv[++i]) != 0;
         else if (!strcmp(argv[i], "--lightf") && i + 1 < argc) g_lightf = atoi(argv[++i]);

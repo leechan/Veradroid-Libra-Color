@@ -101,8 +101,12 @@ public class SwitcherActivity extends Activity {
                 } else icon = cs.newDrawable(getResources());
                 final Intent open = new Intent(t.baseIntent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 final int id = t.id;
+                final String tpkg = pkg;
                 list.addView(item(label, null, icon, new View.OnClickListener() {
                     @Override public void onClick(View v) {
+                        // 和桌面点图标一样：先让宿主换好这个应用的显示参数 / 显示密度、显示桥挡住纯色的启动窗口，再把任务调到前面
+                        // （以前只靠任务栈通知，宿主晚 0.1–5 秒才知道；多看要换密度，阅读页会先按旧密度重建一次、再重建一次）
+                        if (AppProf.host()) { HostService.launchedPkg = tpkg; AppProf.launching(tpkg); }
                         try {
                             if (id >= 0) am.moveTaskToFront(id, 0);
                             else startActivity(open);

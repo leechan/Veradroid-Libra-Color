@@ -41,6 +41,7 @@ kmsg "begin"
 RS=; [ -f $W/restarting ] && RS=1
 
 [ -d $FZ ] && android_thaw 2>/dev/null          # 冻着的进程收不到 SIGKILL
+type net_resume >/dev/null 2>&1 && net_resume     # 冻结时停下的 slirp4netns（freeze.sh）：停着收不到 SIGTERM
 ps=
 for f in watchdog sleep lipc cmd boot slirp shutw compile; do
     p=$(cat $W/$f.pid 2>/dev/null)
@@ -96,6 +97,8 @@ done
 while grep -q " $R " /proc/mounts; do umount -l $R || break; done
 freezer_cleanup
 kmsg "container mounts released"
+# 多看在前台时换过的显示密度会存进 Android 的设置文件：容器已经没了，趁系统盘还挂着把它抹掉（appprof.sh；下次开机前还会再抹一次）
+[ -f "$VD/boot/lib/appprof.sh" ] && . "$VD/boot/lib/appprof.sh" && appprof_density_scrub >> $LOG 2>&1
 # the Kindle's own /mnt/base-us loop back to buffered I/O also on a stale-state stop (a crashed run must not leave it in
 # direct mode: the next start would see dio=1 already, not record it, and never restore it)
 [ -n "$STALE" ] && { loopdio_restore 2>/dev/null || true; rm -rf $W/kfb; storage_umount; exit 0; }

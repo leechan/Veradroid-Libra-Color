@@ -68,6 +68,7 @@
 #define KFB_PAGE "/dev/kfb/page"
 #define KFB_ONEPAGE "/dev/kfb/onepage"
 #define KFB_DIM  "/dev/kfb/hwc.dim"
+#define KFB_FB2  "/dev/kfb/fb2"
 #define DIM_DEFAULT 51
 
 /* the default gralloc's private_handle_t (gralloc_priv.h), C view */
@@ -89,6 +90,8 @@ struct ctx {
     const hwc_procs_t *procs;
     int w, h;
     uint8_t *fb;              /* 2 pages of RGBX */
+    uint8_t *fb2;             /* page 2: /dev/kfb/fb2, ours alone (frames with a dim layer, see hwc_set) */
+    int fb2_failed;
     size_t page_bytes;
     int fifo;
     int last_page;            /* the page veradroid-epd was told about last */
@@ -142,6 +145,26 @@ static void notify(struct ctx *c, int page, int y0, int y1)
 }
 
 static size_t page_round(size_t v) { return (v + 4095) & ~(size_t)4095; }
+
+/* the picture of page 0, 1 or 2 */
+static uint8_t *page_ptr(struct ctx *c, int page) { return page == 2 ? c->fb2 : c->fb + (size_t)(page & 1) * c->page_bytes; }
+
+/* page 2 (created on the first dim frame; tmpfs, so it costs memory only from then on) */
+static int fb2_map(struct ctx *c)
+{
+    if (c->fb2) return 1;
+    if (c->fb2_failed) return 0;
+    int fd = open(KFB_FB2, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+    struct stat sb;
+    if (fd >= 0 && fchmod(fd, 0666) == 0 && fstat(fd, &sb) == 0 &&
+        ((size_t)sb.st_size >= c->page_bytes || ftruncate(fd, (off_t)c->page_bytes) == 0)) {
+        void *m = mmap(NULL, c->page_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (m != MAP_FAILED) c->fb2 = m;
+    }
+    if (fd >= 0) close(fd);
+    if (!c->fb2) { c->fb2_failed = 1; ALOGW("cannot map %s: dim frames compose into the framebuffer target", KFB_FB2); }
+    return c->fb2 != NULL;
+}
 
 /* a WindowManager dim layer: SurfaceFlinger (HWComposer_hwc1 setBuffer(NULL)) gives a layer without a buffer the skip flag
    and no handle; in 7.1 the only visible layers without a buffer are LayerDim (a normal Layer is not visible before its
@@ -325,8 +348,11 @@ static int hwc_prepare(hwc_composer_device_1_t *dev, size_t n, hwc_display_conte
     }
     if (!ok && c->ovl_since_gles && c->fb && !c->onepage) {
         /* GLES draws only what changed and takes the rest of the frame from its previous buffer: both pages must hold
-           the picture that is on screen now */
-        memcpy(c->fb + (size_t)(c->last_page ^ 1) * c->page_bytes, c->fb + (size_t)c->last_page * c->page_bytes, c->page_bytes);
+           the picture that is on screen now (both of them when that is page 2) */
+        if (c->last_page == 2 && c->fb2) {
+            memcpy(c->fb, c->fb2, c->page_bytes);
+            memcpy(c->fb + c->page_bytes, c->fb2, c->page_bytes);
+        } else memcpy(c->fb + (size_t)(c->last_page ^ 1) * c->page_bytes, c->fb + (size_t)(c->last_page & 1) * c->page_bytes, c->page_bytes);
         c->ovl_since_gles = 0;
         c->n_sync++;
     }
@@ -350,7 +376,7 @@ static int hwc_set(hwc_composer_device_1_t *dev, size_t n, hwc_display_contents_
         long long t0 = now_ns();
         /* in place, into the page that is on screen: only rows that differ are written, so we know what changed */
         int page = c->last_page;
-        uint8_t *dst = c->fb + (size_t)page * c->page_bytes;
+        uint8_t *dst = page_ptr(c, page);
         size_t first = 0;
         for (size_t i = nl; i-- > 0;)
             if (covers_all(c, &list->hwLayers[i])) { first = i; break; }
@@ -362,14 +388,23 @@ static int hwc_set(hwc_composer_device_1_t *dev, size_t n, hwc_display_contents_
             else if (bp[i] == 0) ndim++;
         }
         if (ndim) {
-            /* SurfaceFlinger has just drawn the dim layer with GLES into the framebuffer target, which is one of our two
-               pages. If that is the page on screen, compose into the other one (the bridge must not read the GLES veil)
-               and let the bridge compare the whole page: rows equal to the stale page would otherwise go unnamed. */
-            const hwc_layer_1_t *t = &list->hwLayers[list->numHwLayers - 1];
-            const struct vd_handle *th = (const struct vd_handle *)t->handle;
-            if (t->compositionType == HWC_FRAMEBUFFER_TARGET && th && th->magic == VD_MAGIC && (th->flags & VD_FLAG_FB) &&
-                ((int)((size_t)th->offset / c->page_bytes) & 1) == page) {
-                page ^= 1; dst = c->fb + (size_t)page * c->page_bytes; whole = 1;
+            /* SurfaceFlinger draws the dim layer with GLES into the framebuffer target (HWComposer_hwc1 resets skip layers to
+               FRAMEBUFFER after prepare()), and the framebuffer target is one of our two pages, a different one every
+               frame. Whatever we composed into page 0 / 1 was painted over by the next frame's veil, often before the
+               bridge read it (it reads after its merge / hold windows): an app that keeps animating under a dialog
+               (晋江's 翻页模式 dialog, an icon animation at ~12 fps) showed as a black screen, and libagl draws the
+               oversized WindowManager dim quad (1.5x the screen at a negative offset) as one triangle, a diagonal
+               edge. So dim frames are composed into page 2 (/dev/kfb/fb2), which SurfaceFlinger never touches. Only when
+               that cannot be mapped: into the framebuffer target itself (GLES is done with it for this frame). The
+               bridge compares the whole page. */
+            if (fb2_map(c)) { page = 2; dst = c->fb2; whole = page != c->last_page; }
+            else {
+                const hwc_layer_1_t *t = &list->hwLayers[list->numHwLayers - 1];
+                const struct vd_handle *th = (const struct vd_handle *)t->handle;
+                if (t->compositionType == HWC_FRAMEBUFFER_TARGET && th && th->magic == VD_MAGIC && (th->flags & VD_FLAG_FB)) {
+                    page = (int)((size_t)th->offset / c->page_bytes) & 1;
+                    dst = page_ptr(c, page); whole = 1;
+                }
             }
             c->n_dim++;
         }

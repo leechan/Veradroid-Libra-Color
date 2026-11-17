@@ -61,12 +61,13 @@ final class BlocksHome {
         settings = new BlocksSettings(this);
         root = new LinearLayout(a);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.WHITE);
+        // 不涂底色：底下是 HomeActivity 的 page（白纸，首页标签有壁纸时是壁纸，见 HomeActivity.blocksWall）
         // 最上面一行小字：左边名字，右边时间和电量（只在换页面和整分钟时改）
         LinearLayout st = new LinearLayout(a);
         st.setOrientation(LinearLayout.HORIZONTAL);
         st.setGravity(Gravity.CENTER_VERTICAL);
         st.setPadding(dp(16), dp(5), dp(16), dp(4));
+        st.setBackgroundColor(Color.WHITE);   // 最上面一行小字不压在壁纸上
         Icons.IconView logo = new Icons.IconView(a, Icons.Kind.BOOK);
         st.addView(logo, Blocks.lp(dp(16), dp(16)));
         stLeft = Ui.text(a, "", 12, true);
@@ -122,6 +123,7 @@ final class BlocksHome {
             if (c.getVisibility() != vis) c.setVisibility(vis);
         }
         cur = key;
+        a.blocksWall(key);
         nav.setActive(key == S_LIBRARY ? HOME : key >= 10 ? ME : key);
         if (key == HOME) { tickClock(); BlocksCards.maybeFetchWeather(a, new BlocksCards.Changed() { @Override public void changed() { if (cur == HOME) { show(HOME); a.changed(); } } }); }
         if (key == ME) refreshMe();
@@ -182,7 +184,7 @@ final class BlocksHome {
             Calendar c = Calendar.getInstance();
             return caps + "|" + Lib.version() + "|" + prefs.getString(BlocksCards.KEY, BlocksCards.DEFAULT) + "|" + Stats.weekMs(a) / 60000 + "|" + Stats.bookmarkCount(a)
                 + "|" + prefs.getLong("la_time", 0) + "|" + prefs.getLong("wx_at", 0) + prefs.getString("wx_city", "") + "|" + c.get(Calendar.DAY_OF_YEAR)
-                + "|" + a.appsVersion() + "|" + prefs.getString("blk_quick", "") + "|" + a.libOn();
+                + "|" + a.appsVersion() + "|" + prefs.getString("blk_quick", "") + "|" + a.libOn() + "|" + prefs.getInt(Blocks.WALLCARD_KEY, 0);
         }
         case FILES: return caps + "|" + files.sig();
         case APPS: return caps + "|" + a.appsVersion() + "|" + prefs.getInt("cols", 3) + "|" + prefs.getInt("iconstyle", 0) + "|" + prefs.getString("blk_pins", "") + prefs.getString("blk_hidden", "") + showHidden + prefs.getInt("sort", 0);
@@ -244,9 +246,11 @@ final class BlocksHome {
         LinearLayout pg = new LinearLayout(a);
         pg.setOrientation(LinearLayout.VERTICAL);
         int n = a.libOn() ? Lib.all().size() : 0;
-        pg.addView(Blocks.pageHead(a, "Library / " + n + " books", "首页", Blocks.squareButton(a, Icons.Kind.MORE, new View.OnClickListener() {
+        LinearLayout head = Blocks.pageHead(a, "Library / " + n + " books", "首页", Blocks.squareButton(a, Icons.Kind.MORE, new View.OnClickListener() {
             @Override public void onClick(View v) { a.mainMenu(); }
-        })));
+        }));
+        head.setBackground(new Blocks.Veil());   // 有壁纸时标题行也垫一层白（按“卡片遮盖”的浓淡）
+        pg.addView(head);
         LinearLayout cards = new LinearLayout(a);
         cards.setOrientation(LinearLayout.VERTICAL);
         cards.setPadding(dp(16), 0, dp(16), dp(8));
@@ -267,6 +271,7 @@ final class BlocksHome {
         for (String id : BlocksCards.order(a)) {
             View c = card(id);
             if (c == null) continue;
+            if (c.getBackground() == null) c.setBackground(new Blocks.Veil());   // 没有框的卡片（最近阅读……）的字不直接压在壁纸上
             LinearLayout col = colR != null && (n0 % 2 == 1) ? colR : colL;
             col.addView(c, Blocks.gap(a, col.getChildCount() == 0 ? 2 : 10));
             n0++;
@@ -327,9 +332,15 @@ final class BlocksHome {
         return v;
     }
 
-    private static void attachLong(View v, View.OnLongClickListener l) {
-        if (v.isClickable() || v instanceof ViewGroup) v.setOnLongClickListener(l);
-        if (v instanceof ViewGroup) { ViewGroup g = (ViewGroup) v; for (int i = 0; i < g.getChildCount(); i++) attachLong(g.getChildAt(i), l); }
+    /**
+     * 只接到卡片本身和本来就能点的控件上。以前每个 ViewGroup 都接：setOnLongClickListener 会让它“可长按”，
+     * 可长按的控件会吃掉落在它上面的整个触摸，点按就到不了外层那一行的 onClick——“继续阅读”卡片点了没反应
+     * （0.95 用户诊断：封面框和右边那一栏盖满了整行，点哪里都被它们吃掉）。不能点的地方长按会冒泡到卡片本身。
+     */
+    private static void attachLong(View v, View.OnLongClickListener l) { attachLong(v, l, true); }
+    private static void attachLong(View v, View.OnLongClickListener l, boolean top) {
+        if (top || v.isClickable()) v.setOnLongClickListener(l);
+        if (v instanceof ViewGroup) { ViewGroup g = (ViewGroup) v; for (int i = 0; i < g.getChildCount(); i++) attachLong(g.getChildAt(i), l, false); }
     }
 
     private void cardMenu(final String id) {
@@ -383,9 +394,9 @@ final class BlocksHome {
         else card.addView(appFirst ? appRow(app, laPkg, laTime) : bookRow(book));
         // 另一个来源也有：下面一行小字，点了直接去
         if (appFirst && book != null) card.addView(alsoRow("也在读：《" + book.title + "》 · " + BlocksCards.ago(book.lastRead), new View.OnClickListener() {
-            @Override public void onClick(View v) { Lib.open(a, book); } }));
+            @Override public void onClick(View v) { openBook(book); } }));
         else if (!appFirst && app != null) card.addView(alsoRow("最近用过：" + a.labelFor(app) + " · " + BlocksCards.ago(laTime), new View.OnClickListener() {
-            @Override public void onClick(View v) { a.launch(app); } }));
+            @Override public void onClick(View v) { openApp(app); } }));
         return card;
     }
 
@@ -467,7 +478,8 @@ final class BlocksHome {
         LinearLayout row = continueRow(new CoverView(a, b, bm, false), b.title, "读到 " + b.percent + "%",
             ch.length() > 0 ? "【" + ch + "】" : null, b.ext() + " · " + BlocksCards.size(b.size) + " · " + BlocksCards.ago(b.lastRead), b.percent, BlocksCards.ago(b.lastRead));
         row.setClickable(true);
-        row.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { Lib.open(a, b); } });
+        row.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { openBook(b); } });
+        Blocks.fast(row);
         row.setOnLongClickListener(new View.OnLongClickListener() { @Override public boolean onLongClick(View v) { a.bookMenu(b); return true; } });
         return row;
     }
@@ -493,8 +505,29 @@ final class BlocksHome {
         col.getChildAt(col.getChildCount() - 1).setVisibility(View.GONE);
         col.getChildAt(col.getChildCount() - 2).setVisibility(View.INVISIBLE);
         row.setClickable(true);
-        row.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { a.launch(app); } });
+        row.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { openApp(app); } });
+        Blocks.fast(row);
         return row;
+    }
+
+    /** 继续阅读：书的文件不在了（删了 / 挪了 / 存储没挂上）就说一声并重新扫书库，不再什么都不做。 */
+    private void openBook(Lib.Book b) {
+        if (b.path == null || !new java.io.File(b.path).isFile()) {
+            VeraToast.show(a, "找不到《" + b.title + "》的文件了，可能已被删除或移动。正在重新整理书库。");
+            Lib.scan(a, 0);
+            return;
+        }
+        try { Lib.open(a, b); } catch (Throwable t) { VeraToast.show(a, "打不开这本书：" + t.getMessage()); }
+    }
+
+    /** 继续阅读：应用被卸载 / 停用了就提示，不再静默失败。 */
+    private void openApp(ResolveInfo app) {
+        String pkg = app.activityInfo.packageName;
+        try {
+            android.content.pm.ApplicationInfo ai = a.getPackageManager().getApplicationInfo(pkg, 0);
+            if (!ai.enabled) { VeraToast.show(a, a.labelFor(app) + " 已被停用，请到“应用”里启用后再打开。"); return; }
+        } catch (Throwable t) { VeraToast.show(a, "这个应用已经卸载了。"); prefs.edit().remove("la_pkg").apply(); show(HOME); a.changed(); return; }
+        a.launch(app);
     }
 
     private View statsCard() {

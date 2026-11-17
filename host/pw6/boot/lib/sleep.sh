@@ -62,49 +62,98 @@ screensaver_show() {
     case "$img" in *.[pP][nN][gG]) /usr/sbin/eips -g "$img" >/dev/null 2>&1 && return 0 ;; esac
     [ -f "$VD/screensaver/default.png" ] && /usr/sbin/eips -g "$VD/screensaver/default.png" >/dev/null 2>&1 || true
 }
+# 锁屏超过 N 小时后自动退出 Android（SAVER_EXIT_H，默认 0 = 不退出）。不为此定时唤醒：只在醒来的那一刻看冻了多久
+# （进屏保时记下的墙上时间），够了就不解冻，直接停掉 Android、回到 Kindle 界面。正在装应用（没冻结）时不退。
+saver_exit_check() {
+    settings_load 2>/dev/null
+    h=${SAVER_EXIT_H:-0}
+    case "$h" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$h" -gt 0 ] && [ -f $W/saver_frozen ] || return 0
+    s0=$(cat $W/saver.t0 2>/dev/null); now=$(date +%s)
+    case "$s0" in ''|*[!0-9]*) return 0 ;; esac
+    [ $((now - s0)) -ge $((h * 3600)) ] || return 0
+    t "screensaver: android was frozen for $(((now - s0) / 60)) min (SAVER_EXIT_H=$h): exiting android instead of thawing"
+    rm -f $W/saver.t0
+    type log_release >/dev/null 2>&1 && log_release
+    VD_STOP_REASON=saver-exit sh $VD/boot/stop.sh >/dev/null 2>&1
+    exit 0
+}
+# 进 / 出屏保。$1 = saver | active（powerd 的事件或状态换算来的）。当前状态记在 $W/sleep.cur（事件处理在管道的子 shell 里跑，变量带不出来）
+sleep_apply() {
+    cur=$(cat $W/sleep.cur 2>/dev/null)
+    case "$1" in
+    saver)
+        [ "$cur" = saver ] && return 0
+        echo saver > $W/sleep.cur
+        touch $X/ctl/sleep
+        # 设了锁屏密码：冻结前先让桌面把锁屏盖上（显示桥已被 ctl/sleep 挡住，看不到），醒来时第一帧就是锁屏
+        type lock_request >/dev/null 2>&1 && lock_request
+        usleep 300000
+        # Freeze Android first; otherwise its last frame can overwrite
+        # the screensaver image right after eips draws it.
+        # 正在装 APK（afterboot.sh 写 $W/installing）时不冻结：冻在 dex2oat 中间、几小时后解冻，PackageManager
+        # 线程还卡着，system_server 会被自己的 Watchdog 杀掉（用户诊断 092A03）。ctl/sleep 已经挡住显示桥；
+        # 机器真睡下去（suspended）时整个系统一起停，uptime 也停，不会触发 Watchdog。
+        if alive $W/installing; then
+            touch $W/saver_nofreeze; t "screensaver: an apk is being installed, android left running"
+        else
+            android_freeze && touch $W/saver_frozen
+        fi
+        type wifi_ps_restore >/dev/null 2>&1 && wifi_ps_restore
+        screensaver_show
+        date +%s > $W/saver.t0      # 墙上时间（休眠期间 uptime 不走），醒来时看冻了多久（SAVER_EXIT_H）
+        t "screensaver on, android frozen" ;;
+    active)
+        echo active > $W/sleep.cur
+        [ "$cur" = saver ] || return 0
+        saver_exit_check
+        if [ -f $W/saver_nofreeze ]; then rm -f $W/saver_nofreeze; else android_thaw 2>/dev/null; fi
+        type lock_reset_check >/dev/null 2>&1 && { lock_reset_check; lock_request; }
+        ( usleep 500000; trust_unlock ) &
+        rm -f $W/saver_frozen
+        rm -f $X/ctl/sleep
+        epd_send REDRAW
+        t "screensaver off, android thawed" ;;
+    esac
+}
+sleep_state() {   # powerd 现在的状态 -> saver / active（读不到或在中间状态时什么都不输出）
+    case "$(lipc-get-prop -s com.lab126.powerd state 2>/dev/null)" in
+    screenSaver|screenSaverOn|suspended|sleeping|readyToSuspend) echo saver ;;
+    active|charging) echo active ;;
+    esac
+}
 sleep_watch() {
-    # Do not subscribe to lipc-wait-event: on PW6/5.19 it writes its monitor
-    # lines to the console even with stdout redirected, and those lines were
-    # visible over VeraHome (outOfScreenSaver/goingToScreenSaver columns).
-    # powerd exposes a read-only "state" property (active / screenSaver /
-    # suspended), so poll it once a second. No event output can leak.
-    cur=$(lipc-get-prop -s com.lab126.powerd state 2>/dev/null)
+    # 以前每秒 lipc-get-prop 一次 powerd 的 state：每次新开一条 lipc（dbus）连接，powerd 还往 syslog 记一句类型不符的警告；
+    # PW6 测试机屏保 5 分钟实测：Android 冻结着，宿主仍比 VeraDroid 没开时多用约 3 % 的 CPU（dbus-daemon、syslog-ng、powerd、sh），
+    # 每分钟多 200 次 fork（提交 fix/power 的说明）。现在订阅 powerd 的进 / 出屏保事件，没事件时不醒。
+    # 当年不订阅是因为 lipc-wait-event 的输出曾经出现在 VeraHome 上面（PW6 5.19）：现在 stdout 进管道、stderr 丢掉、stdin 关掉，
+    # bt.sh 也这样用它；SLEEP_POLL=1 退回每秒轮询。lipc-wait-event 意外退出时先按当前状态补一次，2 秒后重新订阅。
+    rm -f $W/sleep.cur
+    me=$(exec sh -c 'echo $PPID')
+    s=$(sleep_state); [ -n "$s" ] && sleep_apply $s
+    if [ "${SLEEP_POLL:-0}" != 1 ] && command -v lipc-wait-event >/dev/null 2>&1; then
+        while kill -0 "$me" 2>/dev/null; do
+            lipc-wait-event -m com.lab126.powerd goingToScreenSaver,outOfScreenSaver </dev/null 2>/dev/null | while read -r ev _; do
+                kill -0 "$me" 2>/dev/null || exit 0
+                case "$ev" in
+                goingToScreenSaver) sleep_apply saver ;;
+                outOfScreenSaver) sleep_apply active ;;
+                esac
+            done
+            sleep 2
+            s=$(sleep_state); [ -n "$s" ] && sleep_apply $s
+        done
+        return 0
+    fi
     while :; do
-        st=$(lipc-get-prop -s com.lab126.powerd state 2>/dev/null)
-        case "$st" in
-        screenSaver|screenSaverOn|suspended|sleeping)
-            if [ "$cur" != saver ]; then
-                touch $X/ctl/sleep
-                # 设了锁屏密码：冻结前先让桌面把锁屏盖上（显示桥已被 ctl/sleep 挡住，看不到），醒来时第一帧就是锁屏
-                type lock_request >/dev/null 2>&1 && lock_request
-                usleep 300000
-                # Freeze Android first; otherwise its last frame can overwrite
-                # the screensaver image right after eips draws it.
-                # 正在装 APK（afterboot.sh 写 $W/installing）时不冻结：冻在 dex2oat 中间、几小时后解冻，PackageManager
-                # 线程还卡着，system_server 会被自己的 Watchdog 杀掉（用户诊断 092A03）。ctl/sleep 已经挡住显示桥；
-                # 机器真睡下去（suspended）时整个系统一起停，uptime 也停，不会触发 Watchdog。
-                if alive $W/installing; then
-                    touch $W/saver_nofreeze; t "screensaver: an apk is being installed, android left running"
-                else
-                    android_freeze && touch $W/saver_frozen
-                fi
-                type wifi_ps_restore >/dev/null 2>&1 && wifi_ps_restore
-                screensaver_show
-                cur=saver
-                t "screensaver on, android frozen"
-            fi ;;
-        active|charging)
-            if [ "$cur" = saver ]; then
-                if [ -f $W/saver_nofreeze ]; then rm -f $W/saver_nofreeze; else android_thaw 2>/dev/null; fi
-                type lock_reset_check >/dev/null 2>&1 && { lock_reset_check; lock_request; }
-                ( usleep 500000; trust_unlock ) &
-                rm -f $W/saver_frozen
-                rm -f $X/ctl/sleep
-                epd_send REDRAW
-                t "screensaver off, android thawed"
-            fi
-            cur=active ;;
-        esac
+        s=$(sleep_state); [ -n "$s" ] && sleep_apply $s
         sleep 1
     done
+}
+# 停掉休眠监视连同它的 lipc-wait-event（只杀父进程的话，订阅和管道另一头会留下来）
+sleep_watch_stop() {
+    sp=$(cat $W/sleep.pid 2>/dev/null); [ -n "$sp" ] || return 0
+    for c in $(pgrep -P "$sp" 2>/dev/null); do kill $c 2>/dev/null; done
+    kill "$sp" 2>/dev/null
+    return 0
 }

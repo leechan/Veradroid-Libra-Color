@@ -28,7 +28,7 @@ import java.lang.reflect.Method;
  */
 public class NavBarService extends Service {
     private static final String TAG = "VeraNavBar";
-    static final int HEIGHT_DP = 24;
+    static final int HEIGHT_DP = 28;   // 24 → 28：三个键按得更准（用户反馈“有点小”）
     private WindowManager wm;
     private View bar;
 
@@ -95,7 +95,7 @@ public class NavBarService extends Service {
         android.graphics.drawable.StateListDrawable bg = new android.graphics.drawable.StateListDrawable();
         bg.addState(new int[] { android.R.attr.state_pressed }, new android.graphics.drawable.ColorDrawable(Color.BLACK));
         b.setBackground(bg);
-        b.addView(new Icons.IconView(this, k), new LinearLayout.LayoutParams(Ui.dp(this, 16), Ui.dp(this, 16)));
+        b.addView(new Icons.IconView(this, k), new LinearLayout.LayoutParams(Ui.dp(this, 19), Ui.dp(this, 19)));
         b.setClickable(true);
         b.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { r.run(); } });
         return b;

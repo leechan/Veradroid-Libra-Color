@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Whole-image auto updater.  Runs detached from veradroid.sh; checks every 6h.
-# Set /mnt/base-us/veradroid/autoupdate to 0 to disable.
+# Set /mnt/base-us/veradroid/autoupdate to 0 to disable, to notify to only write $VD/update.available (no install).
 VD=/mnt/base-us/veradroid
 BASE=https://veradroid.wenjin.jp
 [ -f "$VD/network.conf" ] && . "$VD/network.conf"
@@ -76,6 +76,15 @@ while :; do
     [ -n "$new" ] || { sleep 3600; continue; }
     # 只往新版本更新：本地版本更新（比如用离线包装了新版）时绝不降级（KT6 模拟器实测 0.25 被拉回 0.24）
     if ! ver_gt "$new" "$cur"; then
+        sleep 21600
+        continue
+    fi
+    # 只提醒（设置 → 自动更新 → 只提醒）：记下有新版本，桌面下次回到前台时弹出更新内容，让用户自己选“更新 / 以后再说”
+    if [ "$(cat "$VD/autoupdate" 2>/dev/null)" = notify ]; then
+        if [ "$(sed -n 's/^version=//p' "$VD/update.available" 2>/dev/null)" != "$new" ]; then
+            printf 'version=%s\ncurrent=%s\ntime=%s\n' "$new" "$cur" "$(date +%s)" > "$VD/update.available.tmp" && chmod 644 "$VD/update.available.tmp" && mv -f "$VD/update.available.tmp" "$VD/update.available"
+            echo "$(date) auto update: $cur -> $new available (notify only)" >> "$LOG"
+        fi
         sleep 21600
         continue
     fi

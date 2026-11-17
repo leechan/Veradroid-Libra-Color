@@ -100,8 +100,8 @@ diag_upload() {
     fi
 }
 
-# ---- 已保存的无线网络（Kindle 的 com.lab126.wifid 里存的配置）----
-# 列表写到 $X/ctl/wifi.list：一行一个，第一个字符是 * 表示当前连着的，空格表示没连；后面是网络名。
+# ---- 无线网络（Kindle 的 com.lab126.wifid）----
+# 已保存的：列表写到 $X/ctl/wifi.list，一行一个，第一个字符是 * 表示当前连着的，空格表示没连；后面是网络名。
 # 只取网络名：profileData 里还有明文密码（psk），一个字也不能写出去。
 # 读不到（没有 lipc-hash-prop、属性不存在、Wi-Fi 服务没起）就是空列表。
 wifi_saved() {
@@ -113,6 +113,13 @@ wifi_current() {
     lipc-hash-prop -n com.lab126.wifid currentEssid 2>/dev/null | grep -q 'connected = "yes"' || return 0
     lipc-hash-prop -n com.lab126.wifid currentEssid 2>/dev/null | sed -n 's/^[[:space:]]*essid = "\(.*\)"[[:space:]]*$/\1/p' | head -1
 }
+# cmState 是字符串属性：不带 -s 时 lipc-get-prop 先按整数读，每次在 /var/log/messages 里记一条 “LIPC access error”
+wifi_cm() { lipc-get-prop -s com.lab126.wifid cmState 2>/dev/null; }
+wifi_netid() { # 网络名 -> 已保存配置的 netid（没有就空）
+    lipc-hash-prop -n com.lab126.wifid profileData 2>/dev/null | awk -v want="$1" '
+        /^[[:space:]]*netid = \(/ { v = $0; sub(/.*\(/, "", v); sub(/\).*/, "", v); id = v }
+        /^[[:space:]]*essid = "/ { v = $0; sub(/^[[:space:]]*essid = "/, "", v); sub(/"[[:space:]]*$/, "", v); if (v == want) { print id; exit } }'
+}
 wifi_list() {
     cur=$(wifi_current)
     wifi_saved | while IFS= read -r n; do
@@ -120,34 +127,135 @@ wifi_list() {
     done > $X/ctl/wifi.list.tmp
     mv -f $X/ctl/wifi.list.tmp $X/ctl/wifi.list
 }
+# 附近的网络（wifiscan）：先让 wifid 扫一遍（最多等 8 秒），再写 $X/ctl/wifi.scan，一行一个：
+#   已保存 y|n <TAB> 要密码 y|n <TAB> 信号 0-5 <TAB> 加密方式 <TAB> 网络名
+# 按信号从强到弱，同名只留最强的，隐藏网络（没有名字）不列。
+wifi_scanlist() {
+    lipc-hash-prop -n com.lab126.wifid scanList 2>/dev/null | awk '
+        function out() { if (e != "" && !(e in seen)) { seen[e] = 1; printf "%s\t%s\t%s\t%s\t%s\n", (k == "yes" ? "y" : "n"), (s == "yes" ? "y" : "n"), g, m, e } e = ""; k = ""; s = ""; g = 0; m = "" }
+        /^Hash Index/ { out() }
+        /^[[:space:]]*essid = "/ { v = $0; sub(/^[[:space:]]*essid = "/, "", v); sub(/"[[:space:]]*$/, "", v); e = v }
+        /^[[:space:]]*known = "/ { k = ($0 ~ /"yes"/) ? "yes" : "no" }
+        /^[[:space:]]*secured = "/ { s = ($0 ~ /"yes"/) ? "yes" : "no" }
+        /^[[:space:]]*signal = \(/ { v = $0; sub(/.*\(/, "", v); sub(/\).*/, "", v); g = v + 0 }
+        /^[[:space:]]*key_mgmt = "/ { v = $0; sub(/^[[:space:]]*key_mgmt = "/, "", v); sub(/"[[:space:]]*$/, "", v); m = v }
+        END { out() }' | sort -t "$(printf '\t')" -k3,3nr | awk -F '\t' '!($5 in s) { s[$5] = 1; print }' | head -40
+}
+wifi_scan() {
+    command -v lipc-hash-prop >/dev/null 2>&1 || { : > $X/ctl/wifi.scan; return 0; }
+    [ "$(wifi_state)" = 1 ] || { wifi_scanlist > $X/ctl/wifi.scan.tmp; mv -f $X/ctl/wifi.scan.tmp $X/ctl/wifi.scan; return 0; }
+    lipc-set-prop com.lab126.wifid scan "" 2>/dev/null
+    i=0
+    while [ $i -lt 8 ]; do
+        sleep 1; i=$((i + 1))
+        [ "$(lipc-get-prop -s com.lab126.wifid scanState 2>/dev/null)" = idle ] && [ $i -ge 2 ] && break
+    done
+    wifi_scanlist > $X/ctl/wifi.scan.tmp
+    mv -f $X/ctl/wifi.scan.tmp $X/ctl/wifi.scan
+}
+# 网络名的 UTF-8 十六进制 -> 文字；不合格（不是十六进制、超过 32 字节、有控制字符）返回 1
+wifi_unhex() {
+    case "$1" in ''|*[!0-9a-f]*) return 1 ;; esac
+    [ $((${#1} % 2)) -eq 0 ] && [ ${#1} -le "${2:-64}" ] || return 1
+    printf '%s' "$1" | sed 's/../&\n/g' | grep -qE '^(0[0-9a-f]|1[0-9a-f]|7f)$' && return 1
+    printf "$(printf '%s' "$1" | sed 's/../\\x&/g')"
+}
+# 新网络的密码不走命令 FIFO（所有应用都能写、命令会进日志）：VeraHome 用管理请求 wifipsk（webadmin.sh，只认 VeraHome 自己
+# 私有目录里的请求文件）交过来，存在 $W/wifi.psk（root 0600，第一行网络名十六进制、第二行密码十六进制），随后的 wificonnect 取走就删。
+wifi_psk_put() { # 网络名十六进制 密码十六进制
+    wifi_unhex "$1" >/dev/null || { echo "error=bad name"; return 0; }
+    case "$2" in ''|*[!0-9a-f]*) echo "error=bad password"; return 0 ;; esac
+    ( umask 077; printf '%s\n%s\n' "$1" "$2" > $W/wifi.psk.tmp && mv -f $W/wifi.psk.tmp $W/wifi.psk ) && echo "ok=1" || echo "error=store"
+}
 # wificonnect <网络名的 UTF-8 字节，十六进制>：十六进制只有 0-9a-f，不会有引号、空格、换行能混进 root 的命令行；
-# 解出来不许有控制字符，而且必须正好是一个已保存的网络名。之后只作为一个带引号的参数交给 lipc-set-prop，不经过 eval。
-# 结果写 $X/ctl/wifi.result：ok=1|0、essid（十六进制）、error。
+# 解出来不许有控制字符。之后只作为一个带引号的参数交给 lipc，不经过 eval。
+#   已保存的网络：com.lab126.wifid cmConnect（以前用的 com.lab126.cmd ensureConnection "wifi:名字" 只保证“有个 Wi-Fi 连着”：
+#     已经连着别的网络时什么都不做，等 30 秒超时——这就是“在安卓里切换网络总失败”的原因，测试机上实测 cmState 一直是原来的网络）。
+#   新网络：先 createProfile（不把密码上传给亚马逊：store_nw_user_pref = 0），再 cmConnect；连不上就把刚建的配置删掉。
+#   连不上时回到原来连着的网络（不让 Kindle 断网）。
+# 结果写 $X/ctl/wifi.result：ok=1|0、essid（十六进制）、error=timeout|auth|notfound|needpsk|badpsk|create|wifioff|bad name、restored|kept=原来网络的十六进制。
 wifi_result() { printf '%s\n' "$@" > $X/ctl/wifi.result.tmp && mv -f $X/ctl/wifi.result.tmp $X/ctl/wifi.result; }
 wifi_connect() {
     hex=$1
-    case "$hex" in ''|*[!0-9a-f]*) t "wificonnect: rejected (not hex)"; wifi_result ok=0 "error=bad name"; return 1 ;; esac
-    len=${#hex}
-    if [ $((len % 2)) -ne 0 ] || [ $len -gt 64 ]; then t "wificonnect: rejected (length $len)"; wifi_result ok=0 "error=bad name"; return 1; fi
-    # 控制字符 00-1f、7f 不要
-    if printf '%s' "$hex" | sed 's/../&\n/g' | grep -qE '^(0[0-9a-f]|1[0-9a-f]|7f)$'; then
-        t "wificonnect: rejected (control chars)"; wifi_result ok=0 "error=bad name" "essid=$hex"; return 1
+    want=$(wifi_unhex "$hex") || { t "wificonnect: rejected (bad name)"; rm -f $W/wifi.psk; wifi_result ok=0 "error=bad name"; return 1; }
+    psk=
+    if [ -f $W/wifi.psk ]; then
+        if [ "$(sed -n 1p $W/wifi.psk)" = "$hex" ] && [ $(( $(date +%s) - $(stat -c %Y $W/wifi.psk 2>/dev/null || echo 0) )) -lt 180 ]; then
+            psk=$(wifi_unhex "$(sed -n 2p $W/wifi.psk)" 128) || psk=BAD
+        fi
+        rm -f $W/wifi.psk
     fi
-    want=$(printf "$(printf '%s' "$hex" | sed 's/../\\x&/g')")
-    found=
-    while IFS= read -r n; do [ "$n" = "$want" ] && { found=1; break; }; done <<WIFI_EOF
-$(wifi_saved)
-WIFI_EOF
-    [ -n "$found" ] || { t "wificonnect: not a saved network"; wifi_result ok=0 "error=not saved" "essid=$hex"; return 1; }
-    [ "$(wifi_state)" = 1 ] || { wifi_set 1; sleep 2; }
-    t "wificonnect: switching to a saved network"
-    lipc-set-prop com.lab126.cmd ensureConnection "wifi:$want"
-    i=0
-    while [ $i -lt 30 ]; do
+    orig=$(wifi_current)
+    if [ "$(wifi_state)" != 1 ]; then
+        wifi_set 1
+        i=0; while [ $i -lt 15 ] && [ "$(lipc-get-prop com.lab126.wifid enable 2>/dev/null)" != 1 ]; do sleep 1; i=$((i + 1)); done
+        [ "$(wifi_state)" = 1 ] || { t "wificonnect: wifi did not come on"; wifi_result ok=0 "error=wifioff" "essid=$hex"; return 1; }
+        # 刚打开时 wifid 会自己连它最喜欢的网络：等它安定下来再切，免得两边抢
+        i=0; while [ $i -lt 12 ]; do sleep 1; i=$((i + 1)); case "$(wifi_cm)" in CONNECTED|NA|DISCONNECTED|'') [ $i -ge 3 ] && break ;; esac; done
+        orig=$(wifi_current)
+    fi
+    if [ -n "$orig" ] && [ "$orig" = "$want" ]; then wifi_result ok=1 "essid=$hex"; wifi_list; status_write; return 0; fi
+    created=
+    if [ -z "$(wifi_netid "$want")" ]; then
+        # 没保存过的网络：看扫描结果要不要密码。名字里有引号 / 反斜杠的写不进 lipc 的哈希格式，只能在 Kindle 的设置里连
+        case "$want" in *'"'*|*'\'*) t "wificonnect: name has quote/backslash"; rm -f $W/wifi.psk; wifi_result ok=0 "error=bad name" "essid=$hex"; return 1 ;; esac
+        sec=$(wifi_scanlist | awk -F '\t' -v w="$want" '$5 == w { print $2; exit }')
+        if [ "$psk" = BAD ]; then wifi_result ok=0 "error=badpsk" "essid=$hex"; return 1; fi
+        if [ -n "$psk" ]; then
+            # 密码：WPA 要 8–63 个字符（或 64 位十六进制）；引号和反斜杠 lipc 的哈希格式里没法安全地写进去
+            plen=$(printf '%s' "$psk" | wc -c)
+            case "$psk" in *'"'*|*'\'*) t "wificonnect: password has quote/backslash"; wifi_result ok=0 "error=badpsk" "essid=$hex"; return 1 ;; esac
+            if [ "$plen" -lt 8 ] || [ "$plen" -gt 64 ]; then wifi_result ok=0 "error=badpsk" "essid=$hex"; return 1; fi
+            printf '{ essid = "%s", secured = "yes", psk = "%s", store_nw_user_pref = (0) }\n' "$want" "$psk" | lipc-hash-prop com.lab126.wifid createProfile >/dev/null 2>&1
+        elif [ "$sec" = n ]; then
+            printf '{ essid = "%s", secured = "no", store_nw_user_pref = (0) }\n' "$want" | lipc-hash-prop com.lab126.wifid createProfile >/dev/null 2>&1
+        else
+            t "wificonnect: new network needs a password"; wifi_result ok=0 "error=needpsk" "essid=$hex"; return 1
+        fi
+        psk=
+        # 新配置要过一两秒才出现在 profileData 里（测试机实测）
+        i=0; while [ $i -lt 8 ] && [ -z "$(wifi_netid "$want")" ]; do sleep 1; i=$((i + 1)); done
+        [ -n "$(wifi_netid "$want")" ] || { t "wificonnect: createProfile failed"; wifi_result ok=0 "error=create" "essid=$hex"; return 1; }
+        created=1
+    fi
+    # 不在附近的网络不用干等 40 秒：先扫一遍（最多 8 秒），扫到了别的网络却没有它，就直接说找不到
+    # （扫描结果是空的——扫描没成功——或者是隐藏网络，照样去连）
+    if [ -z "$created" ]; then
+        wifi_scan
+        if [ -s $X/ctl/wifi.scan ] && ! awk -F '\t' -v w="$want" '$5 == w { f = 1 } END { exit !f }' $X/ctl/wifi.scan; then
+            t "wificonnect: not in range"
+            back=; [ -n "$orig" ] && back=$(printf '%s' "$orig" | od -An -tx1 | tr -d ' \n')
+            wifi_result ok=0 "error=notfound" "essid=$hex" ${back:+"kept=$back"}
+            wifi_list; status_write; return 1
+        fi
+    fi
+    t "wificonnect: switching networks${created:+ (new profile)}"
+    m0=$(wc -l < /var/log/messages 2>/dev/null || echo 0)
+    lipc-set-prop com.lab126.wifid cmConnect "$want"
+    i=0; ok=
+    while [ $i -lt 40 ]; do
         sleep 1; i=$((i + 1))
-        [ "$(wifi_current)" = "$want" ] && [ "$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)" = CONNECTED ] && break
+        if [ "$(wifi_current)" = "$want" ] && [ "$(wifi_cm)" = CONNECTED ]; then ok=1; break; fi
     done
-    if [ "$(wifi_current)" = "$want" ]; then wifi_result ok=1 "essid=$hex"; else wifi_result ok=0 "error=timeout" "essid=$hex"; fi
+    if [ -n "$ok" ]; then
+        t "wificonnect: connected after ${i}s"
+        wifi_result ok=1 "essid=$hex"
+    else
+        why=timeout
+        tail -n +$((m0 + 1)) /var/log/messages 2>/dev/null | grep -qiE 'WRONG_KEY|auth_failures|4-Way Handshake|pre-shared key may be incorrect|reason=15|AuthFail' && why=auth
+        [ "$why" = timeout ] && ! wifi_scanlist | awk -F '\t' -v w="$want" '$5 == w { f = 1 } END { exit !f }' && why=notfound
+        t "wificonnect: failed ($why)"
+        if [ -n "$created" ]; then id=$(wifi_netid "$want"); [ -n "$id" ] && lipc-set-prop -i com.lab126.wifid deleteProfile "$id"; fi
+        back=; key=kept
+        if [ -n "$orig" ] && [ "$(wifi_current)" != "$orig" ]; then
+            key=restored
+            lipc-set-prop com.lab126.wifid cmConnect "$orig"
+            i=0; while [ $i -lt 25 ]; do sleep 1; i=$((i + 1)); [ "$(wifi_current)" = "$orig" ] && [ "$(wifi_cm)" = CONNECTED ] && break; done
+        fi
+        [ -n "$orig" ] && [ "$(wifi_current)" = "$orig" ] && back=$(printf '%s' "$orig" | od -An -tx1 | tr -d ' \n')
+        # restored = 断开过、已经连回原来的网络；kept = 一直连着原来的网络
+        wifi_result ok=0 "error=$why" "essid=$hex" ${back:+"$key=$back"}
+    fi
     wifi_list; status_write
 }
 
@@ -337,7 +445,8 @@ cmd_listen() {
         poke)    lipc-set-prop -i com.lab126.powerd touchScreenSaverTimeout 1 2>/dev/null ;;
         wifi)    case "$a" in 0|1) wifi_set "$a"; status_write ;; esac ;;   # 只开关 Wi-Fi，不动飞行模式和蓝牙（common.sh wifi_set）
         wifilist)    ( wifi_list ) & ;;
-        wificonnect) ( wifi_connect "$a" ) & ;;   # 参数在 wifi_connect 里校验（十六进制、必须是已保存的网络）
+        wificonnect) ( wifi_connect "$a" ) & ;;   # 参数在 wifi_connect 里校验（十六进制、没有控制字符）；新网络的密码另走管理请求 wifipsk
+        wifiscan)    ( wifi_scan ) & ;;
         dns)     case "$a" in
                      auto|aliyun|tencent|google)
                          grep -v "^DNS_MODE=" $SYS/settings.conf > $SYS/settings.conf.tmp 2>/dev/null

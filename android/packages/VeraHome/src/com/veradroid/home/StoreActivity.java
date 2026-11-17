@@ -11,31 +11,30 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLEncoder;
-import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * App store: lists APKs uploaded by the admin. Open to every device (no account binding or
- * authorization since 2026-11-07); a bound device still sends its token so the server can update
+ * App store. Two sections: 官方推荐 (APKs the admin picked) and 用户上传 (APKs users uploaded on the website, shown only
+ * after an admin reviewed them; each says who uploaded it), plus a door to the font store. Open to every device (no
+ * account binding or authorization since 2026-11-07); a bound device still sends its token so the server can update
  * last_seen. Installation uses the host's existing pm install path, so no package-installer UI is needed.
+ * The list turns whole pages (no scrolling); the server sends up to 100 entries at a time, "下一批" asks for more.
  */
 public class StoreActivity extends Activity {
-    private static final String BASE = "https://veradroid.wenjin.jp";
+    private static final String[] CATS = { "official", "user" };
+    private static final String[] CAT_L = { "官方推荐", "用户上传" };
+    private static int cat;                     // 上次看的那一栏（重新打开商店还在那一栏）
+    private final int[] counts = { -1, -1 };
+    private String query = "";
+    private int batch = 1, batches = 1;
+    private LinearLayout tabs;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final List<App> apps = new ArrayList<App>();
     private LinearLayout list;
@@ -54,6 +53,9 @@ public class StoreActivity extends Activity {
         int id, versionCode;
         long size;
         String name, pkg, versionName, description, sha, download;
+        String uploader = "", source = "", iconUrl = "";
+        boolean user;                               // 用户上传的（已审核）
+        android.graphics.drawable.Drawable icon;   // 已经装了的应用的图标（后台取好）；没装的画首字
     }
 
     @Override protected void onCreate(Bundle b) {
@@ -76,11 +78,15 @@ public class StoreActivity extends Activity {
         status.setPadding(0, dp(2), 0, dp(6));
         page.addView(status);
 
-        ScrollView scroll = new ScrollView(this);
+        tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        tabs.setPadding(0, dp(2), 0, dp(6));
+        page.addView(tabs);
+
+        // 整页翻（PageScrollView + 翻页条），不跟手滚动：墨水屏上一次只换一次画面
         list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(list, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        page.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        page.addView(Blocks.paged(this, list), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -90,7 +96,10 @@ public class StoreActivity extends Activity {
             @Override public void onClick(View v) { finish(); }
         }), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         actions.addView(Ui.button(this, "同步", 16, true, new View.OnClickListener() {
-            @Override public void onClick(View v) { load(); }
+            @Override public void onClick(View v) { batch = 1; load(); }
+        }), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        actions.addView(Ui.button(this, "搜索", 16, false, new View.OnClickListener() {
+            @Override public void onClick(View v) { searchDialog(); }
         }), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         actions.addView(Ui.button(this, "应用更新", 16, false, new View.OnClickListener() {
             @Override public void onClick(View v) { Update.now(StoreActivity.this); }
@@ -98,7 +107,46 @@ public class StoreActivity extends Activity {
         page.addView(actions);
         Blocks.restyle(this, page, title, actions, "Store / e-ink apps");
 
+        tabsRender();
         load();
+    }
+
+    /** 官方推荐 | 用户上传 | 字体商店：选中的那一栏黑底。 */
+    private void tabsRender() {
+        tabs.removeAllViews();
+        for (int i = 0; i <= CATS.length; i++) {
+            final int idx = i;
+            String label = i == CATS.length ? "字体商店" : CAT_L[i] + (counts[i] >= 0 ? " " + counts[i] : "");
+            android.widget.Button b = Ui.button(this, label, 15, i == cat, new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    if (idx == CATS.length) { FontStoreActivity.open(StoreActivity.this); return; }
+                    if (idx == cat) return;
+                    cat = idx; batch = 1; tabsRender(); load();
+                }
+            });
+            b.setSingleLine(true);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+            lp.leftMargin = i == 0 ? 0 : dp(8);
+            tabs.addView(b, lp);
+        }
+    }
+
+    private void searchDialog() {
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setText(query);
+        input.setSingleLine(true);
+        input.setTextSize(20);
+        input.setTextColor(Color.BLACK);
+        input.setTypeface(Fonts.typeface(this));
+        input.setBackground(Ui.frame(this, false));
+        input.setPadding(dp(12), dp(10), dp(12), dp(10));
+        new VeraDialog.Builder(this).title("搜索应用").message("应用名或包名的一部分；留空 = 全部。").view(input)
+            .negative("取消", null)
+            .positive("搜索", new Runnable() { @Override public void run() {
+                String t = input.getText().toString().trim();
+                query = t.length() > 40 ? t.substring(0, 40) : t;
+                batch = 1; load();
+            } }).show();
     }
 
     private String token() {
@@ -107,14 +155,24 @@ public class StoreActivity extends Activity {
 
     private void load() {
         final String t = token();
+        final int myCat = cat, myBatch = batch;
+        final String q = query;
         status.setText("正在同步…");
         list.removeAllViews();
         new Thread(new Runnable() {
             @Override public void run() {
                 String err = null;
+                final List<App> got = new ArrayList<App>();
+                final int[] cnt = { -1, -1, 1 };
                 try {
-                    JSONObject j = get(BASE + "/api/store/apps?device_id=" + enc(Update.deviceId(StoreActivity.this))
-                        + "&token=" + enc(t));
+                    JSONObject j = get(StoreNet.base() + "/api/store/apps?category=" + CATS[myCat] + "&page=" + myBatch + "&per=100&q=" + enc(q)
+                        + "&device_id=" + enc(Update.deviceId(StoreActivity.this)) + "&token=" + enc(t));
+                    JSONArray cs = j.optJSONArray("categories");
+                    if (cs != null) for (int i = 0; i < cs.length(); i++) {
+                        JSONObject c = cs.getJSONObject(i);
+                        for (int k = 0; k < CATS.length; k++) if (CATS[k].equals(c.optString("id"))) cnt[k] = c.optInt("count", -1);
+                    }
+                    cnt[2] = Math.max(1, j.optInt("pages", 1));
                     JSONArray ms = j.optJSONArray("mirrors");
                     if (ms != null) {
                         List<String> m = new ArrayList<String>();
@@ -122,7 +180,8 @@ public class StoreActivity extends Activity {
                         mirrors = m;
                     } else if (j.has("apps")) mirrors = java.util.Arrays.asList(Dl.DEF_MIRRORS);
                     JSONArray arr = j.optJSONArray("apps");
-                    apps.clear();
+                    // 老服务器不认 category：给的是整份官方列表，“用户上传”那一栏就是空的
+                    if (cs == null && myCat != 0) arr = null;
                     if (arr != null) for (int i = 0; i < arr.length(); i++) {
                         JSONObject o = arr.getJSONObject(i);
                         App a = new App();
@@ -131,46 +190,131 @@ public class StoreActivity extends Activity {
                         a.versionName = o.optString("version_name"); a.description = o.optString("description");
                         a.size = o.optLong("size"); a.sha = o.optString("sha256");
                         a.download = o.optString("download");
-                        apps.add(a);
+                        a.user = "user".equals(o.optString("category"));
+                        a.uploader = o.optString("uploader"); a.source = o.optString("source"); a.iconUrl = o.optString("icon");
+                        try { a.icon = getPackageManager().getApplicationIcon(a.pkg); } catch (Throwable ignored) { }
+                        got.add(a);
                     }
                 } catch (Exception e) { err = e.getMessage(); }
                 final String fe = err;
-                ui.post(new Runnable() { @Override public void run() { if (fe != null) showError(fe); else render(); } });
+                ui.post(new Runnable() { @Override public void run() {
+                    if (isFinishing() || myCat != cat || myBatch != batch || !q.equals(query)) return;   // 用户已经换了一栏
+                    if (fe != null) { showError(fe); return; }
+                    apps.clear(); apps.addAll(got);
+                    batches = cnt[2];
+                    if (cnt[0] != counts[0] || cnt[1] != counts[1]) { counts[0] = cnt[0]; counts[1] = cnt[1]; tabsRender(); }
+                    render();
+                    icons(got);
+                } });
             }
         }, "StoreSync").start();
     }
 
+    /** 没装的应用：图标从商店取（缓存在本机），全部取完后只重画一次。 */
+    private void icons(final List<App> shown) {
+        new Thread(new Runnable() { @Override public void run() {
+            boolean any = false;
+            for (App a : shown) {
+                if (a.icon != null || a.iconUrl.length() == 0) continue;
+                android.graphics.Bitmap bm = StoreNet.image(a.iconUrl, "icon-" + (a.sha.length() >= 16 ? a.sha.substring(0, 16) : String.valueOf(a.id)));
+                if (bm != null) { a.icon = new android.graphics.drawable.BitmapDrawable(getResources(), bm); any = true; }
+            }
+            if (any) ui.post(new Runnable() { @Override public void run() {
+                if (!isFinishing() && apps.size() == shown.size() && (apps.isEmpty() || apps.get(0) == shown.get(0))) render();
+            } });
+        } }, "StoreIcons").start();
+    }
+
+    /** 应用的完整说明、上传者、校验值；用户上传的还写明怎么举报。 */
+    private void detail(final App a) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(a.pkg).append("\n版本 ").append(a.versionName).append(" · ").append(StoreNet.mb(a.size));
+        if (a.user) sb.append("\n用户上传 · ").append(a.uploader).append(" · 已审核");
+        else sb.append("\n官方推荐");
+        if (a.source.length() > 0) sb.append("\n来源：").append(a.source);
+        if (a.description.length() > 0) sb.append("\n\n").append(a.description);
+        if (a.sha.length() >= 16) sb.append("\n\nSHA-256 ").append(a.sha.substring(0, 16)).append("…");
+        if (a.user) sb.append("\n\n用户上传的应用由上传者提供。有问题（侵权、不安全、打不开）请到 veradroid.wenjin.jp/store/apps 点它旁边的“举报 / 下架”。");
+        int inst = installed(a.pkg);
+        new VeraDialog.Builder(this).title(a.name).message(sb.toString()).negative("关闭", null)
+            .positive(inst <= 0 ? "安装" : (inst < a.versionCode ? "更新" : "重新安装"), new Runnable() { @Override public void run() { install(a); } }).show();
+    }
+
     private void render() {
-        status.setText(apps.isEmpty() ? "商店里还没有应用。" : "共 " + apps.size() + " 个应用 · 点安装后由宿主完成");
+        String what = query.length() > 0 ? "“" + query + "”" : CAT_L[cat];
+        status.setText(apps.isEmpty() ? (query.length() > 0 ? "没有找到" + what + "。" : cat == 1 ? "还没有用户上传的应用。在 veradroid.wenjin.jp 登录后可以上传。" : "商店里还没有应用。")
+            : what + " " + apps.size() + " 个" + (batches > 1 ? "（第 " + batch + " / " + batches + " 批）" : "")
+              + (cat == 1 ? " · 都经过人工审核" : " · 点安装后由宿主完成"));
         if (jobMsg != null) status.setText(jobMsg);   // 正在下载 / 安装，或者上一次的结果（包括失败原因）
         list.removeAllViews();
+        // 每一行同一个样子：左边固定大小的图标框（装了的用应用图标，没装的写首字），中间名字 / 版本 / 说明各自一行或两行、
+        // 放不下就省略号，右边按钮固定宽度。以前名字、说明多长就折几行，按钮跟着名字那一行上下跑（多看那一条名字长、说明长，看起来是歪的）。
+        int box = dp(56), btnW = dp(104);
         for (final App a : apps) {
             LinearLayout card = new LinearLayout(this);
-            card.setOrientation(LinearLayout.VERTICAL);
-            card.setPadding(dp(12), dp(10), dp(12), dp(10));
+            card.setOrientation(LinearLayout.HORIZONTAL);
+            card.setGravity(Gravity.CENTER_VERTICAL);
+            card.setPadding(dp(4), dp(12), dp(4), dp(12));
             card.setBackgroundColor(Color.WHITE);
-            LinearLayout head = new LinearLayout(this);
-            head.setOrientation(LinearLayout.HORIZONTAL);
-            head.setGravity(Gravity.CENTER_VERTICAL);
-            TextView n = Ui.text(this, a.name, 20, true);
-            head.addView(n, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            android.widget.FrameLayout ib = new android.widget.FrameLayout(this);
+            ib.setBackground(Blocks.plain(this));
+            int st = Blocks.stroke(this);
+            ib.setPadding(st + dp(4), st + dp(4), st + dp(4), st + dp(4));
+            if (a.icon != null) {
+                android.widget.ImageView iv = new android.widget.ImageView(this);
+                iv.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+                iv.setImageDrawable(a.icon);
+                ib.addView(iv, new android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            } else {
+                String n0 = a.name.trim();
+                TextView l = Ui.text(this, n0.length() == 0 ? "?" : n0.substring(0, Character.charCount(n0.codePointAt(0))).toUpperCase(java.util.Locale.ROOT), 24, true);
+                l.setGravity(Gravity.CENTER);
+                ib.addView(l, new android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            }
+            card.addView(ib, new LinearLayout.LayoutParams(box, box));
+            LinearLayout col = new LinearLayout(this);
+            col.setOrientation(LinearLayout.VERTICAL);
+            col.setPadding(dp(12), 0, dp(10), 0);
+            TextView n = Ui.text(this, a.name, 19, true);
+            n.setSingleLine(true);
+            n.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            col.addView(n);
             int installed = installed(a.pkg);
             String label = installed <= 0 ? "安装" : (installed < a.versionCode ? "更新" : "重新安装");
-            head.addView(Ui.button(this, label, 15, true, new View.OnClickListener() {
-                @Override public void onClick(View v) { install(a); }
-            }));
-            card.addView(head);
-            TextView meta = Ui.text(this, a.pkg + " · " + a.versionName + " · " + (a.size / 1024 / 1024) + " MB"
-                + (installed > 0 ? " · 已装 " + installed : ""), 12, false);
-            meta.setTextColor(Color.DKGRAY);
-            card.addView(meta);
+            TextView meta = Ui.text(this, a.versionName + " · " + StoreNet.mb(a.size) + (installed > 0 ? " · 已装" : "")
+                + (a.user ? " · 用户上传 · " + a.uploader + " · 已审核" : " · " + a.pkg), 12, false);
+            meta.setTextColor(Blocks.on(this) ? Color.BLACK : Color.DKGRAY);
+            meta.setSingleLine(true);
+            meta.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            col.addView(meta);
             if (a.description.length() > 0) {
                 TextView d = Ui.text(this, a.description, 14, false);
-                d.setPadding(0, dp(4), 0, 0);
-                card.addView(d);
+                d.setPadding(0, dp(3), 0, 0);
+                d.setMaxLines(2);
+                d.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                col.addView(d);
             }
+            card.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            col.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { detail(a); } });
+            Ui.fast(col);
+            View btn = Blocks.on(this) ? Blocks.button(this, label, true, new View.OnClickListener() {
+                @Override public void onClick(View v) { install(a); }
+            }) : Ui.button(this, label, 15, true, new View.OnClickListener() {
+                @Override public void onClick(View v) { install(a); }
+            });
+            if (btn instanceof TextView) { ((TextView) btn).setSingleLine(true); ((TextView) btn).setGravity(Gravity.CENTER); }
+            card.addView(btn, new LinearLayout.LayoutParams(btnW, ViewGroup.LayoutParams.WRAP_CONTENT));
             list.addView(card);
             list.addView(Blocks.sep(this));
+        }
+        if (batches > 1) {
+            LinearLayout more = new LinearLayout(this);
+            more.setPadding(0, dp(10), 0, dp(10));
+            if (batch > 1) more.addView(Ui.button(this, "上一批", 15, false, new View.OnClickListener() {
+                @Override public void onClick(View v) { batch--; load(); } }));
+            if (batch < batches) more.addView(Ui.button(this, "下一批", 15, false, new View.OnClickListener() {
+                @Override public void onClick(View v) { batch++; load(); } }));
+            list.addView(more);
         }
     }
 
@@ -180,9 +324,11 @@ public class StoreActivity extends Activity {
         TextView t = Ui.text(this, e, 16, false);
         t.setPadding(0, dp(12), 0, dp(12));
         list.addView(t);
-        list.addView(Ui.button(this, "重新同步", 16, false, new View.OnClickListener() {
+        android.widget.Button again = Ui.button(this, "重新同步", 16, false, new View.OnClickListener() {
             @Override public void onClick(View v) { load(); }
-        }));
+        });
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        list.addView(again, alp);
     }
 
     private int installed(String pkg) {
@@ -202,24 +348,12 @@ public class StoreActivity extends Activity {
         final Context app = getApplicationContext();
         new Thread(new Runnable() {
             @Override public void run() {
-                Thread awake = keepAwake();
+                Thread awake = StoreNet.keepAwake();
                 try { job(a, t, app); }
                 catch (Throwable e) { jobDone("安装失败：" + reason(e), false); }   // 任何意外（OOM 之类）都要说出来，不能让线程悄悄死掉
                 finally { awake.interrupt(); jobPkg = null; }
             }
         }, "StoreDownload").start();
-    }
-
-    /** Ping the host every minute while a download / install runs: "poke" resets the Kindle's screensaver timer (the same
-     * thing a touch does), so the Kindle does not go to the screensaver - which freezes Android - in the middle of it. */
-    private static Thread keepAwake() {
-        Thread k = new Thread(new Runnable() {
-            @Override public void run() {
-                try { while (true) { HostLink.cmd("poke"); Thread.sleep(60000); } } catch (InterruptedException e) { }
-            }
-        }, "StoreAwake");
-        k.setDaemon(true); k.start();
-        return k;
     }
 
     /** The end of a job: remember the result for a store screen opened later, show it on the one in front. */
@@ -237,7 +371,7 @@ public class StoreActivity extends Activity {
     /** A readable reason for a failed download (the exception's own message is often empty or English jargon). */
     static String reason(Throwable e) {
         String m = e.getMessage();
-        if (e instanceof java.net.UnknownHostException) return "域名解析失败（DNS）：连不上 veradroid.wenjin.jp，检查 Wi-Fi 或换个网络";
+        if (e instanceof java.net.UnknownHostException) return "域名解析失败（DNS）：连不上 " + Dl.host(StoreNet.base()) + "，检查 Wi-Fi 或换个网络";
         if (e instanceof java.net.SocketTimeoutException) return "网络太慢，" + (m != null && m.contains("connect") ? "连接服务器超时" : "1 分钟没有收到数据") + "。再点一次安装会从断点继续";
         if (e instanceof java.net.ConnectException) return "连不上服务器（连接被拒绝 / 被拦截）：换个网络再试";
         if (e instanceof javax.net.ssl.SSLException) return "安全连接（HTTPS）失败：检查 Kindle 的日期时间，或换个网络（" + m + "）";
@@ -266,13 +400,13 @@ public class StoreActivity extends Activity {
             download(a, t, out, mirrors);
             if (a.size > 0 && out.length() != a.size) throw new Exception("文件大小不对（" + out.length() + " / " + a.size + "）");
             say("正在核对下载的文件…");
-            if (!hex(sha256(out)).equalsIgnoreCase(a.sha)) {
+            if (!StoreNet.sha256(out).equalsIgnoreCase(a.sha)) {
                 // 下坏了，或镜像上的文件和主站的不一样：只从主站重下一次
                 android.util.Log.w("VeraStore", "sha256 mismatch, downloading again from the main site");
                 Dl.clear(out);
                 download(a, t, out, null);
                 say("正在核对下载的文件…");
-                if (!hex(sha256(out)).equalsIgnoreCase(a.sha)) throw new Exception("SHA-256 校验失败（下载的文件损坏，请重试）");
+                if (!StoreNet.sha256(out).equalsIgnoreCase(a.sha)) throw new Exception("SHA-256 校验失败（下载的文件损坏，请重试）");
             }
             out.setReadable(true, false);
             say("下载完成，正在安装 " + a.name + " …（大应用可能要好几分钟）");
@@ -345,13 +479,6 @@ public class StoreActivity extends Activity {
         }
     }
 
-    private static byte[] sha256(File f) throws Exception {
-        MessageDigest md = MessageDigest.getInstance("SHA-256");
-        InputStream in = new java.io.FileInputStream(f);
-        try { byte[] b = new byte[65536]; int n; while ((n = in.read(b)) > 0) md.update(b, 0, n); } finally { in.close(); }
-        return md.digest();
-    }
-
     private static void say(final String s) {
         jobMsg = s;
         new Handler(Looper.getMainLooper()).post(new Runnable() { @Override public void run() {
@@ -360,42 +487,9 @@ public class StoreActivity extends Activity {
         }});
     }
 
-    private static String readError(HttpURLConnection h, int code) {
-        try {
-            InputStream in = h.getErrorStream();
-            if (in == null) return "HTTP " + code;
-            ByteArrayOutputStream bo = new ByteArrayOutputStream();
-            byte[] b = new byte[2048]; int n;
-            while ((n = in.read(b)) > 0) bo.write(b, 0, n);
-            in.close();
-            JSONObject j = new JSONObject(bo.toString("UTF-8"));
-            return j.optString("error", "HTTP " + code);
-        } catch (Exception e) { return "HTTP " + code; }
-    }
+    private static JSONObject get(String url) throws Exception { return StoreNet.json(url); }
 
-    private static JSONObject get(String url) throws Exception {
-        HttpURLConnection h = (HttpURLConnection) new URL(url).openConnection();
-        h.setConnectTimeout(15000); h.setReadTimeout(30000);
-        h.setRequestProperty("User-Agent", "VeraDroid/Store");
-        int code = h.getResponseCode();
-        InputStream in = code >= 400 ? h.getErrorStream() : h.getInputStream();
-        ByteArrayOutputStream bo = new ByteArrayOutputStream();
-        byte[] b = new byte[8192]; int n;
-        while (in != null && (n = in.read(b)) > 0) bo.write(b, 0, n);
-        if (in != null) in.close();
-        h.disconnect();
-        JSONObject j = new JSONObject(bo.toString("UTF-8"));
-        if (code >= 400) throw new Exception(j.optString("error", "HTTP " + code));
-        return j;
-    }
-
-    private static String hex(byte[] b) {
-        StringBuilder sb = new StringBuilder(b.length * 2);
-        for (byte x : b) sb.append(String.format("%02x", x & 0xff));
-        return sb.toString();
-    }
-
-    private static String enc(String s) throws Exception { return URLEncoder.encode(s == null ? "" : s, "UTF-8"); }
+    private static String enc(String s) { return StoreNet.enc(s); }
     private int dp(int v) { return Ui.dp(this, v); }
 
     @Override protected void onResume() {

@@ -28,9 +28,13 @@ final class JustifiedText extends TextView {
     void setContinues(boolean on) { if (on != continues) { continues = on; invalidate(); } }
     boolean justify() { return justify; }
 
+    /** 这一页上能点的链接（EPUB 的注释号、目录链接）：[起, 止) 两两一组，按这一页文字里的位置。画成虚下划线。 */
+    private int[] links = new int[0];
+    void setLinks(int[] l) { links = l == null ? new int[0] : l; invalidate(); }
+
     @Override protected void onDraw(Canvas canvas) {
         Layout l = getLayout();
-        if (!justify || l == null) { super.onDraw(canvas); return; }
+        if (!justify || l == null) { super.onDraw(canvas); if (l != null && links.length > 0) drawLinks(canvas, l); return; }
         CharSequence text = l.getText();
         TextPaint p = getPaint();
         p.setColor(getCurrentTextColor());
@@ -54,6 +58,92 @@ final class JustifiedText extends TextView {
             }
         }
         canvas.restore();
+        if (links.length > 0) drawLinks(canvas, l);
+    }
+
+    /** 链接下面画一条短横线组成的虚线（墨水屏上清楚，又和正文的下划线区分开）。 */
+    private void drawLinks(Canvas canvas, Layout l) {
+        CharSequence text = l.getText();
+        android.graphics.Paint lp = new android.graphics.Paint();
+        lp.setColor(getCurrentTextColor());
+        float th = Math.max(2f, getTextSize() / 14f);
+        float dash = getTextSize() / 4f;
+        canvas.save();
+        canvas.translate(getCompoundPaddingLeft(), getExtendedPaddingTop());
+        for (int k = 0; k + 1 < links.length; k += 2) {
+            int a = Math.max(0, links[k]), b = Math.min(text.length(), links[k + 1]);
+            if (b <= a) continue;
+            for (int line = l.getLineForOffset(a); line < l.getLineCount() && l.getLineStart(line) < b; line++) {
+                float[] r = span(l, text, line, a, b);
+                if (r == null) continue;
+                float y = l.getLineBaseline(line) + th * 2;
+                for (float x = r[0]; x < r[1]; x += dash * 1.6f) canvas.drawRect(x, y, Math.min(r[1], x + dash), y + th, lp);
+            }
+        }
+        canvas.restore();
+    }
+
+    /** 第 line 行里 [a, b) 这几个字在屏幕上的左右边（两端对齐时按拉开后的位置），不在这一行返回 null。 */
+    private float[] span(Layout l, CharSequence text, int line, int a, int b) {
+        int s = l.getLineStart(line), e = l.getLineEnd(line);
+        int ve = e;
+        while (ve > s && isTrailingSpace(text.charAt(ve - 1))) ve--;
+        int x0 = Math.max(a, s), x1 = Math.min(b, ve);
+        if (x1 <= x0) return null;
+        float per = justify ? perOf(l, text, line, s, e, ve) : -1;
+        return new float[] { xAt(l, text, line, s, x0, per), xAt(l, text, line, s, x1, per) };
+    }
+
+    /** 这一行两端对齐时每处拉开多少；这一行照常左对齐返回 -1（和 onDraw 的判断一样）。 */
+    private float perOf(Layout l, CharSequence text, int line, int s, int e, int ve) {
+        boolean paraEnd = e > s && text.charAt(e - 1) == '\n' || line == l.getLineCount() - 1 && !continues;
+        if (paraEnd || ve <= s) return -1;
+        TextPaint p = getPaint();
+        int lead = s;
+        while (lead < ve && text.charAt(lead) == '\u3000') lead++;
+        int gaps = 0;
+        for (int i = s + 1; i < ve; i++) if (i > lead && breakBetween(text.charAt(i - 1), text.charAt(i))) gaps++;
+        float natural = p.measureText(text, s, ve);
+        float extra = l.getParagraphRight(line) - l.getParagraphLeft(line) - natural;
+        if (gaps == 0 || extra <= 0) return -1;
+        float per = extra / gaps;
+        return per > 2 * p.getTextSize() ? -1 : per;
+    }
+
+    private float xAt(Layout l, CharSequence text, int line, int s, int off, float per) {
+        if (per < 0) return l.getPrimaryHorizontal(off);
+        int lead = s;
+        while (lead < off && text.charAt(lead) == '\u3000') lead++;
+        int gaps = 0;
+        for (int i = s + 1; i <= off && i < text.length(); i++) if (i > lead && breakBetween(text.charAt(i - 1), text.charAt(i))) gaps++;
+        return l.getParagraphLeft(line) + getPaint().measureText(text, s, off) + per * gaps;
+    }
+
+    /**
+     * 点在 (x, y)（这个控件里的坐标）附近的链接是第几组（links 里的下标 / 2），没有返回 -1。
+     * 注释号常常只有一个字，手指点不准：上下差一行之内、左右差 slop 像素之内都算，取最近的。
+     */
+    int linkAt(float x, float y, float slop) {
+        Layout l = getLayout();
+        if (l == null || links.length == 0) return -1;
+        CharSequence text = l.getText();
+        x -= getCompoundPaddingLeft(); y -= getExtendedPaddingTop();
+        int best = -1; float bestD = Float.MAX_VALUE;
+        for (int k = 0; k + 1 < links.length; k += 2) {
+            int a = Math.max(0, links[k]), b = Math.min(text.length(), links[k + 1]);
+            if (b <= a) continue;
+            for (int line = l.getLineForOffset(a); line < l.getLineCount() && l.getLineStart(line) < b; line++) {
+                float[] r = span(l, text, line, a, b);
+                if (r == null) continue;
+                float top = l.getLineTop(line), bot = l.getLineBottom(line);
+                float dx = x < r[0] ? r[0] - x : x > r[1] ? x - r[1] : 0;
+                float dy = y < top ? top - y : y > bot ? y - bot : 0;
+                if (dx > slop || dy > slop * 0.6f) continue;
+                float d = dx + dy;
+                if (d < bestD) { bestD = d; best = k / 2; }
+            }
+        }
+        return best;
     }
 
     /** 画一行两端对齐的字；不适合拉开就返回 false（调用的人照常画）。 */

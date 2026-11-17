@@ -68,6 +68,7 @@ wa_do() { # 编号 uid 动词 参数 数据
     storageresize) case "$arg" in ''|*[!0-9]*) echo "error=nan" ;; *) st_request "$arg" ;; esac | wa_put "$n" "$u" ;;
     storageauto) case "$arg" in 0|1) st_cmd auto "$arg" >/dev/null 2>&1; echo "ok=1"; st_info ;; *) echo "error=bad value" ;; esac | wa_put "$n" "$u" ;;
     libput)   wa_libput "$arg" "$u" "$data" | wa_put "$n" "$u" ;;
+    wifipsk)  { type wifi_psk_put >/dev/null 2>&1 && wifi_psk_put "$arg" "$data" || echo "error=unknown"; } | wa_put "$n" "$u" ;;   # 新 Wi-Fi 的密码（cmd.sh wifi_connect）
     *) wa_log "wa: unknown request '$verb'"; echo "error=unknown" | wa_put "$n" "$u" ;;
     esac
 }
@@ -139,7 +140,7 @@ wa_sysinfo() {
     echo "mode=$(cat $W/mode 2>/dev/null | wa_clean 12)"
     [ -f $W/frozen ] && echo "frozen=1" || echo "frozen=0"
     [ -f $W/fw/paused ] && echo "fwpaused=1" || echo "fwpaused=0"
-    [ "$(cat $VD/autoupdate 2>/dev/null)" = 0 ] && echo "autoupdate=0" || echo "autoupdate=1"
+    case "$(cat $VD/autoupdate 2>/dev/null)" in 0) echo "autoupdate=0" ;; notify) echo "autoupdate=notify" ;; *) echo "autoupdate=1" ;; esac
     ap=$(cat $W/autoupdate.pid 2>/dev/null)
     [ -n "$ap" ] && kill -0 "$ap" 2>/dev/null && echo "autoupdaterun=1" || echo "autoupdaterun=0"
     wa_df kindle /mnt/base-us
@@ -228,19 +229,21 @@ wa_shot() { # 编号 uid
     else rm -f "$o.tmp"; echo "error=screenshot failed" | wa_put "$1" "$2"; fi
 }
 
-wa_autoupdate() { # 0|1
+wa_autoupdate() { # 0|1|notify|?   （0 关闭，1 自动安装，notify 只提醒：发现新版本只写 $VD/update.available，不装）
     case "$1" in
     0) echo 0 > $VD/autoupdate; wa_log "web: auto update off" ;;
-    1) echo 1 > $VD/autoupdate; wa_log "web: auto update on"
+    1|notify)
+       echo "$1" > $VD/autoupdate; wa_log "web: auto update $1"
        # 关着开机时更新程序根本没起来：现在起一个（和 veradroid.sh 一样从 tmpfs 副本运行）
        ap=$(cat $W/autoupdate.pid 2>/dev/null)
        if ! { [ -n "$ap" ] && kill -0 "$ap" 2>/dev/null; } && [ -f "$VD/boot/lib/auto-update.sh" ]; then
            cp "$VD/boot/lib/auto-update.sh" $W/auto-update.sh 2>/dev/null && ( cd / && exec setsid sh $W/auto-update.sh ) </dev/null >/dev/null 2>&1 &
        fi ;;
+    '?') ;;
     *) echo "error=bad value"; return ;;
     esac
     echo "ok=1"
-    [ "$(cat $VD/autoupdate 2>/dev/null)" = 0 ] && echo "autoupdate=0" || echo "autoupdate=1"
+    case "$(cat $VD/autoupdate 2>/dev/null)" in 0) echo "autoupdate=0" ;; notify) echo "autoupdate=notify" ;; *) echo "autoupdate=1" ;; esac
 }
 
 # ---------------------------------------------------------------- SSH 诊断（docs/ssh-diagnostics.md）

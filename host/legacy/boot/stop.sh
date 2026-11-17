@@ -106,6 +106,8 @@ if grep -q " $R$KLIB_MP " /proc/mounts; then
 fi
 freezer_cleanup
 kmsg "container mounts released"
+# 多看在前台时换过的显示密度会存进 Android 的设置文件：容器已经没了，趁系统盘还挂着把它抹掉（appprof.sh；下次开机前还会再抹一次）
+[ -f "$VD/boot/lib/appprof.sh" ] && . "$VD/boot/lib/appprof.sh" && appprof_density_scrub >> $LOG 2>&1
 [ -n "$STALE" ] && { rm -rf $W/kfb; storage_umount; exit 0; }
 readahead_restore 2>/dev/null || true
 zram_restore

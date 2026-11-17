@@ -304,7 +304,7 @@ final class BlocksSettings {
         final Map<String, String> st = HostLink.kv(HostLink.CTL + "status");
         add(n, Blocks.row(a, "Wi-Fi", "Wireless", toggle(HostLink.num(st, "wifi", 1) == 1, new Icons.Toggle.Listener() {
             @Override public void onToggle(boolean on) { HostLink.cmd("wifi " + (on ? 1 : 0)); HostLink.cmd("status"); } })));
-        add(n, Blocks.navRow(a, "已保存的网络", "切换到 Kindle 上保存过的 Wi-Fi", new View.OnClickListener() {
+        add(n, Blocks.navRow(a, "Wi-Fi 网络", "切换已保存的网络，或连接附近的新网络", new View.OnClickListener() {
             @Override public void onClick(View v) { WifiActivity.open(a); } }));
         if (BluetoothActivity.supported()) add(n, Blocks.navRow(a, "蓝牙翻页器", "扫描、配对、连接", new View.OnClickListener() {
             @Override public void onClick(View v) { BluetoothActivity.open(a); } }));

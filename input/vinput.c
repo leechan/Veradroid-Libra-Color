@@ -199,11 +199,43 @@ static int back_excluded(void)
 }
 static int two_any(void) { return G_TWO_TAP || G_TWO_LONG || G_TWO_BACK || G_TWO_SLIDE; }
 
+/* ---- what Android has been told (every write to the virtual touch screen goes through uout) ----
+   BTN_TOUCH on the virtual device follows the fingers we forwarded, not the panel's own BTN_TOUCH: Android's multitouch
+   reader treats a contact while BTN_TOUCH is 0 as hovering (ACTION_HOVER_*, no tap). The PW5 goodix driver releases every
+   finger when the Kindle locks the panel for the screensaver; when a finger was down at that moment (tapping "sleep" on
+   the home screen, a thumb resting on the glass) its first contact after the wake comes without BTN_TOUCH 1 (pw5-5192
+   emulator, real goodix driver), so the first tap after waking reached Android as a hover and did nothing. */
+static int out_slot = 0, out_btn = 0;
+static unsigned char out_act[MAXSLOT];
+static unsigned long btn_fixes = 0;
+static void uraw(int type, int code, int value)
+{
+    struct input_event e;
+    memset(&e, 0, sizeof(e));
+    e.type = type; e.code = code; e.value = value;
+    if (write(ufd, &e, sizeof(e)) < 0) { /* device gone */ }
+}
+static void uout(const struct input_event *e)
+{
+    if (e->type == EV_ABS && e->code == ABS_MT_SLOT) out_slot = e->value;
+    else if (e->type == EV_ABS && e->code == ABS_MT_TRACKING_ID) { if (out_slot >= 0 && out_slot < MAXSLOT) out_act[out_slot] = e->value >= 0; }
+    else if (e->type == EV_KEY && e->code == BTN_TOUCH) out_btn = e->value != 0;
+    else if (e->type == EV_SYN && e->code == SYN_REPORT) {
+        int any = 0;
+        for (int i = 0; i < MAXSLOT; i++) any |= out_act[i];
+        if (any != out_btn) {
+            uraw(EV_KEY, BTN_TOUCH, any); out_btn = any;
+            if (++btn_fixes <= 20) logf_("btn_touch: panel %s, sent BTN_TOUCH %d with the frame", any ? "left it out on a new contact" : "kept it down with no contact", any);
+        }
+    }
+    if (write(ufd, e, sizeof(*e)) < 0) { /* device gone */ }
+}
 static void emit(int fd, int type, int code, int value)
 {
     struct input_event e;
     memset(&e, 0, sizeof(e));
     e.type = type; e.code = code; e.value = value;
+    if (fd == ufd) { uout(&e); return; }
     if (write(fd, &e, sizeof(e)) < 0) { /* device gone */ }
 }
 
@@ -329,7 +361,7 @@ static unsigned long fwd_count = 0;
 static void forward(const struct input_event *e)
 {
     fwd_count++;
-    if (write(ufd, e, sizeof(*e)) < 0) { /* ignore */ }
+    uout(e);
 }
 static void flush_held(void)
 {
@@ -1062,6 +1094,6 @@ int main(int argc, char **argv)
     if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 0);
     ioctl(ufd, UI_DEV_DESTROY);
     if (kfd >= 0) ioctl(kfd, UI_DEV_DESTROY);
-    logf_("stopped, forwarded %lu events, %lu drops, %lu stuck fingers lifted", fwd_count, drops, resync_lifts);
+    logf_("stopped, forwarded %lu events, %lu drops, %lu stuck fingers lifted, %lu BTN_TOUCH fixed", fwd_count, drops, resync_lifts, btn_fixes);
     return 0;
 }

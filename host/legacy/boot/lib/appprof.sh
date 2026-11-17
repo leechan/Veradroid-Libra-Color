@@ -43,6 +43,14 @@ appprof_spec() {
         END { if (s != "-") print s }' $X/appprof 2>/dev/null
 }
 
+# 这个包生效的那一行来自哪里：b 内置 / u、ub 用户的 / 空 = 没有（前缀行都是内置的）
+appprof_src() {
+    awk -v p="$1" '
+        $1 == p { s = $2; exit }
+        $1 ~ /\*$/ { pre = substr($1, 1, length($1) - 1); if (index(p, pre) == 1 && length(pre) > best) { best = length(pre); s = $2 } }
+        END { print s }' $X/appprof 2>/dev/null
+}
+
 appprof_fg() {
     ap_pkg=$1
     [ "$ap_pkg" = com.veradroid.home ] && ap_pkg=home
@@ -51,6 +59,11 @@ appprof_fg() {
     echo "$ap_pkg" > $W/appprof.pkg
     ap_spec=; [ "$ap_pkg" = home ] || ap_spec=$(appprof_spec "$ap_pkg")
     ap_new=$(appprof_lines "$ap_spec")
+    # 用户在全局里明确选了“不全刷”（settings.conf 里 KFB_FLASH=0）：内置推荐不能替他打开按页数全刷（0.96 用户反馈“更新后会黑屏全刷”）。
+    # 用户自己给这个应用存的设置（u / ub）照旧生效。
+    if [ -n "$ap_new" ] && grep -qx 'KFB_FLASH=0' "$SYS/settings.conf" 2>/dev/null && [ "$(appprof_src "$ap_pkg")" = b ]; then
+        ap_new=$(printf '%s\n' "$ap_new" | grep -v '^KFB_FLASH=')
+    fi
     ap_old=$(cat $SYS/settings.app 2>/dev/null)
     if [ "$ap_new" = "$ap_old" ]; then t "app display $ap_pkg: same as before (${ap_spec:-global})"; return 0; fi
     if [ -n "$ap_new" ]; then printf '%s\n' "$ap_new" > $SYS/settings.app.tmp && mv -f $SYS/settings.app.tmp $SYS/settings.app; else rm -f $SYS/settings.app; fi

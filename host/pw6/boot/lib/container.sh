@@ -9,6 +9,15 @@ input_find() {   # $1 = 设备名（正则）
 }
 touch_setup() {
     KFB_KEYS=$(input_find '"kindle-input-pt"')
+    # kindle-input-pt（5.20 的 input_manager 建的虚拟设备，Kindle Remote 的键从这里出来）的按键位图是全部按键，包括 BTN_STYLUS /
+    # BTN_TOOL_PEN：Android 7.1 的 EventHub 把它当成“外接手写笔”，触摸屏随之进入手写笔融合模式，每次手指按下都先等 72 ms
+    # （EXTERNAL_STYLUS_DATA_TIMEOUT，等笔的压力数据）才往下发，触摸源也变成 0xd002（蓝牙手写笔）。PW6 / Scribe 的诊断里都是这样
+    # （dumpsys input：kindle-input-pt Classes 0x800 External Stylus）。这些机型没有物理翻页键，配对过的翻页器 / Kindle Remote 由蓝牙桥
+    # （bt.sh / vdbtkeys，它自己按名字接管 kindle-input-pt）从 veradroid-btkeys 发给 Android，所以默认不再把它绑进容器。KFB_PTKEYS=1 恢复旧做法。
+    if [ -n "$KFB_KEYS" ] && [ "${KFB_PTKEYS:-0}" != 1 ]; then
+        t "pt keys: $KFB_KEYS not given to android (it would register as an external stylus; KFB_PTKEYS=1 to bind it)"
+        KFB_KEYS=
+    fi
     [ -n "$KFB_KEYS" ] && chmod 666 $KFB_KEYS
     export KFB_KEYS
     t "pt keys=${KFB_KEYS:-none}"

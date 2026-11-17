@@ -217,10 +217,25 @@ public class VeraImeService extends InputMethodService {
      */
     @Override public void onWindowHidden() {
         super.onWindowHidden();
+        toBridge("HINT 2500 5\n");
+    }
+
+    /**
+     * Keyboard window coming up: the app relayouts above it and the keyboard covers the bottom half - a large change
+     * that is not a page turn. NOFLIP (display/epd.c page_like) keeps it out of the bridge's KFB_FLASH page count, so
+     * a reader app with a page-count flash does not end a few keyboard openings in a full black flash (0.96 report).
+     * A bridge that does not know NOFLIP ignores the line.
+     */
+    @Override public void onWindowShown() {
+        super.onWindowShown();
+        toBridge("NOFLIP 2500\n");
+    }
+
+    private static void toBridge(String line) {
         java.io.FileDescriptor fd = null;
         try {
             fd = android.system.Os.open("/dev/kfb/epd.fifo", android.system.OsConstants.O_WRONLY | android.system.OsConstants.O_NONBLOCK, 0);
-            byte[] b = "HINT 2500 5\n".getBytes();
+            byte[] b = line.getBytes();
             android.system.Os.write(fd, b, 0, b.length);
         } catch (Throwable ignored) {
         } finally {

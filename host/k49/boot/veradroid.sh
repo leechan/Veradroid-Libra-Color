@@ -24,8 +24,11 @@ VD=${VD:-$(cd "$(dirname "$0")/.." && pwd)}
 . "$VD/boot/lib/common.sh"
 for m in settings memory slim imgclass props freeze kmod framework container input network sleep status cmd watchdog afterboot splash bootwatch diagboot compile energy tz; do . "$VD/boot/lib/$m.sh"; done
 mkdir -p $SYS $W
-# 上次停在某个应用时留下的“当前应用显示参数”不带进这一次（开机时前台是桌面；appprof.sh）
-rm -f $SYS/settings.app $W/appprof.pkg
+# 上次停在某个应用时留下的“当前应用显示参数”不带进这一次（开机时前台是桌面；appprof.sh）。
+# 解冻（Android 冻着、还活着）时不删：显示桥一直在跑，手里还是那个应用的参数（比如微信读书的 KFB_MODE=1 / FLASH=6）。以前这里删了，
+# 解冻后打开桌面时 appprof_fg 比较“新 = 全局、旧 = 空”判成“same as before”，不发 SET，桌面就一直用微信读书的灰度最准刷新
+# （每次局部刷新都是 GC16、每 6 页闪一次；Scribe 用户诊断 09227072475006 1.04：“卡顿不跟手”）。冷启动在下面另外删。
+if ! { [ -f $W/frozen ] && kill -0 "$(cat $W/pid 2>/dev/null)" 2>/dev/null; }; then rm -f $SYS/settings.app $W/appprof.pkg; fi
 settings_load
 
 # 第二阶段：在新命名空间里
@@ -198,7 +201,7 @@ while [ -n "$sp" ] && [ "$sp" != "$$" ] && [ "$sp" != "$PPID" ] && kill -0 "$sp"
 done
 [ $i -gt 0 ] && { ws=$i; storage_mount; log_reopen; t "previous stop.sh finished after ${ws}s, starting"; }   # storage_mount 自己也用 i
 sh $VD/boot/stop.sh --stale >/dev/null 2>&1
-rm -f $SYS/settings.app      # 上次运行时某个应用的显示参数：冷启动从桌面开始
+rm -f $SYS/settings.app $W/appprof.pkg      # 上次运行时某个应用的显示参数：冷启动从桌面开始
 storage_mount || { splash "VeraDroid：系统盘还在被上次的进程占用，请过一分钟再试" 36; sleep 5; exit 1; }
 kmod_load
 [ -d $R ] && [ -e $R/init -o -f $R/.demo ] || { t "no system image at $R"; splash "VeraDroid：还没有安装系统" 40; sleep 5; exit 1; }

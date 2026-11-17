@@ -14,6 +14,7 @@
  *                             from the picture it announced before: only those rows are converted and compared
  *     D x y w h [A|F|D|G|R]   same, but the caller names the damaged rectangle (no diff)
  *     REDRAW                  redraw the whole buffer (no flash), page 0 or the last page posted
+ *     NOFLIP <ms>             for <ms>, large changes are not page turns for the KFB_FLASH count (VeraIME: keyboard coming up)
  *     SETTLE2 <ms>            first settle window (adaptive settle, 40; 0 = always KFB_SETTLE), see settle_first
  *     SCROLLDU <ms>           burst fast mode: DU while large frames keep coming, 16-gray pass <ms> after (0 = off)
  *     IMG <pct>               均衡: small changes that are >= <pct> % mid-gray (pictures) use GL16 instead of DU (0 = off)
@@ -226,6 +227,23 @@ static int edge_strip(int x0, int y0, int x1, int y1)
     if (x0 <= W / 20 && x1 >= W - W / 20 && h * 5 <= H * 2 && (y0 <= H / 50 || y1 >= H - H / 50)) return 1;
     return 0;
 }
+/* KFB_FLASH counts page turns of the content, not every large change. 0.96 report (阅读 / Legado settings, a WebDav
+   account dialog with VeraIME): the keyboard showing / hiding (the bottom ~45 % of the screen, and the app relayouting
+   above it) and dialogs opening / closing were counted as pages, so with a reader profile (KFB_FLASH=6) every third
+   dialog or keyboard ended in a full black flash, also while typing. A page turn changes the content from near the
+   top to near the bottom over most of the width, in rows that cover at least half the height; a keyboard starts
+   half-way down, a dialog sits in the middle, a reader's toolbars are a band at the top and one at the bottom. While a
+   HINT window is open (VeraIME sends one when the keyboard goes, VeraHome when its panel opens / closes) nothing is
+   counted either. */
+static long hint_until;
+static long noflip_until = 0;   /* NOFLIP <ms>: VeraIME's keyboard is coming up */
+static long now_ms(void);
+static int page_like(int x0, int y0, int x1, int y1, int rows)
+{
+    long t = now_ms();
+    if ((hint_until && t < hint_until) || t < noflip_until) return 0;
+    return y0 <= H * 15 / 100 && y1 >= H * 85 / 100 && (long)(x1 - x0) * 4 >= (long)W * 3 && rows * 2 >= H;
+}
 static int pace = 0;          /* PACE: follow the panel (see the header) */
 static int clean_ms = 0;      /* CLEAN: 16-gray clean-up after fast refreshes, 0 = off */
 static int cl_x0, cl_y0, cl_x1, cl_y1, cl_valid = 0;   /* panel area last drawn with DU and not cleaned yet */
@@ -240,7 +258,6 @@ static int reagl_min = 35;
 /* HINT <ms> <pct>: for the next <ms>, frames that change at least <pct> % of the screen use REAGL (one shot, from VeraHome when
    its pull-down panel opens / closes: the panel covers ~60 % of the screen, under the default 85 % rule it went out as DU and the
    page underneath shone through). Page turns outside the window keep the normal rule. */
-static long hint_until = 0;
 static int hint_pct = 0;
 static int frame_big = 0;
 static unsigned long n_sent = 0;   /* refreshes sent to the panel */
@@ -888,6 +905,16 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
     for (int i = 0; i < nc; i++) total += (long)(cx1[i] - cx0[i]) * (cy1[i] - cy0[i]);
     if (g_tolerant) for (int i = 0; i < ns; i++) flip_total += (long)(sx1[i] - sx0[i]) * (sy1[i] - sy0[i]);
     else flip_total = total;
+    /* the box around the visible change, for page_like() */
+    int vbx0 = W, vby0 = H, vbx1 = 0, vby1 = 0, vrows = 0;
+    for (int i = 0; i < (g_tolerant ? ns : nc); i++) {
+        int a0 = g_tolerant ? sx0[i] : cx0[i], a1 = g_tolerant ? sx1[i] : cx1[i], b0 = g_tolerant ? sy0[i] : cy0[i], b1 = g_tolerant ? sy1[i] : cy1[i];
+        if (a0 < vbx0) vbx0 = a0;
+        if (a1 > vbx1) vbx1 = a1;
+        if (b0 < vby0) vby0 = b0;
+        if (b1 > vby1) vby1 = b1;
+        vrows += b1 - b0;
+    }
     if (timing_flag && access(timing_flag, F_OK) == 0)
         fprintf(stderr, "[%ld] epd: frame page=%d rows=%d-%d changed=%d area=%ld%% visible=%ld%% diff=%ld us (%ld ms)\n", now_ms(), page, fy0, fy1, nc,
                 total * 100 / ((long)W * H), flip_total * 100 / ((long)W * H),
@@ -919,6 +946,11 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
     g_burst = burst_du_ms > 0 && mode == M_AUTO && flip_total * 100 >= (long)W * H * page_pct && now_ms() - last_big_ms < flip_gap_ms;
     if (g_burst && flash_every <= 0) last_big_ms = now_ms();    /* the count below keeps last_big_ms itself */
     if (mode == M_FULL) flip_count = 0;
+    else if (flash_every > 0 && flip_total > (long)W * H * page_pct / 100 && !page_like(vbx0, vby0, vbx1, vby1, vrows)) {
+        if (timing_flag && access(timing_flag, F_OK) == 0)
+            fprintf(stderr, "[%ld] epd: flip not counted (%dx%d+%d+%d, rows %d: not a page%s)\n", now_ms(), vbx1 - vbx0, vby1 - vby0, vbx0, vby0, vrows,
+                    (hint_until && now_ms() < hint_until) || now_ms() < noflip_until ? ", keyboard / panel hint" : "");
+    }
     else if (flash_every > 0 && flip_total > (long)W * H * page_pct / 100) {
         long t = now_ms();
         int newflip = flip_gap_ms <= 0 || t - last_big_ms >= flip_gap_ms;
@@ -1430,6 +1462,7 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
                     if (tlog) fprintf(stderr, "[%ld] epd: hint %d ms, reagl-min %d%%\n", now_ms(), ms, pc);
                 }
             }
+            else if (!strncmp(line, "NOFLIP", 6)) { int v; if (sscanf(line + 6, "%d", &v) == 1 && v >= 0 && v <= 5000) noflip_until = now_ms() + v; }
             else if (!strncmp(line, "SETTLE2", 7)) { int v; if (sscanf(line + 7, "%d", &v) == 1 && v >= 0 && v <= 400) settle_first = v; }
             else if (!strncmp(line, "SCROLLDU", 8)) { int v; if (sscanf(line + 8, "%d", &v) == 1 && v >= 0 && v <= 5000) { burst_du_ms = waiter_on ? v : 0; if (!v) burst_dirty = 0; } }
             else if (!strncmp(line, "IMG", 3)) { int v; if (sscanf(line + 3, "%d", &v) == 1 && v >= 0 && v <= 100) img_gray_pct = v; }

@@ -62,6 +62,7 @@ settings_defaults() {
     G_WINDOW=40            # 双指判定窗口（毫秒）。越小单指触摸越跟手（每次触摸都要先等这么久才放给 Android）
     G_TWO_TAP_ACT=clear    # 双指轻点做什么（动作名同四角长按，见 action.sh / docs/host-settings.md）
     G_TWO_LONG_ACT=invert  # 双指长按 2 秒做什么
+    KFB_PTKEYS=0           # 1 = 把 Kindle 的 kindle-input-pt 绑进 Android（旧做法；Android 会把它当成外接手写笔，每次触摸慢 72 ms，见 container.sh touch_setup）
     WIFI_PS=auto           # Wi-Fi 省电：auto（平时省电，传书 / 大量下载时临时关）| on（一直省电）| off（Android 运行时关）
     APP_COMPILE=auto       # 应用预编译（compile.sh）：auto | speed | off
     STORAGE_AUTO=1         # 系统盘快满时自动扩大（storage.sh；只对镜像机型有意义）

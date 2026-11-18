@@ -49,6 +49,8 @@ import java.util.concurrent.Executors;
  */
 final class Transfer {
     static final int PORT = 8080;
+    /** 8080 被别的程序占着时依次试这几个（共用 Kindle 网络的老机型上，Kindle 自己的程序也在同一个网络里）。 */
+    static final int[] PORTS = { PORT, 8081, 8090 };
     static final String BOOKS = "/data/media/0/Books";
     static final String KINDLE = "/data/media/0/KindleLibrary";
     static final String TMP = "/data/media/0/.upload";   // staging for apk / downloads (/data/local/tmp is not writable for the system uid)
@@ -101,6 +103,8 @@ final class Transfer {
     private final SecureRandom rnd = new SecureRandom();
     private ServerSocket server;
     private volatile boolean running;
+    private int port = PORT;
+    private String lastError = "";
     private String pin = "";
     private String session = "";
     private String csrf = "";      // 每个会话一个：所有 POST 都要在 X-VD-Token 头里带上（别的网站拿不到它，没法替你点删除）
@@ -143,6 +147,10 @@ final class Transfer {
     /** 上次有人用传书网页到现在多久（毫秒）；没开着时是 -1。 */
     long idleMs() { return running ? System.currentTimeMillis() - lastUse : -1; }
     String pin() { return pin; }
+    /** 正在用的端口（8080 被占时是备用端口）。 */
+    int port() { return port; }
+    /** 上次打不开的原因（给屏幕看的中文）；打开成功后是空的。 */
+    String lastError() { return lastError; }
     int received() { return received; }
     void setIdleMinutes(int m) { idleMs = Math.max(5, m) * 60 * 1000L; }
 
@@ -167,12 +175,21 @@ final class Transfer {
             new File(BOOKS).mkdirs(); new File(BOOKS).setWritable(true, false);
             new File(KINDLE).mkdirs();
             tmpDir();   // create / check the staging folder now, not at the first upload
-            server = new ServerSocket();
-            server.setReuseAddress(true);
-            server.bind(new InetSocketAddress(PORT));
-        } catch (IOException e) {
+        } catch (Throwable e) {
+            android.util.Log.w("Transfer", "staging folders", e);   // 上传时再报；不挡住服务本身
+        }
+        IOException err = null;
+        server = null;
+        for (int p : PORTS) {
+            try { server = open(p); port = p; break; }
+            catch (IOException e) { err = e; android.util.Log.w("Transfer", "port " + p + ": " + e); }
+        }
+        if (server == null) {
+            lastError = reason(err);
+            android.util.Log.e("Transfer", "cannot start: " + lastError, err);
             return false;
         }
+        lastError = "";
         pin = String.format(Locale.US, "%04d", rnd.nextInt(10000));
         session = Long.toHexString(rnd.nextLong()) + Long.toHexString(rnd.nextLong());
         csrf = Long.toHexString(rnd.nextLong()) + Long.toHexString(rnd.nextLong());
@@ -183,9 +200,51 @@ final class Transfer {
         running = true;
         lastUse = System.currentTimeMillis();
         pool.execute(new Runnable() { @Override public void run() { acceptLoop(); } });
-        HostLink.cmd("fwd " + PORT);
+        HostLink.cmd("fwd " + port);
         main.postDelayed(idleCheck, 30000);
         return true;
+    }
+
+    /** 监听 port。先按 Android 的默认（"::"，IPv6 双栈）绑；老 Kindle 内核（3.0 / 4.1）没有 IPv6，这样绑一定是
+     * 失败（PW4 模拟器 strace：socket 已经是 AF_INET，bind 在 Java 里转换地址时就抛了异常，根本没发 bind 系统调用），以前 start() 就默默返回 false：传书页一直
+     * “传输已关闭”，点“打开传输”没反应（用户诊断：PW4 / Oasis，0.8.10）。这时改绑 IPv4 的 0.0.0.0。 */
+    static ServerSocket open(int p) throws IOException {
+        IOException first;
+        ServerSocket s = new ServerSocket();
+        try {
+            s.setReuseAddress(true);
+            s.bind(new InetSocketAddress(p));
+            return s;
+        } catch (IOException e) {
+            first = e;
+            try { s.close(); } catch (Exception ignored) { }
+        }
+        if (first instanceof java.net.BindException && !afNoSupport(first)) throw first;   // 真被占了：换端口
+        android.util.Log.i("Transfer", "port " + p + ": default bind failed (" + first + "), binding 0.0.0.0");
+        ServerSocket s4 = new ServerSocket();
+        try {
+            s4.setReuseAddress(true);
+            s4.bind(new InetSocketAddress(java.net.InetAddress.getByAddress(new byte[] { 0, 0, 0, 0 }), p));
+            return s4;
+        } catch (IOException e) {
+            try { s4.close(); } catch (Exception ignored) { }
+            throw e;
+        }
+    }
+
+    private static boolean afNoSupport(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            String m = String.valueOf(t.getMessage());
+            if (m.contains("EAFNOSUPPORT") || m.contains("Address family not supported")) return true;
+        }
+        return false;
+    }
+
+    private static String reason(IOException e) {
+        if (e == null) return "未知原因";
+        if (e instanceof java.net.BindException || String.valueOf(e.getMessage()).contains("EADDRINUSE"))
+            return "端口 " + PORT + " 等都被别的程序占用了";
+        return "网络服务打不开（" + e.getMessage() + "）";
     }
 
     synchronized void stop() {

@@ -10,6 +10,27 @@ CURL_OPTS=
 [ -n "${VD_IP:-}" ] && CURL_OPTS="$CURL_OPTS --resolve veradroid.wenjin.jp:443:$VD_IP --resolve veradroid.wenjin.jp:80:$VD_IP"
 [ -n "${VD_DNS:-}" ] && CURL_OPTS="$CURL_OPTS --dns-servers $VD_DNS"
 curl_do() { curl $CURL_OPTS "$@"; }
+# 直链优先（站长 2026-11-19）：元数据和安装器先从直链拿（dl.wenjin.jp：同一台服务器，不经过 Cloudflare），拿不到 / 不像样再走主站。
+# dl.wenjin.jp 现在只放行下载路径，这两样回 404，于是退回主站（多一次很快的请求）；放行以后自动走直链。network.conf 里 VD_DIRECT= 关掉
+case "$BASE" in https://veradroid.wenjin.jp) DIRECT=${VD_DIRECT-https://dl.wenjin.jp} ;; *) DIRECT=${VD_DIRECT-} ;; esac
+au_meta() { # 主站地址 -> 元数据（stdout）
+    if [ -n "$DIRECT" ]; then
+        k=${1#*://}; k=${k#*/}
+        j=$(curl_do -fsSL --connect-timeout 6 --max-time 20 "${DIRECT%/}/$k" 2>/dev/null) \
+            && printf '%s' "$j" | grep -q '"version"' && printf '%s' "$j" | grep -q '"url"' && { printf '%s' "$j"; return 0; }
+    fi
+    curl_do -fsSL --max-time 20 "$1"
+}
+au_script() { # 主站地址 输出文件：完整下载、非空、语法检查通过才算（直链先，主站后）；日志记下用了哪个
+    if [ -n "$DIRECT" ]; then
+        k=${1#*://}; k=${k#*/}; rm -f "$2"
+        if curl_do -fsSL --connect-timeout 6 --max-time 120 -o "$2" "${DIRECT%/}/$k" 2>/dev/null && [ -s "$2" ] && sh -n "$2" 2>/dev/null; then
+            echo "$(date) auto update: installer from the direct link ${DIRECT%/}/$k" >> "$LOG"; return 0
+        fi
+    fi
+    rm -f "$2"
+    curl_do -fsSL --max-time 120 -o "$2" "$1" && [ -s "$2" ] && sh -n "$2" 2>>"$LOG"
+}
 LOG=/mnt/base-us/veradroid/logs/autoupdate.log
 PID=/dev/shm/veradroid/autoupdate.pid
 LOCK=/mnt/base-us/veradroid/state/autoupdate.lock
@@ -67,8 +88,8 @@ while :; do
     # 装的是按类别编的系统（bootstrap 记在 $VD/image-class）：先看那个类别的版本，服务器上没有再看通用的
     ic=$(cat "$VD/image-class" 2>/dev/null)
     json=
-    [ -n "$ic" ] && json=$(curl_do -fsSL --max-time 20 "$BASE/static/bootstrap-$ic.json?t=$(date +%s)" 2>/dev/null)
-    [ -n "$json" ] || json=$(curl_do -fsSL --max-time 20 "$meta" 2>/dev/null) || { sleep 3600; continue; }
+    [ -n "$ic" ] && json=$(au_meta "$BASE/static/bootstrap-$ic.json?t=$(date +%s)" 2>/dev/null)
+    [ -n "$json" ] || json=$(au_meta "$meta" 2>/dev/null) || { sleep 3600; continue; }
     # 版本号有 "version":"x" 和 "version": "x" 两种写法
     new=$(printf '%s' "$json" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')
     # 安装时记录的实验机型：更新时沿用，否则 bootstrap 会拒绝（要求 VD_EXPERIMENTAL=1）
@@ -103,7 +124,7 @@ while :; do
     # BH081-7：不要 `curl | sh`——下载中途断网/超时，sh 会执行半截脚本。先完整下载到文件，curl 成功且语法检查通过才执行。
     BS=/mnt/base-us/veradroid/state/autoupdate-bootstrap.sh
     rm -f "$BS.part"
-    if curl_do -fsSL --max-time 120 -o "$BS.part" "$BASE/bootstrap.sh" && [ -s "$BS.part" ] && sh -n "$BS.part" 2>>"$LOG"; then
+    if au_script "$BASE/bootstrap.sh" "$BS.part"; then
         mv -f "$BS.part" "$BS"
         # VD_AUTOUPDATE=1：下载期间用户又打开了 Android 时，安装器等用户离开再替换，不把正在用的 Android 关掉；
         # 等太久（2 小时）它以 75 退出，什么都没动，过半小时再来

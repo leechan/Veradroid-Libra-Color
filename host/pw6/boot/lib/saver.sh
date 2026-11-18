@@ -44,3 +44,26 @@ saver_cmd() {
     done) rm -rf $X/saver $X/saver.tmp $X/ctl/saver.listed ;;
     esac
 }
+
+# Android 的 内部存储/Screensaver（/sdcard/Screensaver）：用户放屏保图片的另一个地方。开机就建好，里面放一份说明
+# （和 veradroid/screensaver/ 的那份对应）。以前要等桌面第一次打开屏保页才由桌面自己建，是桌面 uid 的 0700
+# （测试机上：10012 drwx------），传书网页以外的应用、文件管理进不去。现在和 Books / Download 一样：属主 media_rw（1023，
+# sdcard 守护进程用它）、777。里面已有的文件（桌面写的 .vd-saver、导入的图）不动。
+SAVER_NOTE_SD="把屏保图片（jpg / png）放在这个文件夹里。
+Kindle 休眠时，VeraDroid 显示这里的图片。在 设置 → 屏保 里可以选“轮换全部图片”或只用其中一张。
+竖图、和屏幕差不多大最好。
+
+也可以用 USB 连电脑，放进 Kindle 盘的 veradroid/screensaver/ 文件夹；传书网页的“文件”里也能上传到这里。"
+saver_dir_fix() {
+    sdd=$SYS/data/media/0
+    [ -d "$sdd" ] || return 0
+    [ -L "$sdd/Screensaver" ] && return 0
+    { [ -e "$sdd/Screensaver" ] && [ ! -d "$sdd/Screensaver" ]; } && return 0     # 同名的文件：用户的，不动
+    mkdir -p "$sdd/Screensaver" 2>/dev/null || return 0
+    chown 1023:1023 "$sdd/Screensaver" 2>/dev/null || true; chmod 777 "$sdd/Screensaver" 2>/dev/null || true
+    sdn="$sdd/Screensaver/把屏保图片放这里.txt"
+    if [ "$(cat "$sdn" 2>/dev/null)" != "$SAVER_NOTE_SD" ]; then
+        { printf '%s\n' "$SAVER_NOTE_SD" > "$sdn" && chmod 644 "$sdn" && chown 1023:1023 "$sdn"; } 2>/dev/null || true
+    fi
+    return 0
+}

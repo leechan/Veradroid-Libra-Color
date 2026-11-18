@@ -67,7 +67,7 @@ compile_done_filter() { case "$1" in speed|everything) return 0 ;; esac; return 
 # 这个包要不要编（$2=force 时只要装着就编）
 compile_needed() { # pkg [force]
     app_dir "$1" >/dev/null || return 1
-    [ "$2" = force ] && return 0
+    case "$2" in force|stale) return 0 ;; esac
     compile_done_filter "$(odex_filter "$1")" && return 1
     # 同一个安装失败过两次就不再自动试（命令 compile <包> 仍然会强制编）
     nf=$(grep -c "^$1 $(app_dir "$1") fail" $CLOG 2>/dev/null); [ "${nf:-0}" -ge 2 ] && return 1
@@ -101,15 +101,15 @@ compile_stale_pkgs() {
     # 只有 "status: invalid[]"、没有 "status="（pw5-5182 模拟器：一次失败的 speed 编译留下 71 MB 开头全零的 odex，
     # 以前这里看不出来，微信读书一直从 apk 解释执行）。所以把一个 path 之后到下一个 path / 包头为止的文字去掉空白拼起来再判断。
     adb_sh_t 60 "dumpsys package dexopt" 2>/dev/null | tr -d '\r' | awk '
-        function flush() { if (p != "" && b != "" && b !~ /status=kOatUpToDate/) print p; p = ""; b = "" }
+        function flush() { if (p != "" && b != "" && b !~ /status=kOatUpToDate/) { s = b; if (match(b, /status=kOat[A-Za-z]+/)) s = substr(b, RSTART + 11, RLENGTH - 11); else if (b ~ /status:invalid/) s = "invalid"; else s = "other"; print p, s }; p = ""; b = "" }
         /path: \/data\/app\// { flush(); p = $2; sub(/^\/data\/app\//, "", p); sub(/-[0-9]+\/.*$/, "", p); next }
         /path:/ || /^ *\[/ { flush(); next }
         p != "" { l = $0; gsub(/[ \t]/, "", l); b = b l }
-        END { flush() }' | sort -u
+        END { flush() }' | sort -u -k1,1
 }
 compile_scan() { # 所有还没编好的数据区应用排队
     # 换了版本：以前记的 fail 不再算（同一个安装失败两次就不再自动编；0.8.8 的 compile_held 把 $f 改坏、给安装让路的
-    # 中断被记成 fail，KO3 用户诊断 0000504970E：微信读书因此一直没编，升级以后也不会再试）。timeout / capped 保留。
+    # 中断被记成 fail，KO3 用户诊断：微信读书因此一直没编，升级以后也不会再试）。timeout / capped 保留。
     csv=$(cat $VD/version 2>/dev/null || cat $SYS/version 2>/dev/null)
     if [ -n "$csv" ] && [ "$(cat $SYS/data/.vd-compile.ver 2>/dev/null)" != "$csv" ]; then
         [ -f $CLOG ] && sed -i '/^[^ ]* [^ ]* fail /d' $CLOG 2>/dev/null
@@ -117,11 +117,13 @@ compile_scan() { # 所有还没编好的数据区应用排队
     fi
     [ -n "$(compile_mode)" ] || return 0
     for p in $(data_pkgs); do compile_enqueue "$p"; done
-    for p in $(compile_stale_pkgs); do
+    # kOatNeedsRelocation（启动镜像换了地址）只要 patchoat（几秒）：不带 -f 让 PackageManager 自己挑最省的办法（stale）；
+    # 以前一律 -f 整个重编（微信读书 speed 约 341 s），用户这时打开它，编译被停、odex 已经没了，就一直解释执行
+    compile_stale_pkgs | while read -r p st; do
         grep -q "^$p\$" $W/compile.stale 2>/dev/null && continue
         echo "$p" >> $W/compile.stale
-        t "compile: $p has compiled code that no longer matches the boot image (runs interpreted), recompiling"
-        compile_enqueue "$p" force
+        t "compile: $p compiled code not usable ($st), $( [ "$st" = NeedsRelocation ] && echo relocating || echo recompiling)"
+        compile_enqueue "$p" stale
     done
     [ -s $CQ ] && compile_kick
     return 0
@@ -231,7 +233,7 @@ compile_hold() {
 }
 # 变量名都带 ch_ / cr_ 前缀：这几个函数在 after_boot 的安装循环里被调用，ash 的 local 是动态作用域，
 # 以前这里的 for f 把调用方的 $f（正在装的 APK）改成了 compile.hold/*：装上的 APK 删不掉、每次开机重装，装不上的也不改名 .failed
-# （KT5 用户诊断 092A03 的“阅读 arc 装不上”在 0.99 的模拟器上复现）
+# （KT5 用户诊断 的“阅读 arc 装不上”在 0.99 的模拟器上复现）
 compile_held() {
     [ -d $W/compile.hold ] || return 1
     for ch_f in $W/compile.hold/*; do
@@ -330,11 +332,16 @@ compile_session_pending() {
     done
     return 1
 }
+# 正在编的应用被打开 / 起了进程时停不停编译。停了也回不到原来的 odex（installd 开始编时就把它截断了），应用照样解释执行，
+# 编了一半的工作白费，下次开机又从头编（微信读书 speed 约 341 s，用户一开机就打开它，于是永远编不完）。
+# 所以 1 GB 机型不停（nice 19 + IO 空闲照旧；内存紧时下面的 busy / memory 两条照样会停），只有 512 MB 机型
+# 为了前台应用的内存停。COMPILE_FG_ABORT=1 / 0 强制。
+compile_fg_abort() { case "${COMPILE_FG_ABORT:-auto}" in 1|on) return 0 ;; 0|off) return 1 ;; esac; lowmem_ram; }
 compile_babysit() { # cmd 的 pid [包]
     killed=; t0=$(cut -d. -f1 /proc/uptime)
     while kill -0 "$1" 2>/dev/null; do
         # 正在编的应用被打开到了前台：停掉，等它离开前台再编（compile_one 重新排队）
-        if [ -n "$2" ] && [ -z "$killed" ] && [ "$(compile_fg)" = "$2" ]; then
+        if [ -n "$2" ] && [ -z "$killed" ] && compile_fg_abort && [ "$(compile_fg)" = "$2" ]; then
             t "compile: $2 came to the foreground, stopping its dexopt (will finish after it leaves the foreground)"
             echo foreground > $W/compile.abort; compile_preempt_pkg "$2"; killed=1
         fi
@@ -344,7 +351,7 @@ compile_babysit() { # cmd 的 pid [包]
             echo session > $W/compile.abort; compile_preempt_pkg "$2"; killed=1
         fi
         # 编着的时候这个应用起了进程（点开了 / 后台服务被拉起）：它拿到的是没写完的 odex，停掉，等它退出再编
-        if [ -n "$2" ] && [ -z "$killed" ] && compile_app_running "$2"; then
+        if [ -n "$2" ] && [ -z "$killed" ] && compile_fg_abort && compile_app_running "$2"; then
             t "compile: $2 started while it was being compiled, stopping its dexopt (will finish after it exits)"
             echo running > $W/compile.abort; compile_preempt_pkg "$2"; killed=1
         fi
@@ -376,8 +383,8 @@ compile_babysit() { # cmd 的 pid [包]
         sleep 2
     done
 }
-compile_one() { # pkg mode force
-    pkg=$1; mode=$2
+compile_one() { # pkg mode [force|stale]
+    pkg=$1; mode=$2; cflag=-f; [ "$3" = stale ] && cflag=
     dir=$(app_dir "$pkg") || return 1
     rm -f $W/compile.abort
     # dex2oat 线程数：只有充电 + 空闲（不在用）时用系统默认（最快）；用户在用或用电池时单线程（内存峰值低很多、
@@ -396,10 +403,18 @@ compile_one() { # pkg mode force
     case "$oflags" in *--no-watch-dog*) ;; '') adb_sh "setprop dalvik.vm.dex2oat-flags --no-watch-dog" >/dev/null 2>&1 ;;
         *) adb_sh "setprop dalvik.vm.dex2oat-flags '$oflags --no-watch-dog'" >/dev/null 2>&1 ;; esac
     s=$(cut -d. -f1 /proc/uptime)
-    adb_sh "cmd package compile -m $mode -f $pkg" > $W/compile.out 2>&1 &
+    adb_sh "cmd package compile -m $mode $cflag $pkg" > $W/compile.out 2>&1 &
     cp_=$!
     compile_babysit $cp_ "$pkg"
     wait $cp_; rc=$?
+    # stale 不带 -f：PackageManager 只做了它认为需要的（relocation = patchoat）。之后还不是 UpToDate / 过滤器不对才整个重编
+    if [ -z "$cflag" ] && [ ! -s $W/compile.abort ] && grep -q Success $W/compile.out && alive $W/pid; then
+        if compile_stale_pkgs | grep -q "^$pkg " || ! compile_done_filter "$(odex_filter "$pkg")"; then
+            t "compile: $pkg still not usable after a plain dexopt, full recompile"
+            adb_sh "cmd package compile -m $mode -f $pkg" > $W/compile.out 2>&1 &
+            cp_=$!; compile_babysit $cp_ "$pkg"; wait $cp_; rc=$?
+        fi
+    fi
     sec=$(( $(cut -d. -f1 /proc/uptime) - s ))
     f=$(odex_filter "$pkg")
     ab=$(cat $W/compile.abort 2>/dev/null)
@@ -511,7 +526,7 @@ compile_worker() {
         compile_user_active || rm -f $W/compile.needidle
         idx=$((idx + 1)); echo $idx > $W/compile.index
         compile_status state=running "pkg=$pkg" "index=$idx" "total=$tot" "last=$last"
-        compile_one "$pkg" "$mode"
+        compile_one "$pkg" "$mode" "$force"
     done
     [ -n "$gaveup" ] && return 0
     compile_status state=idle "last=$(cat $W/compile.last 2>/dev/null)" "done=$idx"

@@ -35,7 +35,7 @@ public class TransferActivity extends Activity {
         getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.WHITE));
         getWindow().setWindowAnimations(0);
         transfer = Transfer.get(this);
-        if (!transfer.running()) transfer.start();
+        if (!transfer.running()) transfer.start();   // 打不开时 refresh() 把原因写在屏幕上
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -104,7 +104,7 @@ public class TransferActivity extends Activity {
 
     private void toggle() {
         if (transfer.running()) transfer.stop();
-        else transfer.start();
+        else if (!transfer.start()) VeraToast.show(this, "传输没打开：" + transfer.lastError());
         refresh();
     }
 
@@ -120,7 +120,7 @@ public class TransferActivity extends Activity {
             Map<String, String> st = HostLink.kv(HostLink.CTL + "status");
             String ip = st.get("lanip");
             if (ip == null || ip.length() == 0) ip = st.get("ip");
-            set(url, ip == null || ip.length() == 0 ? "正在获取 Wi-Fi 地址…（先连上 Wi-Fi）" : "http://" + ip + ":" + Transfer.PORT);
+            set(url, ip == null || ip.length() == 0 ? "正在获取 Wi-Fi 地址…（先连上 Wi-Fi）" : "http://" + ip + ":" + transfer.port());
             set(pin, "PIN  " + transfer.pin());
             StringBuilder sb = new StringBuilder();
             String t = transfer.statusText();
@@ -128,9 +128,11 @@ public class TransferActivity extends Activity {
             sb.append("已收到 ").append(transfer.received()).append(" 本\n");
             set(tasks, sb.toString());
         } else {
+            String err = transfer.lastError();
             set(url, "");
             set(pin, "");
-            set(tasks, "");
+            // 以前打不开时只写“传输已关闭”，点“打开传输”也没有任何反应（老机型 0.8.10 用户报告）
+            set(tasks, err.length() == 0 ? "" : "上次没打开：" + err + "。点“打开传输”再试；还不行请在设置里上传诊断日志。");
         }
     }
 

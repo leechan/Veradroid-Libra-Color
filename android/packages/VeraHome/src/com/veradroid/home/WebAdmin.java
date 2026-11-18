@@ -76,6 +76,7 @@ final class WebAdmin {
             if (p.equals("/api/apps2")) { Transfer.json(out, 200, apps("1".equals(r.q.get("system")))); return true; }
             if (p.equals("/api/procs")) { Transfer.json(out, 200, procs()); return true; }
             if (p.equals("/api/ssh")) { Transfer.json(out, 200, ssh(HostReq.run(ctx, "sshstate", null, null, 30000))); return true; }
+            if (p.equals("/api/adb")) { Transfer.json(out, 200, adb(HostReq.run(ctx, "adbstate", null, null, 30000))); return true; }
             if (p.equals("/api/log")) { Transfer.json(out, 200, log(r.q.get("n"), r.q.get("which"))); return true; }
             if (p.equals("/api/screenshot")) { screenshot(out); return true; }
             if (p.equals("/api/sys/settings")) { Transfer.json(out, 200, sysSettings()); return true; }
@@ -87,7 +88,7 @@ final class WebAdmin {
             return false;
         }
         // 只读自己的接口的请求体：上传（/api/upload）等老接口的请求体要原样留给 Transfer
-        if (!(p.startsWith("/api/fs/") || p.startsWith("/api/app/") || p.startsWith("/api/ssh/") || p.startsWith("/api/sys/") || p.startsWith("/api/bt/") || p.startsWith("/api/diag/") || p.equals("/api/theme/icon/clear"))) return false;
+        if (!(p.startsWith("/api/fs/") || p.startsWith("/api/app/") || p.startsWith("/api/ssh/") || p.startsWith("/api/adb/") || p.startsWith("/api/sys/") || p.startsWith("/api/bt/") || p.startsWith("/api/diag/") || p.equals("/api/theme/icon/clear"))) return false;
         JSONObject b;
         try { b = new JSONObject(new String(t.body(r, in, 16384), "UTF-8")); }
         catch (Exception e) { b = new JSONObject(); }
@@ -115,6 +116,22 @@ final class WebAdmin {
             int n = b.optInt("n", 0);
             if (n < 1 || n > 100) { Transfer.json(out, 200, Transfer.obj("ok", false, "msg", "编号不对")); return true; }
             Transfer.json(out, 200, ssh(HostReq.run(ctx, "sshkeydel", String.valueOf(n), null, 30000)));
+            return true;
+        }
+        if (p.equals("/api/adb/start")) {
+            // 开无线调试 = 让有公钥的电脑拿到 Android 的 shell（userdebug 镜像上 adb root 还能拿到 root）：和加公钥一样再输一次 PIN
+            int v = t.checkPin(b.optString("pin"));
+            if (v != 0) { Transfer.json(out, 200, Transfer.obj("ok", false, "msg", v == 2 ? "输错次数太多，请 1 分钟后再试" : "PIN 不对")); return true; }
+            toast("管理网页打开了无线调试（adb，端口 5555）");
+            Transfer.json(out, 200, adb(HostReq.run(ctx, "adbstart", String.valueOf(AdbWifi.minutes(b.optInt("min", 30))), null, 30000)));
+            return true;
+        }
+        if (p.equals("/api/adb/stop")) { Transfer.json(out, 200, adb(HostReq.run(ctx, "adbstop", null, null, 30000))); return true; }
+        if (p.equals("/api/adb/key")) { Transfer.json(out, 200, adbKey(b.optString("key"), b.optString("pin"))); return true; }
+        if (p.equals("/api/adb/keydel")) {
+            int n = b.optInt("n", 0);
+            if (n < 1 || n > 100) { Transfer.json(out, 200, Transfer.obj("ok", false, "msg", "编号不对")); return true; }
+            Transfer.json(out, 200, adb(HostReq.run(ctx, "adbkeydel", String.valueOf(n), null, 30000)));
             return true;
         }
         if (p.equals("/api/diag/upload")) {
@@ -905,6 +922,38 @@ final class WebAdmin {
         if (line == null) return Transfer.obj("ok", false, "msg", why[0]);
         JSONObject o = ssh(HostReq.run(ctx, "sshkeyadd", null, line, 15000));
         if (o.optBoolean("ok")) toast("管理网页添加了一把 SSH 公钥");
+        return o;
+    }
+
+    // ================================================================== 无线调试（adb）
+
+    static JSONObject adb(byte[] raw) throws Exception {
+        if (raw == null) return Transfer.obj("ok", false, "msg", "宿主没有回应（VeraDroid 宿主程序是不是旧版本？）");
+        JSONObject o = Transfer.obj("ok", true);
+        JSONArray keys = new JSONArray();
+        for (String line : new String(raw, "UTF-8").split("\n")) {
+            int eq = line.indexOf('=');
+            if (eq <= 0) continue;
+            String k = line.substring(0, eq), v = line.substring(eq + 1);
+            if (k.equals("adb.key")) {
+                String[] f = v.split("\\|", -1);
+                if (f.length >= 3) keys.put(Transfer.obj("n", f[0], "tail", f[1], "comment", f[2]));
+            } else if (k.startsWith("adb.")) o.put(k.substring(4), v);
+        }
+        o.put("keys", keys);
+        if (o.has("error")) { o.put("ok", false); o.put("msg", AdbWifi.error(o.optString("error"))); }
+        return o;
+    }
+
+    private JSONObject adbKey(String key, String pin) throws Exception {
+        int v = t.checkPin(pin);
+        if (v == 2) return Transfer.obj("ok", false, "msg", "输错次数太多，请 1 分钟后再试");
+        if (v != 0) return Transfer.obj("ok", false, "msg", "PIN 不对");
+        String[] why = new String[1];
+        String line = AdbWifi.checkKey(key, why);
+        if (line == null) return Transfer.obj("ok", false, "msg", why[0]);
+        JSONObject o = adb(HostReq.run(ctx, "adbkeyadd", null, line, 15000));
+        if (o.optBoolean("ok")) toast("管理网页添加了一把 adb 公钥");
         return o;
     }
 

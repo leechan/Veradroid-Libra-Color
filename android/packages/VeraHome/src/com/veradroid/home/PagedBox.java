@@ -49,7 +49,10 @@ class PagedBox extends LinearLayout {
             if (swiping && listener != null) {
                 float dx = e.getX() - downX, dy = e.getY() - downY;
                 float main = Math.abs(dx) >= Math.abs(dy) ? dx : dy;
-                listener.onPage(main < 0 ? 1 : -1);
+                final int dir = main < 0 ? 1 : -1;
+                final Listener l = listener;
+                // 翻页会 removeAllViews 重搭格子：排到这次触摸分发之后（见 Ui.clickAfterDispatch）
+                if (!post(new Runnable() { @Override public void run() { l.onPage(dir); } })) l.onPage(dir);
             }
             swiping = false;
             return true;

@@ -87,7 +87,7 @@ display_start() {
     [ -x "$VD/bin/veradroid-epd" ] || { t "display: veradroid-epd missing"; return 0; }
     epd_pd=-1; case "$KFB_PWRDOWN" in ""|*[!0-9]*) ;; *) epd_pd=$KFB_PWRDOWN ;; esac   # 面板掉电延时，没设 / off = 不碰
     : > $W/epd.log   # 追加方式打开：watchdog 的 log_cap 截短它时，显示桥接着写在新的末尾（不会留下空洞）
-    $VD/bin/veradroid-epd run $X/fb $X/epd.fifo $X/ctl --w ${viewWidth:-1272} --h ${viewHeight:-1696} --contrast ${KFB_CONTRAST:-1.3} --dither ${KFB_DITHER:-3} --flash ${KFB_FLASH:-0} --invert ${KFB_INVERT:-0} --lightf ${KFB_LIGHTF:-0} --darken ${KFB_DARKEN:-0} --mode ${KFB_MODE:-0} --settle ${KFB_SETTLE:-120} --hold ${KFB_HOLD:-70} --pace ${KFB_PACE:-0} --clean ${KFB_CLEAN:-0} --reagl-min ${KFB_REAGL_MIN:-35} --anim-mode ${KFB_ANIM_MODE:-1} --anim-dir ${KFB_ANIM_DIR:-2} --anim-steps ${KFB_ANIM_STEPS:-12} --anim-min ${KFB_ANIM_MIN:-60} --pwrdown $epd_pd $(rot_args) >>$W/epd.log 2>&1 &
+    $VD/bin/veradroid-epd run $X/fb $X/epd.fifo $X/ctl --w ${viewWidth:-1272} --h ${viewHeight:-1696} --contrast ${KFB_CONTRAST:-1.3} --dither ${KFB_DITHER:-3} --flash ${KFB_FLASH:-0} --invert ${KFB_INVERT:-0} --lightf ${KFB_LIGHTF:-0} --darken ${KFB_DARKEN:-0} --mode ${KFB_MODE:-0} --settle ${KFB_SETTLE:-120} --hold ${KFB_HOLD:-70} --pace ${KFB_PACE:-0} --clean ${KFB_CLEAN:-0} --scroll-delay ${KFB_SCROLLDELAY:-500} --scroll-style ${KFB_SCROLLSTYLE:-1} --gcn ${KFB_GCN:-0} --mono ${KFB_MONO:-0} --max-defer ${KFB_MAXDEFER:-1200} --flip-input ${KFB_FLIPINPUT:-1000} --reagl-min ${KFB_REAGL_MIN:-35} --anim-mode ${KFB_ANIM_MODE:-1} --anim-dir ${KFB_ANIM_DIR:-2} --anim-steps ${KFB_ANIM_STEPS:-12} --anim-min ${KFB_ANIM_MIN:-60} --pwrdown $epd_pd --rt ${EPD_RT:-0} $(rot_args) >>$W/epd.log 2>&1 &
     echo $! > $W/epd.pid
     rot_deg > $W/rotate
     # 以后能不能当场转 180：0 度启动时没传 --vw，可见宽 != 行宽（PW5 无 FBInk）的机器转了会偏 12 像素，只能重启
@@ -228,6 +228,33 @@ sysbin_wrap_mount() {   # 容器里（run_in_ns），/dev 的 tmpfs 建好之后
     done
     return 0
 }
+# chroot 模式下，zygote 和它孵出来的应用读自己的 /proc/self/maps（还有 /proc/self/fd 的链接）看到的是宿主路径
+# （/mnt/base-us/system/veradroid/rootfs/system/lib/libart.so；它们的根挂载跟文件所在的挂载不在一条链上，内核 d_path 走不到根就给全局路径。
+# init、logd 和 ashell 看是 /system/...）。加固壳（爱加密 ijiami：晋江 7.1.9 等）从 maps 里找 libart.so 再按这个路径打开它，
+# 容器里没有这个路径 -> 隐藏的 dex 没加载上，ART 报 "Null DexFile::mCookie"，接着在 DexFile.defineClassNative 里
+# GetArrayLength(null) 中止（用户诊断：PW6 固件 5.17.1，内核没有 PID 命名空间，每次启动 3 秒内 SIGABRT；测试机上用 test-hostns 复现，
+# 建了下面的链接能进主界面，去掉又崩）。
+# 办法：在 Android 自己的 /mnt（init 挂的 tmpfs；zygote 和各应用的挂载命名空间里是同一个 tmpfs，后建的文件也看得见）里建 $R 这个路径，
+# 指回根。用相对链接（../../../..）：容器里解析到 /，宿主上解析到 $R 自己，宿主那边跟着链接走的工具不会走到 Kindle 的根上。
+# Android 停止时 stop.sh 卸掉这个 tmpfs，链接跟着没了。
+hostns_selflink() {
+    case "$R" in /mnt/?*/?*) ;; *) return 0 ;; esac    # $R 在 /mnt 下才放得进 Android 的 /mnt
+    sl_dir=${R%/*}
+    sl_up=$(echo "$sl_dir" | awk -F/ '{ s = ".."; for (i = 3; i <= NF; i++) s = s "/.."; print s }')
+    i=0
+    while [ $i -lt 300 ]; do                          # init 第二阶段一开始就挂 /mnt；最多等 60 秒
+        if grep -q " $R/mnt tmpfs " /proc/mounts 2>/dev/null; then
+            if [ -L "$R$R" ] || { mkdir -p "$R$sl_dir" && ln -s "$sl_up" "$R$R"; }; then
+                t "hostns: $R -> $sl_up inside android (apps see host paths in /proc/self/maps)"
+            else
+                t "hostns: could not link $R inside android"
+            fi
+            return 0
+        fi
+        usleep 200000; i=$((i + 1))
+    done
+    t "hostns: android /mnt not mounted after 60 s, $R not linked"
+}
 container_start() {
     sysfont_prepare       # 系统字体：生成 $W/sysfont（run_in_ns 绑进去）
     fstrim_defuse
@@ -240,6 +267,7 @@ container_start() {
         echo $P > $W/pid
         echo chroot > $W/mode
         t "container started (host namespaces, chroot): init=$P"
+        hostns_selflink </dev/null >>$LOG 2>&1 &
         return 0
     fi
     # 本进程先进 freezer 组再 fork，容器的进程都在组里；fork 完回到根组
@@ -387,6 +415,11 @@ run_in_ns() {
     for d in sys/fs/selinux sys/fs/bpf sys/fs/pstore sys/kernel/tracing sys/kernel/debug; do
         [ -d $R/$d ] && mount -t tmpfs -o ro,size=4k tmpfs $R/$d
     done
+    # 测延迟用：/dev/shm/vd-tracefs 存在时，把 tracefs 给系统看（atrace / Trace 标记要在 zygote 起来之前就能打开）。
+    # 只读空目录换成可写的小 tmpfs + tracefs；宿主的跟踪设置是共用的，测完删掉这个文件、重启安卓即恢复
+    if [ -e /dev/shm/vd-tracefs ] && [ -d $R/sys/kernel/debug ]; then
+        mount -t tmpfs -o size=4k tmpfs $R/sys/kernel/debug && mkdir -p $R/sys/kernel/debug/tracing && mount -t tracefs nodev $R/sys/kernel/debug/tracing
+    fi
 
     if [ -n "$DEMO" ]; then
         # 演示根：借宿主的 busybox、库、FBInk 和字体（只读）

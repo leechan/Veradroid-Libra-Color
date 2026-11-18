@@ -162,6 +162,7 @@ final class Theme {
         final int h = lastH > 0 ? lastH : a.getResources().getDisplayMetrics().heightPixels;
         new Thread(new Runnable() {
             @Override public void run() {
+                Ui.lowPriority();
                 try { wallBitmap(a, w, h); } catch (Throwable ignored) { }
                 if (done != null) new android.os.Handler(android.os.Looper.getMainLooper()).post(done);
             }
@@ -330,6 +331,7 @@ final class Theme {
         final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
         new Thread(new Runnable() {
             @Override public void run() {
+                Ui.lowPriority();
                 String err = null;
                 String n = src.getName().toLowerCase(Locale.US);
                 String ext = n.endsWith(".png") ? "png" : n.endsWith(".webp") ? "webp" : "jpg";

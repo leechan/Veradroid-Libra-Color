@@ -2,7 +2,7 @@
 # Re-create installd profile / data dirs immediately before pm install.
 # A clean 32-bit image (or a mid-boot race) can drop them; installd then
 # fails with create_app_data -1 / "Failed to prepare .../profiles/cur/0/<pkg>"
-# (WeRead on KT5 2022, user diag 092A032524017).
+# (WeRead on KT5 2022, user diag).
 ensure_installd_dirs() {
     mkdir -p $SYS/data/misc/profiles/cur/0 $SYS/data/misc/profiles/ref              $SYS/data/data $SYS/data/app $SYS/data/app-lib $SYS/data/dalvik-cache 2>/dev/null
     chown 1000:1000 $SYS/data/misc/profiles $SYS/data/misc/profiles/cur         $SYS/data/misc/profiles/cur/0 $SYS/data/misc/profiles/ref 2>/dev/null
@@ -71,7 +71,7 @@ adb_sh_t() {
 # 包是否已安装：读 PackageManager 自己维护的 packages.list（宿主上直接读文件，不用为一次查询起一个 JVM）
 pkg_installed() { grep -q "^$1 " $SYS/data/system/packages.list 2>/dev/null; }
 
-# ---- apps 文件夹里装不上的 APK（用户诊断 632015：一个下载不完整的 APK 每次开机都重试，用户一直不知道为什么）----
+# ---- apps 文件夹里装不上的 APK（用户诊断：一个下载不完整的 APK 每次开机都重试，用户一直不知道为什么）----
 apk_size() { wc -c < "$1" 2>/dev/null | tr -d ' '; }
 # 安装前的检查：返回 0 并打印原因 = 这个文件肯定装不上
 apk_precheck() {
@@ -291,6 +291,7 @@ after_boot() {
         fi
     fi
     lmk_tune          # 运行时参数，不持久：每次开机都要做
+    type boot_block_apply >/dev/null 2>&1 && ( boot_block_apply ) &      # 第三方应用的开机自启（memkeep.sh，BOOT_BLOCK）
     trust_unlock      # 剪贴板可读（见 trust_unlock）
     # 默认桌面固定为 VeraHome（装了自带“桌面”入口的应用后，系统会让用户重新选）。cmd 走 binder，不起 JVM，约 0.1 秒。
     adb_sh 'cmd package set-home-activity com.veradroid.home/.HomeActivity' >/dev/null 2>&1
@@ -312,7 +313,7 @@ VeraDroid 离线更新
 Paperwhite 6 / Colorsoft 用 pw6 的包，其他机型（PW5、KT5、KT6、Scribe 等）用 k49 的包；
 放错的、版本不比现在新的会自动跳过（不会降级）。
 
-下次在书库里点“VeraDroid”启动时自动校验并安装，装完包会删掉。
+下次在书库里点“VeraDroid 启动”时自动校验并安装，装完包会删掉。
 结果写在这个文件夹的 result.txt 里。
 RDME
     fi
@@ -331,6 +332,8 @@ RDME
     chmod 777 $SYS/data/media/0/Android $SYS/data/media/0/Android/data \
               $SYS/data/media/0/Android/obb $SYS/data/media/0/WeRead \
               $SYS/data/media/0/Download 2>/dev/null
+    # 内部存储/Screensaver：屏保图片放这里（saver.sh）
+    type saver_dir_fix >/dev/null 2>&1 && saver_dir_fix
     # Books pushed by the host are root:root 0600; KOReader runs as an app uid
     # and cannot read them. Make the book directory readable on every boot.
     mkdir -p $SYS/data/media/0/Books 2>/dev/null
@@ -363,7 +366,7 @@ RDME
     fi
     chmod 644 $SYS/data/local/tmp/webview-command-line
     local d=$VD/apps f
-    # 装好后删不掉的安装包（KT6 / Scribe 5.17+ 的加密存储上，中文文件名的 rm 会失败：用户诊断 632015，
+    # 装好后删不掉的安装包（KT6 / Scribe 5.17+ 的加密存储上，中文文件名的 rm 会失败：用户诊断，
     # 每次进 Android 都把微信读书重装一遍，正在看书时被强制关掉）：按 名字 大小 修改时间 记下，以后跳过
     APK_DONE=$SYS/data/.vd-apk-done
     apk_key() { printf '%s %s %s' "$(basename "$1")" "$(apk_size "$1")" "$(stat -c %Y "$1" 2>/dev/null)"; }
@@ -394,7 +397,7 @@ RDME
         mkdir -p $SYS/data/local/tmp 2>/dev/null
         cp "$f" $SYS/data/local/tmp/vdinst.apk
         # 安装期间不要冻结 Android（屏保 / 休眠时 sleep.sh 看这个标记）：冻在 dex2oat 中间，解冻后 PackageManager
-        # 的线程还卡着，system_server 会被自己的 Watchdog 杀掉（用户诊断 092A03：屏保 4.5 小时后解冻，Android 重启）
+        # 的线程还卡着，system_server 会被自己的 Watchdog 杀掉（用户诊断：屏保 4.5 小时后解冻，Android 重启）
         read -r mypid _ < /proc/self/stat; echo "$mypid" > $W/installing    # 本进程（after_boot 是后台子 shell，$$ 是早已退出的父进程）
         type compile_hold >/dev/null 2>&1 && compile_hold      # 后台编译拿着 PackageManager 的锁：先让开（compile.sh）
         type vp_kvw >/dev/null 2>&1 && vp_kvw $X/ctl/apkinst.status state=installing "name=$(basename "$f")" "start=$(date +%s)" from=apps
@@ -448,11 +451,12 @@ RDME
 # 小内存机型（< 700 MB：PW5 / KT5 / KT6 / 老机型）：ActivityManager 按“内存 + 屏幕尺寸”给 lmkd 选杀进程的门槛，
 # Kindle 的大屏让它选了大屏手机那一档：文件缓存低于 72 MB 就连前台应用也杀。512 MB 的 Kindle 上微信读书（墨水屏版）
 # 每 12 秒被杀一次、无限重启（KT5 模拟器实测）。开机后用 vdlmk 把门槛降下来（单位：页 = 4 KB）：
-# 前台 8 MB、可见 12 MB、可感知 16 MB、备份 20 MB、缓存 24–32 MB。957 MB 的 PW6 不改。
+# 前台 8 MB、可见 12 MB、可感知 16 MB、备份 20 MB、缓存 24–32 MB。1 GB 机型的门槛见 memkeep.sh（LMK_MINFREE）。
 lmk_tune() {
+    lmk_kernel_tune 2>/dev/null || true      # 内核 LMK（只有 < 700 MB 的老内核有）
+    if type lmk_send >/dev/null 2>&1; then lmk_send; return 0; fi      # memkeep.sh：按 LMK_MINFREE（1 GB 机型也降，见那里的说明）
     mt=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
     [ -n "$mt" ] && [ "$mt" -lt 700000 ] || return 0
-    lmk_kernel_tune 2>/dev/null || true
     [ -x "$VD/bin/vdlmk" ] || { t "lmk: vdlmk missing"; return 0; }
     s=/proc/$P/root/dev/socket/lmkd
     i=0; while [ ! -S "$s" ] && [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done

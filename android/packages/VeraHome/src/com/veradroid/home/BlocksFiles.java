@@ -530,6 +530,7 @@ final class BlocksFiles {
         if (c != null) return c;
         if (!p.startsWith(Transfer.KINDLE)) { c = sorted(new File(p).listFiles()); dirCache.put(p, c); return c; }
         new Thread(new Runnable() { @Override public void run() {
+            Ui.lowPriority();
             final File[] fs = sorted(new File(p).listFiles());
             ui.post(new Runnable() { @Override public void run() { dirCache.put(p, fs); if (p.equals(path) && seg == 1) { render(); a.changed(); } } });
         } }, "files-list").start();
@@ -547,6 +548,7 @@ final class BlocksFiles {
         if (findingImages) return;
         findingImages = true;
         new Thread(new Runnable() { @Override public void run() {
+            Ui.lowPriority();
             final List<File> l = Theme.findImages();
             ui.post(new Runnable() { @Override public void run() { images = l; findingImages = false; if (seg == 2) { render(); a.changed(); } } });
         } }, "files-images").start();

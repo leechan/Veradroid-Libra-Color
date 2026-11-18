@@ -50,7 +50,15 @@ final class Store {
     }
 
     @SuppressWarnings("unchecked")
+    /**
+     * 已经迁移好、放在 DIR 下面的那几份偏好：同一个对象，进程里留着直接给（系统本来也缓存它）。以前每次调用都要
+     * 查一遍目录（stat + access）、进一次系统的同步锁、再读一次 __migrated；主页搭一页要调上百次。
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<String, SharedPreferences> PREFS = new java.util.concurrent.ConcurrentHashMap<String, SharedPreferences>();
+
     static SharedPreferences prefs(Context c, String name) {
+        SharedPreferences hit = PREFS.get(name);
+        if (hit != null) return hit;
         Context app = c.getApplicationContext() != null ? c.getApplicationContext() : c;
         File d = dir(null);
         if (!d.canWrite()) return app.getSharedPreferences(name, Context.MODE_PRIVATE);   // fallback: never crash
@@ -70,6 +78,7 @@ final class Store {
             }
             e.putBoolean("__migrated", true).commit();
         }
+        PREFS.put(name, sp);
         return sp;
     }
 

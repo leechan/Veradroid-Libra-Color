@@ -38,7 +38,7 @@ final class VeraDialog {
         Builder negative(String label, Runnable action) { negative = label; negativeAction = action; return this; }
         Builder positive(String label, Runnable action) { positive = label; positiveAction = action; return this; }
 
-        void show() {
+        Dialog show() {
             final Dialog d = new Dialog(a);
             d.requestWindowFeature(Window.FEATURE_NO_TITLE);
             d.setCanceledOnTouchOutside(true);
@@ -131,6 +131,7 @@ final class VeraDialog {
                 w.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT);
                 w.setGravity(Gravity.CENTER);
             }
+            return d;
         }
 
         private int dp(int v) { return Ui.dp(a, v); }

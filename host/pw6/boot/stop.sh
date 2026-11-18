@@ -5,7 +5,7 @@
 VD=${VD:-$(cd "$(dirname "$0")/.." && pwd)}
 . "$VD/boot/lib/common.sh"
 for m in settings memory freeze framework container input network; do . "$VD/boot/lib/$m.sh"; done
-# VD_STOP_REASON：调用方说明为什么停（安装器等）。父进程常常已经退出，光看父进程看不出是谁停的（用户诊断 632015）
+# VD_STOP_REASON：调用方说明为什么停（安装器等）。父进程常常已经退出，光看父进程看不出是谁停的（用户诊断）
 [ "$1" = "--stale" ] || echo "[$(date +%H:%M:%S)] stop.sh called (parent $PPID: $(tr '\000' ' ' < /proc/$PPID/cmdline 2>/dev/null | cut -c1-120))${VD_STOP_REASON:+ reason: $VD_STOP_REASON}" >> $LOG
 STALE=; [ "$1" = "--stale" ] && STALE=1
 # 完整的 stop 和下一次启动不能叠在一起：负载高时 stop 可能跑很久，晚到的清理会删掉新一轮的 $W/fw、$W/kfb（kt5 模拟器实测）。
@@ -71,6 +71,8 @@ display_stop
 # 共用网络模式下传书开着时放行过的端口（cmd.sh fwd_on）：撤掉，不让 Kindle 的防火墙一直开着这个口
 case "$(cat $W/fwd.id 2>/dev/null)" in ipt:*) iptables -D INPUT -i "$(cut -d: -f3 $W/fwd.id)" -p tcp --dport "$(cut -d: -f2 $W/fwd.id)" -j ACCEPT 2>/dev/null ;; esac
 # saver_*：屏保期间被停掉时 sleep.sh 来不及删；残留的 saver_frozen 让下一次运行的看门狗一直当作在屏保（不预编译、不应用设置、蓝牙按键全丢；PW6 真机遇到）
+[ -f $W/adbfwd.ipt ] && iptables -D INPUT -i "$(cut -d: -f2 $W/adbfwd.ipt)" -p tcp --dport "$(cut -d: -f1 $W/adbfwd.ipt)" -j ACCEPT 2>/dev/null   # 无线调试（webadmin.sh）
+rm -f $W/adbfwd.ipt $W/adbfwd.id $W/adb.until $X/ctl/adb.on $SYS/data/misc/adb/adb_keys 2>/dev/null
 [ -f $W/fwd.ipt ] && iptables -D INPUT -i "$(cut -d: -f2 $W/fwd.ipt)" -p tcp --dport "$(cut -d: -f1 $W/fwd.ipt)" -j ACCEPT 2>/dev/null
 rm -f $W/fwd.id $W/fwd.ipt $W/epd.log $W/pid $W/unshare.pid $W/frozen $W/saver_frozen $W/saver_nofreeze $W/slirp.sock $W/slirp.log $W/resolv.conf $W/input.log $W/input.err
 
@@ -122,7 +124,7 @@ if [ -n "$SHUT" ]; then
     usleep 300000 2>/dev/null || sleep 1
 elif [ -z "$RS" ]; then
     # 正常退出也要清：cmd 监听派出去的后台小任务（切换 Wi-Fi 最长等 30 秒、网络诊断、存储信息……）是 veradroid.sh 的子 shell，
-    # 一直开着 $VD/boot 里的脚本文件和 $LOG。用户诊断 092A03（KT5，USB 大容量存储固件）：退出前 12 秒切过 Wi-Fi，退出以后它还在写
+    # 一直开着 $VD/boot 里的脚本文件和 $LOG。用户诊断（KT5，USB 大容量存储固件）：退出前 12 秒切过 Wi-Fi，退出以后它还在写
     # ctl/wifi.result。这种机型插上数据线时 volumd 要先卸掉 /mnt/base-us，有任何进程开着里面的文件就卸不掉，电脑上连不上，只能重启 Kindle。
     # 只杀：stop.sh 开始之前就在的、命令行里带 $VD/boot/ 的进程。不杀自己和祖先（调用方在等本脚本，例如 cmd 监听自己），
     # 不杀之后才起来的（退出过程中用户又点了启动：它在等这次 stop 结束）。脱离出去的卸载 / 整包更新 / 离线更新跑的是 tmpfs 副本，命令行里没有 $VD/boot/。

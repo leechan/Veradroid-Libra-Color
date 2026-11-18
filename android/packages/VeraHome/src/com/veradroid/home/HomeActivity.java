@@ -58,7 +58,8 @@ public class HomeActivity extends Activity {
     // “恢复默认设置”交给宿主恢复默认的设置项（显示、手势、返回方式）
     static final String[] RESET_KEYS = { "KFB_SETTLE", "KFB_MODE", "KFB_FLASH", "KFB_CONTRAST", "KFB_DITHER", "KFB_INVERT", "KFB_LIGHTF", "KFB_DARKEN", "KFB_GESTURES",
         "RETURN_MODE", "KFB_ANIM_MODE", "KFB_ANIM_STEPS", "KFB_ANIM_DIR", "KFB_ANIM_MIN", "KFB_SMOOTH", "KFB_PACE", "KFB_HOLD", "KFB_CLEAN", "KFB_REAGL_MIN",
-        "G_TL", "G_TR", "G_BL", "G_BR", "G_EDGE_BACK", "G_EDGE_PANEL", "G_TWO_TAP", "G_TWO_LONG", "G_TWO_BACK", "G_TWO_SLIDE", "G_BACK_EXCLUDE" };
+        "G_TL", "G_TR", "G_BL", "G_BR", "G_EDGE_BACK", "G_EDGE_PANEL", "G_TWO_TAP", "G_TWO_LONG", "G_TWO_BACK", "G_TWO_SLIDE", "G_BACK_EXCLUDE",
+        "G_EDGE_THIRDS", "G_EB_L", "G_EB_M", "G_EB_R", "G_EB_HOLD", "G_EB_HOLD_MS" };
 
     private final Handler handler = new Handler();
     private final List<ResolveInfo> apps = new ArrayList<ResolveInfo>();
@@ -107,8 +108,10 @@ public class HomeActivity extends Activity {
     private static final String[] DNS_L = { "自动（Wi-Fi 给的）", "阿里 223.5.5.5", "腾讯 119.29.29.29", "Google 8.8.8.8" };
     private static final String[] DNS_V = { "auto", "aliyun", "tencent", "google" };
     private static final String[] RETURN_V = { "freeze", "off" };
-    private static final String[] ACT_L = { "不做操作", "返回", "回到桌面", "回到主界面", "打开面板", "切换应用", "清除残影", "反色" };
-    private static final String[] ACT_V = { "none", "back", "home", "kindle", "panel", "switch", "clear", "invert" };
+    private static final String[] ACT_L = { "不做操作", "返回", "回到桌面", "回到主界面", "打开面板", "切换应用", "清除残影", "反色", "当前应用的显示设置" };
+    private static final String[] ACT_V = { "none", "back", "home", "kindle", "panel", "switch", "clear", "invert", "appopt" };
+    private static final String[] HOLD_MS_L = { "0.3 秒", "0.5 秒", "0.8 秒", "1.2 秒" };
+    private static final String[] HOLD_MS_V = { "300", "500", "800", "1200" };
     // 哪些应用在前台时不做“底边上划返回”（这些应用自己用上划，例如微信读书的阅读工具栏）
     private static final String[] EXCL_L = { "不排除", "微信读书", "微信读书、番茄、晋江" };
     private static final String[] EXCL_V = { "none", "com.tencent.weread.eink", "com.tencent.weread.eink,com.dragon.read,com.jjwxc.reader" };
@@ -156,6 +159,19 @@ public class HomeActivity extends Activity {
         super.onConfigurationChanged(c);
         handler.removeCallbacks(densityCheck);
         if (resumed && c.densityDpi != builtDpi) handler.postDelayed(densityCheck, 1500);
+    }
+
+    /**
+     * 回桌面用的 Intent：MAIN + HOME、只限本包、不写组件名。写了组件名（new Intent(c, HomeActivity.class)）的话，
+     * ActivityManager 不把它当成桌面，在应用的栈里另开一个任务、再建一个 HomeActivity（onCreate + 整页重搭，
+     * 回桌面要多花一倍时间，内存里也多一份主页），之后返回键还会退回到这个副本。这样走的是已经在的那一个（onNewIntent）。
+     */
+    static Intent homeIntent(Context c) {
+        Intent i = new Intent(Intent.ACTION_MAIN);
+        i.addCategory(Intent.CATEGORY_HOME);
+        i.setPackage(c.getPackageName());
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        return i;
     }
 
     @Override protected void onCreate(Bundle b) {
@@ -281,15 +297,23 @@ public class HomeActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         // 方块风格的“继续阅读”：刚离开的第三方应用最后的画面，趁主页还没画先从显示缓冲里取一张缩略图
-        if (Blocks.on(this) && leftForApp && !standalone) { leftForApp = false; try { BlocksCards.captureLastApp(this, BlocksCards.lastForeground(this)); } catch (Throwable t) { android.util.Log.w("VeraHome", "lastapp: " + t); } }
+        if (Blocks.on(this) && leftForApp && !standalone) { leftForApp = false; try { BlocksCards.captureLastApp(this); } catch (Throwable t) { android.util.Log.w("VeraHome", "lastapp: " + t); } }
         resumed = true;
         // 桌面到了前台：马上告诉宿主（换回默认密度、桌面的显示参数），不等任务栈通知——那个通知有时晚好几秒，偶尔整个漏掉
         if (!standalone && AppProf.host()) HostService.foregroundHome();
         // 离开时密度被换过（多看），回来时宿主马上会换回默认（fg home）：等一会儿还不一样才重建（densityCheck）
         handler.removeCallbacks(densityCheck);
         if (getResources().getConfiguration().densityDpi != builtDpi) handler.postDelayed(densityCheck, 1500);
-        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-        if (imm != null) imm.hideSoftInputFromWindow(getWindow().getDecorView().getWindowToken(), 0);
+        // 收起输入法是一次跨进程调用：从应用回来时系统正忙，单核机型上主线程要在这里等一秒多（模拟器实测 1.2 s）才开始画主页。
+        // 放到后台线程去发（窗口本来就是 SOFT_INPUT_STATE_ALWAYS_HIDDEN，这只是保险）
+        final InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        final android.os.IBinder tok = getWindow().getDecorView().getWindowToken();
+        // 晚一秒再发：不和主页这一帧的排版 / 画完通知（同样要进 system_server 的窗口锁）挤在一起
+        if (imm != null && tok != null) handler.postDelayed(new Runnable() { @Override public void run() {
+            new Thread(new Runnable() { @Override public void run() {
+                try { imm.hideSoftInputFromWindow(tok, 0); } catch (Throwable ignored) { }
+            } }, "hide-ime").start();
+        } }, 1000);
         StatusBarService.setSuppressed(true);
         StatusBarService.refresh(this);
         HostLink.cmd("status");
@@ -299,7 +323,7 @@ public class HomeActivity extends Activity {
         if (standalone) { if (appsLoadedAt == 0) reload(); refreshStatus(); }
         else if (!inSettings) {
             // Returning from an app does not change the launcher list; keep the existing e-ink grid.
-            if (appsLoadedAt == 0) reload();
+            if (appsLoadedAt == 0) { if (blocks != null) reloadAfterFirstDraw(); else reload(); }
             else if (!iconKey().equals(iconCacheKey)) showHome();   // 主题变了：同步重画这一页
             Update.maybe(this);
             // 从阅读器 / 应用回来：进度、时间在窗口重新画出来之前就同步改好，不留到之后再补一次
@@ -351,25 +375,23 @@ public class HomeActivity extends Activity {
      * 手指正按在桌面上：这时不换整页（BlocksHome.dataChanged 等到抬手）。从阅读器 / 应用回来后书库进度、封面、统计会在后台陆续更新，
      * 首页整页重搭——按下落在旧的那一页上、抬手时它已经被换掉，这一下点按就丢了（用户：“继续阅读”“最近阅读”要点两次）。
      */
-    private boolean touching;
     private final List<Runnable> afterTouch = new ArrayList<Runnable>();
-    boolean touching() { return touching; }
+    /** 触摸入口：只交一根手指给系统、手势中间页面换了就取消、系统分发出错不崩（见 TouchGuard）。 */
+    private final TouchGuard touchGuard = new TouchGuard(new TouchGuard.Target() {
+        @Override public boolean superDispatch(android.view.MotionEvent e) { return HomeActivity.super.dispatchTouchEvent(e); }
+        @Override public void gestureEnded() {
+            if (afterTouch.isEmpty()) return;
+            final List<Runnable> l = new ArrayList<Runnable>(afterTouch);
+            afterTouch.clear();
+            // 抬手的点按（performClick）是 post 出去的：排在它后面再重搭，点到的还是原来那一页
+            handler.post(new Runnable() { @Override public void run() { for (Runnable x : l) x.run(); } });
+        }
+    });
+    boolean touching() { return touchGuard.active(); }
     void afterTouch(Runnable r) { if (!afterTouch.contains(r)) afterTouch.add(r); }
     @Override public boolean dispatchTouchEvent(android.view.MotionEvent e) {
         Perf.touch(e);
-        int act = e.getActionMasked();
-        if (act == android.view.MotionEvent.ACTION_DOWN) touching = true;
-        boolean r = super.dispatchTouchEvent(e);
-        if (act == android.view.MotionEvent.ACTION_UP || act == android.view.MotionEvent.ACTION_CANCEL) {
-            touching = false;
-            if (!afterTouch.isEmpty()) {
-                final List<Runnable> l = new ArrayList<Runnable>(afterTouch);
-                afterTouch.clear();
-                // 抬手的点按（performClick）是 post 出去的：排在它后面再重搭，点到的还是原来那一页
-                handler.post(new Runnable() { @Override public void run() { for (Runnable x : l) x.run(); } });
-            }
-        }
-        return r;
+        return touchGuard.dispatch(e, getWindow().getDecorView());
     }
 
     private float scale() { return SIZE_SCALE[Math.min(SIZES.length - 1, Math.max(0, prefs.getInt("size", 1)))]; }
@@ -418,7 +440,10 @@ public class HomeActivity extends Activity {
     View perfRoot() { return page; }
     Handler handler() { return handler; }
     List<ResolveInfo> appList() { return apps; }
-    long appsVersion() { return appsLoadedAt; }
+    /** 应用列表的版本：只在列表、顺序、名字或图标设置真变了时加一（见 reload）。 */
+    long appsVersion() { return appsGen; }
+    private long appsGen;
+    private String appsIconKey = "";
     ResolveInfo findApp(String pkg) { for (ResolveInfo ri : apps) if (ri.activityInfo.packageName.equals(pkg)) return ri; return null; }
     void refreshStatusNow() { refreshStatus(); }
     /** 方块风格“应用”页的排序按钮：和设置里的“应用排序”是同一个偏好。 */
@@ -559,11 +584,26 @@ public class HomeActivity extends Activity {
         v.measure(View.MeasureSpec.makeMeasureSpec(parent.getWidth(), View.MeasureSpec.EXACTLY),
                   View.MeasureSpec.makeMeasureSpec(parent.getHeight(), View.MeasureSpec.EXACTLY));
         v.layout(0, 0, parent.getWidth(), parent.getHeight());
-        try {
-            Bitmap warm = Bitmap.createBitmap(parent.getWidth(), parent.getHeight(), Bitmap.Config.RGB_565);
-            v.draw(new android.graphics.Canvas(warm));
-            warm.recycle();
-        } catch (Throwable ignored) { }
+        try { v.draw(warmCanvas(parent.getWidth(), parent.getHeight())); } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 预先画一遍用的那张不显示的位图：整个预搭过程共用一张，搭完就放掉（{@link #dropWarm}）。以前每预搭一页就新建一张整屏大小的位图再回收，
+     * 开机后五六秒里每 0.3 秒扔掉 2–5 MB，单核的老机型上后台 GC 一直在跑（用户诊断：开机后的 GC 每次都释放几 MB 的大对象）。
+     */
+    private Bitmap warmBmp;
+    private android.graphics.Canvas warmCv;
+    private android.graphics.Canvas warmCanvas(int w, int h) {
+        if (warmBmp == null || warmBmp.getWidth() != w || warmBmp.getHeight() != h) {
+            dropWarm();
+            warmBmp = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565);
+            warmCv = new android.graphics.Canvas(warmBmp);
+        }
+        return warmCv;
+    }
+    private void dropWarm() {
+        if (warmBmp != null) warmBmp.recycle();
+        warmBmp = null; warmCv = null;
     }
 
     /** 面板 / 宿主里的“设置”：方块风格打开“我的”（方块的设置），经典风格打开经典设置。 */
@@ -577,7 +617,8 @@ public class HomeActivity extends Activity {
         inSettings = false;
         if (blocks == null) { blocks = new BlocksHome(this); if (!standalone) BlocksCards.startListening(this); }
         refreshStatus();
-        if (appsLoadedAt == 0 || prefs.getInt("sort", 0) != loadedSort) reload();
+        if (appsLoadedAt == 0) reloadAfterFirstDraw();
+        else if (prefs.getInt("sort", 0) != loadedSort) reload();
         blocks.show(key < 0 ? blocks.current() : key);
         showOnly(blocks.root());
         prebuildSettingsSoon();
@@ -1088,6 +1129,67 @@ public class HomeActivity extends Activity {
     }
 
     private int reloadGen;
+    private boolean reloadQueued, firstDrawn;
+
+    /**
+     * 方块风格开机第一次读应用列表：等主页第一帧画出来再开始。以前 onCreate 和 onResume 各起一个读取线程，
+     * 而且图标从磁盘缓存读得快时，结果会赶在第一帧之前回来，首页还没画就要再换一次卡片；读取时对系统服务的一串跨进程调用
+     * 也和窗口的第一次排版抢 system_server（单核机型上第一帧要多等几百毫秒）。经典风格的网格要等应用列表（holdFirstFrame），照旧马上读。
+     */
+    private void reloadAfterFirstDraw() {
+        if (reloadGen > 0) return;   // 第一次读取已经开始了（还没回来）
+        if (firstDrawn) { reload(); return; }
+        if (reloadQueued) return;
+        reloadQueued = true;
+        Perf.whenAttached(page, new Runnable() { @Override public void run() {
+            page.getViewTreeObserver().addOnDrawListener(new android.view.ViewTreeObserver.OnDrawListener() {
+                private boolean done;
+                @Override public void onDraw() {
+                    if (done) return;
+                    done = true;
+                    final android.view.ViewTreeObserver.OnDrawListener self = this;
+                    handler.post(new Runnable() { @Override public void run() {
+                        try { page.getViewTreeObserver().removeOnDrawListener(self); } catch (Throwable ignored) { }
+                        firstDrawn = true;
+                        reloadQueued = false;
+                        if (appsLoadedAt == 0) reload();
+                    } });
+                }
+            });
+        } });
+    }
+
+    /**
+     * 后台读应用列表时用：做好的图标（已经按大小、样式画好的那张）存在缓存目录里，下次进程起来直接解这张小 PNG，
+     * 不再每次开机都从每个 APK 里读资源、缩放、重画（单核机型上一个应用几十毫秒）。应用更新、图标设置或主题变了，文件名就变了。
+     */
+    private Drawable cachedIcon(ResolveInfo ri, int size, int style, long upd, String ik) {
+        String pkg = ri.activityInfo.packageName;
+        File dir = Store.cache("icons");
+        String prefix = pkg + "-" + Integer.toHexString(ri.activityInfo.name.hashCode()) + "-";
+        String name = prefix + Integer.toHexString((upd + "|" + size + "|" + style + "|" + ik).hashCode()) + ".png";
+        File f = new File(dir, name);
+        if (upd > 0 && f.isFile()) {
+            try {
+                BitmapFactory.Options o = new BitmapFactory.Options();
+                o.inScaled = false;
+                Bitmap bm = BitmapFactory.decodeFile(f.getAbsolutePath(), o);
+                if (bm != null && bm.getWidth() == size) return new android.graphics.drawable.BitmapDrawable(getResources(), bm);
+            } catch (Throwable ignored) { }
+        }
+        Drawable d = loadIcon(ri, size, style);
+        if (upd > 0 && d instanceof android.graphics.drawable.BitmapDrawable) {
+            File[] old = dir.listFiles();
+            if (old != null) for (File x : old) if (x.getName().startsWith(prefix)) x.delete();
+            File tmp = new File(dir, name + ".tmp");
+            try {
+                java.io.FileOutputStream out = new java.io.FileOutputStream(tmp);
+                try { ((android.graphics.drawable.BitmapDrawable) d).getBitmap().compress(Bitmap.CompressFormat.PNG, 100, out); } finally { out.close(); }
+                if (!tmp.renameTo(f)) tmp.delete();
+            } catch (Throwable t) { tmp.delete(); }
+        }
+        return d;
+    }
 
     /**
      * 重新读已装应用：查询、取名称 / 安装时间、排序、解码图标都在后台线程做，完了回主线程一次换掉列表再画网格。
@@ -1101,6 +1203,7 @@ public class HomeActivity extends Activity {
         final int size = iconPx(), style = iconStyle();
         new Thread(new Runnable() {
             @Override public void run() {
+                Ui.lowPriority();
                 final List<ResolveInfo> list = new ArrayList<ResolveInfo>();
                 final Map<String, Long> inst = new HashMap<String, Long>();
                 final Map<String, String> labels = new HashMap<String, String>();
@@ -1115,8 +1218,9 @@ public class HomeActivity extends Activity {
                         if ((ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0 && (ai.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0) continue;
                         list.add(ri);
                         try { labels.put(pkg, String.valueOf(ri.loadLabel(pm))); } catch (Throwable ignored) { }
-                        try { inst.put(pkg, pm.getPackageInfo(pkg, 0).firstInstallTime); } catch (Exception ignored) { }
-                        try { icons.put(pkg, loadIcon(ri, size, style)); } catch (Throwable ignored) { }
+                        long upd = 0;
+                        try { android.content.pm.PackageInfo pi = pm.getPackageInfo(pkg, 0); inst.put(pkg, pi.firstInstallTime); upd = pi.lastUpdateTime; } catch (Exception ignored) { }
+                        try { icons.put(pkg, cachedIcon(ri, size, style, upd, ik)); } catch (Throwable ignored) { }
                     }
                     final Collator zh = Collator.getInstance(Locale.CHINA);
                     Collections.sort(list, new Comparator<ResolveInfo>() {
@@ -1140,7 +1244,12 @@ public class HomeActivity extends Activity {
                     @Override public void run() {
                         if (gen != reloadGen || isDestroyed()) return;
                         // 和屏幕上的一样（同样的应用、顺序、名字，图标也是同一套设置做的）就不重画：没有平白多出的一次刷新
-                        boolean same = gridRenderedAt > 0 && ik.equals(iconCacheKey) && sameApps(list, labels);
+                        boolean sameList = sameApps(list, labels) && ik.equals(appsIconKey);
+                        boolean same = gridRenderedAt > 0 && ik.equals(iconCacheKey) && sameList;
+                        // 方块风格的页面按 appsVersion 认“应用变了没有”：只有列表 / 顺序 / 名字 / 图标设置真变了才算新版本，
+                        // 不然每读一次（开机、回到前台、装卸别的应用）首页和应用页都要整页重搭一次
+                        if (!sameList) appsGen++;
+                        appsIconKey = ik;
                         apps.clear(); apps.addAll(list);
                         installed.clear(); installed.putAll(inst);
                         appLabels.clear(); appLabels.putAll(labels);
@@ -1238,7 +1347,7 @@ public class HomeActivity extends Activity {
         } });
         if (Theme.hasOwnIcon(pkg)) { items.add("恢复默认图标"); acts.add(new Runnable() { @Override public void run() { Theme.clearIcon(pkg); iconChanged(pkg); } }); }
         items.add("重命名…"); acts.add(new Runnable() { @Override public void run() { renameDialog(ri); } });
-        items.add("显示效果"); acts.add(new Runnable() { @Override public void run() {
+        items.add("应用优化"); acts.add(new Runnable() { @Override public void run() {
             Intent i = new Intent(HomeActivity.this, AppDisplayActivity.class); i.putExtra("pkg", pkg); i.putExtra("label", name); startActivity(i);
         } });
         if (Cleaner.userApp(this, pkg)) {
@@ -1274,6 +1383,8 @@ public class HomeActivity extends Activity {
         iconCacheKey = iconKey();       // 别的应用的图标还能用
         iconCache.remove(pkg);
         SwitcherActivity.ICONS.remove(pkg);
+        appsGen++; appsIconKey = iconCacheKey;
+        if (blocks != null) blocks.appsChanged();
         if (!inSettings && mainTab == TAB_HOME) renderGrid(); else gridRenderedAt = 0;
         changed();
     }
@@ -1297,6 +1408,8 @@ public class HomeActivity extends Activity {
                     if (t.length() > 16) t = t.substring(0, 16);
                     if (t.length() == 0 || t.equals(appLabels.get(pkg))) prefs.edit().remove("label_" + pkg).apply();
                     else prefs.edit().putString("label_" + pkg, t).apply();
+                    appsGen++;
+                    if (blocks != null) blocks.appsChanged();
                     renderGrid();
                     changed();
                 }
@@ -1793,10 +1906,12 @@ public class HomeActivity extends Activity {
     private int prebuildNext = -1;
     private final Runnable prebuild = new Runnable() {
         @Override public void run() {
-            if (inSettings || isFinishing()) return;
+            if (inSettings || isFinishing()) { dropWarm(); return; }
             if (page.getWidth() == 0) { prebuildSettingsSoon(); return; }   // 开机时主页还没排版：等一会儿再搭
+            // 预搭一页要在主线程上占几百毫秒（单核机型上更久）：手指按着或刚点过就先不搭，免得点按要排在它后面等
+            if (touching() || android.os.SystemClock.uptimeMillis() - Perf.start < 2000) { handler.postDelayed(this, 1000); return; }
             if (blocks != null && Blocks.on(HomeActivity.this)) {
-                if (!blocks.prebuilt()) { blocks.prebuild(page); handler.postDelayed(this, 300); }
+                if (!blocks.prebuilt()) { blocks.prebuild(page); handler.postDelayed(this, 300); } else dropWarm();
                 return;   // 方块风格：经典的书库 / 设置页不预先搭（进经典设置时当场搭）
             }
             // 书库页先搭好（第一页的封面这时同步解码）：第一次点“书库”和以后每次一样，只是换一棵树
@@ -1815,6 +1930,7 @@ public class HomeActivity extends Activity {
                 handler.postDelayed(this, 300);
                 return;
             }
+            dropWarm();
         }
     };
 
@@ -1829,11 +1945,7 @@ public class HomeActivity extends Activity {
         v.layout(0, 0, page.getWidth(), page.getHeight());
         // 再往一张不显示的位图上画一遍：第一次画一页中文要现栅格化每个字形，这一步占了第一次打开的大半时间；
         // 画过一次字形就在进程的缓存里了。位图用完就回收。
-        try {
-            Bitmap warm = Bitmap.createBitmap(page.getWidth(), page.getHeight(), Bitmap.Config.RGB_565);
-            v.draw(new android.graphics.Canvas(warm));
-            warm.recycle();
-        } catch (Throwable ignored) { }
+        try { v.draw(warmCanvas(page.getWidth(), page.getHeight())); } catch (Throwable ignored) { }
     }
 
     private void prebuildSettingsSoon() { if (standalone) return; handler.removeCallbacks(prebuild); handler.postDelayed(prebuild, 1500); }
@@ -1980,6 +2092,13 @@ public class HomeActivity extends Activity {
             section(list, "单个手势（每个都能单独关，立即生效）");
             hostChoice(list, host, "从最下边往上划：返回", "从屏幕最下边一小条往上划，相当于返回键。和应用自己的上划冲突时可以关掉，或者用下一项只在某些应用里关掉。", "G_EDGE_BACK", ONOFF_L, ONOFF_V, "1");
             hostChoice(list, host, "这些应用里不用上划返回", "微信读书在阅读页上划会呼出底部工具栏。这些应用在前台时，上划直接交给应用；要返回可以用两根手指左右滑。", "G_BACK_EXCLUDE", EXCL_L, EXCL_V, "com.tencent.weread.eink");
+            hostChoice(list, host, "底边分三段", "开：从最下边的左、中、右三分之一往上划分别做下面三项，往上划后停住不动做“上划停住”。关：整条底边上划都是返回。要上面的“从最下边往上划”开着。",
+                "G_EDGE_THIRDS", ONOFF_L, ONOFF_V, "0");
+            hostChoice(list, host, "　左段上划", "默认：当前应用的显示设置（应用优化；在桌面上打开面板）。", "G_EB_L", ACT_L, ACT_V, "appopt");
+            hostChoice(list, host, "　中段上划", "默认：回到桌面。", "G_EB_M", ACT_L, ACT_V, "home");
+            hostChoice(list, host, "　右段上划", "默认：返回。", "G_EB_R", ACT_L, ACT_V, "back");
+            hostChoice(list, host, "　上划后停住", "往上划，手指停住不动一会儿再松开。默认：切换应用（最近任务）。选“不做操作”时三段一划到就生效，不用等松手。", "G_EB_HOLD", ACT_L, ACT_V, "switch");
+            hostChoice(list, host, "　停住多久", "停住不动这么久算“上划停住”。", "G_EB_HOLD_MS", HOLD_MS_L, HOLD_MS_V, "500");
             hostChoice(list, host, "从最上边往下划：打开面板", "亮度、色温、通知、关机。", "G_EDGE_PANEL", ONOFF_L, ONOFF_V, "1");
             hostChoice(list, host, "两根手指轻点：清除残影", "整屏刷新一次。", "G_TWO_TAP", ONOFF_L, ONOFF_V, "1");
             hostChoice(list, host, "两根手指长按 2 秒：反色", "白字黑底 / 黑字白底切换。", "G_TWO_LONG", ONOFF_L, ONOFF_V, "1");
@@ -2070,6 +2189,12 @@ public class HomeActivity extends Activity {
                         }
                     }).selected(SysUpdate.mode()).negative("取消", null).show();
                 }
+            });
+            action(list, "更新前备份", BackupActivity.desc(), "选择", new View.OnClickListener() {
+                @Override public void onClick(View v) { BackupActivity.choose(HomeActivity.this, new Runnable() { @Override public void run() { showSettings(); } }); }
+            });
+            action(list, "已备份的数据", "更新前的备份放在 Kindle 上，占多少地方、哪天做的；不要的可以删掉。", "查看", new View.OnClickListener() {
+                @Override public void onClick(View v) { startActivity(new Intent(HomeActivity.this, BackupActivity.class)); }
             });
             section(list, "设备");
             localChoice(list, "后台保留应用", "前台以外最多留几个自己装的应用在后台，多出来的（最久没用的）在换应用 3 秒后停掉，省内存。应用长按 → 保持后台 的不算。",
@@ -2208,7 +2333,7 @@ public class HomeActivity extends Activity {
         if (t.running()) {
             Map<String, String> st = HostLink.kv(HostLink.CTL + "status");
             String ip = st.get("lanip");
-            sb.append(ip == null || ip.length() == 0 ? "正在获取地址…（一直这样的话，请先把 Kindle 连上 Wi-Fi）" : "http://" + ip + ":" + Transfer.PORT);
+            sb.append(ip == null || ip.length() == 0 ? "正在获取地址…（一直这样的话，请先把 Kindle 连上 Wi-Fi）" : "http://" + ip + ":" + t.port());
             sb.append("\nPIN  ").append(t.pin());
             String work = t.statusText();
             if (work.length() > 0) sb.append("\n\n").append(work.trim());
@@ -2226,7 +2351,7 @@ public class HomeActivity extends Activity {
             @Override public void onToggle(boolean on) {
                 if (on) {
                     t.setIdleMinutes(prefs.getInt("xfer_idle", 30));
-                    if (!t.start()) say("打不开传输服务（端口被占用？）");
+                    if (!t.start()) say("打不开传输服务：" + t.lastError());
                 } else t.stop();
                 HostLink.cmd("status");
                 handler.postDelayed(new Runnable() { @Override public void run() { showSettings(); } }, 900);
@@ -2275,6 +2400,14 @@ public class HomeActivity extends Activity {
         action(list, "传书页面", "单独一页显示地址和 PIN，字更大，方便照着在手机上输入。", "打开", new View.OnClickListener() {
             @Override public void onClick(View v) { startActivity(new Intent(HomeActivity.this, TransferActivity.class).addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)); overridePendingTransition(0, 0); }
         });
+        // 无线调试（adb）：默认关，只认传书网页里添加过的电脑公钥，30 分钟后自动关（AdbWifi / 宿主 webadmin.sh）
+        LinearLayout ra = row(list, "无线调试 (adb)", AdbWifi.DESC);
+        Icons.Toggle.Listener al = new Icons.Toggle.Listener() {
+            @Override public void onToggle(boolean on) {
+                AdbWifi.set(HomeActivity.this, on, 30, new Runnable() { @Override public void run() { showSettings(); } });
+            }
+        };
+        ((LinearLayout) ra.getTag()).addView(bs ? new Blocks.Switch(this, AdbWifi.on(), al) : new Icons.Toggle(this, AdbWifi.on(), al));
     }
 
     private LinearLayout row(LinearLayout list, String title, String desc) {

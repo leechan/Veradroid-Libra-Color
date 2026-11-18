@@ -338,6 +338,18 @@ img.shot{max-width:100%;max-height:75vh;border-radius:10px;border:1px solid var(
    <div class="btns" style="margin-top:8px"><button class="btn sm" id="sshKeyPick">从 .pub 文件读取</button><input type="file" id="sshKeyFile" accept=".pub,text/plain" hidden>
     <input type="password" id="sshPin" inputmode="numeric" maxlength="4" placeholder="再输一次 PIN" style="width:130px"><button class="btn sm pri" id="sshAdd">添加公钥</button></div></div>
  </div>
+ <div class="grid">
+  <div class="card"><div class="h"><svg class="i" data-i="terminal"></svg>无线调试（adb）<span class="sp"></span><span id="adbBadge"></span></div>
+   <div id="adbState"><div class="skel"></div></div>
+   <div class="btns" style="margin-top:12px"><select id="adbMin"><option value="15">15 分钟</option><option value="30" selected>30 分钟</option><option value="60">1 小时</option><option value="120">2 小时</option></select>
+    <input type="password" id="adbPin" inputmode="numeric" maxlength="4" placeholder="再输一次 PIN" style="width:130px"><button class="btn pri" id="adbStart">打开无线调试</button><button class="btn" id="adbStop">关闭</button></div>
+   <div class="note">打开后，<b>添加过公钥的电脑</b>可以用 <code>adb connect</code> 连进 Android：传文件（<code>adb push</code> / <code>adb pull</code>）、装应用（<code>adb install</code>）、看日志。它能完全控制 Android（包括 <code>adb root</code>），所以默认关、只在同一个 Wi-Fi 里能连、到时间自动关；用完请关。没有公钥的电脑连上也只会显示 unauthorized。</div></div>
+  <div class="card"><div class="h"><svg class="i" data-i="key"></svg>允许连接的电脑（adb 公钥）</div><div id="adbKeys" class="list"></div>
+   <p class="sub">电脑上先跑一次 <code>adb devices</code>（会自动生成密钥），再把 <code>~/.android/adbkey.pub</code>（Windows：<code>%USERPROFILE%\.android\adbkey.pub</code>）的内容贴到这里。<b>不要</b>贴没有 .pub 的 adbkey，那是私钥。</p>
+   <textarea id="adbKey" rows="3" placeholder="QAAAA… you@computer"></textarea>
+   <div class="btns" style="margin-top:8px"><button class="btn sm" id="adbKeyPick">从 adbkey.pub 读取</button><input type="file" id="adbKeyFile" accept=".pub,text/plain" hidden>
+    <input type="password" id="adbKeyPin" inputmode="numeric" maxlength="4" placeholder="再输一次 PIN" style="width:130px"><button class="btn sm pri" id="adbAdd">添加公钥</button></div></div>
+ </div>
  <div class="card"><div class="h"><svg class="i" data-i="send"></svg>诊断日志</div><p class="sub">把 VeraDroid 的日志和系统状态打包上传到 VeraDroid 服务器，反馈问题时告诉我们编号。不含书和账号密码。</p>
   <div class="btns"><button class="btn pri" id="diagBtn">上传诊断日志</button><span id="diagSt" class="sub"></span><span class="sp" style="flex:1"></span><button class="btn sm" data-go="log">查看日志</button></div></div>
 </section>
@@ -501,7 +513,7 @@ function show(t){if(!$('s-'+t))t='ov';cur=t;var secs=document.querySelectorAll('
  try{history.replaceState(null,'','#'+t)}catch(e){}
  stopTimers();every('tasks',3000,pollTasks);
  ({ov:function(){loadOv();every('ov',8000,loadOv)},files:function(){fsOpen(FS.root,FS.path)},apps:function(){loadApps();loadCompile();every('comp',4000,loadCompile)},
-   run:function(){loadRun();every('run',5000,function(){if($('runAuto').checked)loadRun()})},log:function(){loadLog()},ssh:loadSsh,bt:loadBt,storage:loadStorage,sys:loadSys,theme:loadTheme,up:pollTasks}[t]||function(){})();
+   run:function(){loadRun();every('run',5000,function(){if($('runAuto').checked)loadRun()})},log:function(){loadLog()},ssh:function(){loadSsh();loadAdb()},bt:loadBt,storage:loadStorage,sys:loadSys,theme:loadTheme,up:pollTasks}[t]||function(){})();
  window.scrollTo(0,0)}
 function applyTheme(){var m=localStorage.getItem('vd-theme')||'';if(m)document.documentElement.setAttribute('data-theme',m);else document.documentElement.removeAttribute('data-theme');
  var dark=m==='dark'||(!m&&matchMedia('(prefers-color-scheme: dark)').matches);$('themeBtn').innerHTML=svg(dark?'sun':'moon')+'<span>'+(m?(dark?'深色（手动）':'浅色（手动）'):'跟随系统')+'</span>'}
@@ -947,6 +959,28 @@ $('sshAdd').onclick=function(){var k=$('sshKey').value.trim();if(!k){toast('先�
  if(!$('sshPin').value){toast('为了安全，添加公钥前要再输一次 Kindle 上的 PIN','err');$('sshPin').focus();return}
  post('/api/ssh/key',{key:k,pin:$('sshPin').value}).then(function(j){$('sshPin').value='';if(j.ok){$('sshKey').value='';toast(j.msg==='exists'?'这把公钥已经在里面了':'公钥已添加'+(j.running==='1'?'：关掉 SSH 再打开后生效':''),'ok');sshRender(j)}else toast(j.msg||'失败','err')})};
 $('sshKeys').onclick=function(e){var n=e.target.getAttribute('data-kdel');if(!n)return;confirmBox('删除这把公钥？','它的主人以后就不能登录了（开着的 SSH 要关掉再开才生效）。','删除',true).then(function(ok){if(ok)post('/api/ssh/keydel',{n:+n}).then(function(j){if(!j.ok)toast(j.msg||'失败','err');sshRender(j)})})};
+/* =================================================================== 无线调试（adb） */
+function adbRender(j){var on=j.running==='1',sup=j.supported!=='0',ep=j.ip?j.ip+':'+(j.port||5555):'';
+ setHTML('adbBadge',!sup?chip('err','','不支持'):on?chip('warn','','开着'+(j.left?'（还有 '+j.left+' 分钟）':'')):chip('','','关闭'));
+ var s='<dl class="kv">'+kv([['地址',ep||'（没有 Wi-Fi 地址）'],['连接命令',on&&ep?'<code>adb connect '+esc(ep)+'</code> <button class="btn sm ghost" data-copy="adb connect '+esc(ep)+'">'+svg('copy')+'</button>':'',1],
+  ['传文件示例',on&&ep?'<code>adb -s '+esc(ep)+' push 书.epub /sdcard/Books/</code>':'',1]])+'</dl>';
+ if(!sup)s='<div class="note err">这台 Kindle 的内核没有 IPv6，Android 7.1 的 adb 在它上面开不了无线调试。请用这个网页的“文件”或 USB 管理文件。</div>'+s;
+ if(j.ok===false&&j.msg)s='<div class="note err">'+esc(j.msg)+'</div>'+s;
+ setHTML('adbState',s);$('adbStart').disabled=on||!sup;$('adbStop').disabled=!on;
+ var k='';(j.keys||[]).forEach(function(x){k+='<div class="item">'+svg('key')+'<div class="grow"><div class="ell"><code>…'+esc(x.tail)+'</code></div><div class="sub">'+esc(x.comment||'（没有注释）')+'</div></div><button class="btn sm dan" data-adel="'+esc(x.n)+'">删除</button></div>'});
+ setHTML('adbKeys',k||empty('key','还没有公钥：没有公钥时无线调试不会打开'))}
+function loadAdb(){api('/api/adb').then(adbRender).catch(function(){})}
+$('adbStart').onclick=function(){if(!$('adbPin').value){toast('为了安全，打开无线调试前要再输一次 Kindle 上的 PIN','err');$('adbPin').focus();return}
+ var b=$('adbStart');b.disabled=true;b.innerHTML='<span class="spin"></span>正在打开';
+ post('/api/adb/start',{min:+$('adbMin').value,pin:$('adbPin').value}).then(function(j){$('adbPin').value='';b.textContent='打开无线调试';adbRender(j);toast(j.running==='1'?'无线调试已打开':(j.msg||'没打开'),j.running==='1'?'ok':'err')}).catch(function(){b.disabled=false})};
+$('adbStop').onclick=function(){post('/api/adb/stop').then(function(j){adbRender(j);toast('无线调试已关闭','ok')})};
+$('adbKeyPick').onclick=function(){$('adbKeyFile').click()};
+$('adbKeyFile').onchange=function(){var f=this.files[0];if(!f)return;if(f.size>4096){toast('这不像 adbkey.pub（太大了）','err');return}var r=new FileReader();r.onload=function(){$('adbKey').value=String(r.result).trim()};r.readAsText(f);this.value=''};
+$('adbAdd').onclick=function(){var k=$('adbKey').value.trim();if(!k){toast('先贴上公钥','err');return}
+ if(/PRIVATE KEY/.test(k)){toast('这是私钥 adbkey！请用同一个文件夹里的 adbkey.pub。','err');return}
+ if(!$('adbKeyPin').value){toast('为了安全，添加公钥前要再输一次 Kindle 上的 PIN','err');$('adbKeyPin').focus();return}
+ post('/api/adb/key',{key:k,pin:$('adbKeyPin').value}).then(function(j){$('adbKeyPin').value='';if(j.ok){$('adbKey').value='';toast(j.msg==='exists'?'这把公钥已经在里面了':'公钥已添加','ok');adbRender(j)}else toast(j.msg||'失败','err')})};
+$('adbKeys').onclick=function(e){var n=e.target.getAttribute('data-adel');if(!n)return;confirmBox('删除这把公钥？','这台电脑以后就连不上无线调试了。','删除',true).then(function(ok){if(ok)post('/api/adb/keydel',{n:+n}).then(function(j){if(!j.ok)toast(j.msg||'失败','err');adbRender(j)})})};
 $('diagBtn').onclick=function(){confirmBox('上传诊断日志？','把 VeraDroid 的日志和系统状态上传到 VeraDroid 服务器（不含你的书和账号密码）。','上传').then(function(ok){if(!ok)return;var b=$('diagBtn');b.disabled=true;$('diagSt').innerHTML='<span class="spin"></span> 正在收集并上传，要一两分钟…';
  post('/api/diag/upload').then(function(j){var since=j.since||Date.now(),n=0;every('diag',2000,function(){if(++n>90){clearInterval(timers.diag);b.disabled=false;$('diagSt').textContent='超时了，稍后再看看';return}
   api('/api/diag/result').then(function(r){if(r.time>=since-2000&&r.r_ok!=null){clearInterval(timers.diag);b.disabled=false;

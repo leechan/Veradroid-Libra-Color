@@ -1098,7 +1098,7 @@ $LOWPRI tar -xzf "$TMP/bundle.tar.gz" -C "$TMP" || { syncer_off; die "解压安�
 syncer_off
 [ -d "$TMP/veradroid-pw6" ] || die "安装包结构不对"
 # 包和内核要对得上：4.9 内核（PW5 / KT5 / KT6）的 binder 是 32 位协议，用 PW6 的系统所有原生服务开机即崩
-# （用户诊断 092A03 / 001122：Binder driver protocol does not match，Android 永远起不来）。在线安装按内核选包；
+# （用户诊断 / 001122：Binder driver protocol does not match，Android 永远起不来）。在线安装按内核选包；
 # 离线包是用户自己挑的，这里拦一下（k49 包才带 bin/vdlmk）。
 # 只有 legacy 包带 kmod/（给 3.0 / 4.1 内核编的 binder 模块）。新机型（4.9 / 5.x：PW5 / PW6 / Scribe……）装上它会是 32 位老系统，按内核拦。
 case "$(uname -r)" in

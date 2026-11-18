@@ -521,7 +521,11 @@ final class Panel {
         if ("wifi".equals(id)) { wifiOn = wifiOn == 1 ? 0 : 1; HostLink.cmd("wifi " + wifiOn); paintToggles(); }
         else if ("bt".equals(id)) toggleBt();
         else if ("invert".equals(id)) { invertOn = invertOn == 1 ? 0 : 1; HostLink.cmd("invert"); paintToggles(); }
-        else if ("clear".equals(id)) HostLink.cmd("clear");
+        else if ("clear".equals(id)) {
+            // 先收起面板、等它从屏幕上下去（约 0.5 秒）再整屏刷新：以前面板还在时就刷，刷完收起面板又在那块留下残影
+            finish();
+            handler.postDelayed(new Runnable() { @Override public void run() { HostLink.cmd("clear"); } }, 500);
+        }
         else if ("xfer".equals(id)) toggleXfer();
         else if ("shot".equals(id)) screenshot();
         else if ("kindle".equals(id)) { HostLink.cmd("exit"); finish(); }
@@ -542,8 +546,7 @@ final class Panel {
     }
 
     private void openHome(boolean settings) {
-        Intent i = new Intent(ctx, HomeActivity.class);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        Intent i = HomeActivity.homeIntent(ctx);
         if (settings) i.putExtra("settings", true);
         startActivity(i);
         finish();
@@ -563,7 +566,7 @@ final class Panel {
 
     private void toggleXfer() {
         Transfer t = Transfer.get(ctx);
-        if (t.running()) t.stop(); else t.start();
+        if (t.running()) t.stop(); else if (!t.start()) VeraToast.show(ctx, "传输没打开：" + t.lastError());
         HostLink.cmd("status");
         paintToggles();
         handler.postDelayed(new Runnable() { @Override public void run() { paintToggles(); } }, 900);
@@ -575,7 +578,7 @@ final class Panel {
         handler.postDelayed(new Runnable() { @Override public void run() { HostLink.cmd("screenshot"); } }, 1200);
     }
 
-    /** “显示”：文石 E-Ink 中心那一类东西。全部即时生效。 */
+    /** “显示”：墨水屏相关的显示设置。全部即时生效。 */
     private void buildDisplay(LinearLayout p) {
         mode = new Seg(ctx, new String[] { "均衡", "灰度最准", "最快" }, 15, new Seg.Listener() {
             @Override public void onPick(int i) { HostLink.settings("KFB_MODE=" + MODE_V[i] + "\n"); }
@@ -615,11 +618,11 @@ final class Panel {
         p.addView(two);
         p.addView(new View(ctx), new LinearLayout.LayoutParams(1, 0, 1));
         p.addView(Ui.rule(ctx, 1, Color.BLACK));
-        // 每个应用单独一套显示效果（文石的“应用优化”）：针对打开面板前正在用的那个应用
-        p.addView(nav("当前应用的显示效果", "只对这一个应用生效", new View.OnClickListener() {
+        // 每个应用单独一套显示效果：针对打开面板前正在用的那个应用
+        p.addView(nav("当前应用的优化", "刷新、全刷、对比度、字号，只对这一个应用生效", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 String pkg = Cleaner.previousApp(ctx);
-                if (pkg == null) { hint("现在前台是桌面：长按桌面上的应用图标，选“显示效果”"); return; }
+                if (pkg == null) { hint("现在前台是桌面：长按桌面上的应用图标，选“应用优化”"); return; }
                 String label = pkg;
                 try { label = String.valueOf(ctx.getPackageManager().getApplicationLabel(ctx.getPackageManager().getApplicationInfo(pkg, 0))); } catch (Throwable ignored) { }
                 Intent i = new Intent(ctx, AppDisplayActivity.class);
@@ -820,7 +823,7 @@ final class Panel {
             String line = "";
             if (t.running()) {
                 String ip = HostLink.kv(HostLink.CTL + "status").get("lanip");
-                line = (ip == null || ip.isEmpty() ? "（先连上 Wi-Fi）" : "http://" + ip + ":" + Transfer.PORT) + "  PIN " + t.pin();
+                line = (ip == null || ip.isEmpty() ? "（先连上 Wi-Fi）" : "http://" + ip + ":" + t.port()) + "  PIN " + t.pin();
             }
             set(xferLine, line);
         }

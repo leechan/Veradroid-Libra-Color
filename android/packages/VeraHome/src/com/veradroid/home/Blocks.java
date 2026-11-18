@@ -93,7 +93,7 @@ final class Blocks {
                     return true;
                 case MotionEvent.ACTION_UP:
                     invert(view, false);
-                    if (armed) { armed = false; view.performClick(); }
+                    if (armed) { armed = false; Ui.clickAfterDispatch(view); }
                     return true;
                 default:
                     armed = false;
@@ -461,7 +461,7 @@ final class Blocks {
      * 这几页自己在 onResume 里把状态栏藏起来了（setSuppressed），不用让。
      */
     static int statusInset(android.app.Activity a) {
-        if (a instanceof StatsActivity || a instanceof StorageActivity || a instanceof StoreActivity || a instanceof FontStoreActivity || a instanceof InboxActivity
+        if (a instanceof StatsActivity || a instanceof StorageActivity || a instanceof BackupActivity || a instanceof StoreActivity || a instanceof FontStoreActivity || a instanceof InboxActivity
             || a instanceof TransferActivity || a instanceof HomeActivity) return 0;
         try { if (!Store.prefs(a, "home").getBoolean("statusbar", true)) return 0; } catch (Throwable ignored) { }
         return dp(a, 18);
@@ -980,6 +980,9 @@ final class Blocks {
             Blocks.fast(f);
             return f;
         }
+
+        /** 点中间的页码（目录：输入第几条）。 */
+        void onMidTap(OnClickListener l) { View mid = getChildAt(2); mid.setClickable(true); mid.setOnClickListener(l); }
 
         void set(int page1, int pages) {
             String a = String.valueOf(page1), b = " / " + pages;

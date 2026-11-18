@@ -16,9 +16,14 @@ rm -rf "$SRC/packages/apps/VeraHome"; cp -R "$HERE/packages/VeraHome" "$SRC/pack
 (cd "$HERE/overlay" && find . -type f) | while read f; do
     mkdir -p "$SRC/$(dirname "$f")"
     cp "$HERE/overlay/$f" "$SRC/$f"
+    chmod a+r "$SRC/$f"   # the build runs as another user (a root-made tree, e.g. an overlay mount, had 0600 files)
     echo "overlay: $f"
 done
 # 小补丁（用 python 做精确替换，已打过就跳过）
 python3 "$HERE/small-patches.py" "$SRC"
 # framework 项目（project/framework 分支，docs/framework-project.md）：框架源码改动，全部由 /dev/kfb 里的开关文件启用
 python3 "$HERE/fw-patches.py" "$SRC"
+# 每个应用的墨水屏设置（feat/fw-oec，OecConfig）：由宿主的 /dev/kfb/appoec 驱动，没有规则时不起作用
+python3 "$HERE/oec-patches.py" "$SRC"
+# e-ink framework changes: per-frame EPD modes, no starting window, IME OOM cap, text contrast
+python3 "$HERE/eink-patches.py" "$SRC"

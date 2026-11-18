@@ -67,7 +67,7 @@ final class Lib {
     private static final List<Book> books = new ArrayList<Book>();
     private static final Map<String, Book> known = new HashMap<String, Book>();
     private static final List<Listener> listeners = new ArrayList<Listener>();
-    private static final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private static final ExecutorService worker = Ui.lowExecutor("lib");
     private static final Handler ui = new Handler(Looper.getMainLooper());
     private static boolean loaded, scanning, scanAgain;
     private static long scannedAt;

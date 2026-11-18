@@ -76,7 +76,25 @@ class PageScrollView extends ScrollView {
     @Override public void fling(int velocityY) { /* no inertia */ }
 
     /** 从第一页开始按 page() 的规则一页页往下算，得到每一页的顶边（页数、当前页都按它算，和真翻页一致）。 */
+    /**
+     * 页码条每次排版完都要问页数和当前页（各算一遍 stops，每次把整棵内容树走一遍）；窗口里随便哪里排一次版，所有翻页页面的监听都会被叫到。
+     * 内容没有重新排版过（onLayout 没来过、垫的空白也没变）时，用上次算好的。
+     */
+    private int layoutGen, stopsGen = -1, stopsPad, stopsH;
+    private java.util.List<Integer> stopsCache;
+    @Override protected void onLayout(boolean changed, int l, int t, int r, int b) {
+        super.onLayout(changed, l, t, r, b);
+        layoutGen++;
+    }
+
     private java.util.List<Integer> stops() {
+        if (stopsCache != null && stopsGen == layoutGen && stopsPad == tailPad && stopsH == getHeight()) return stopsCache;
+        java.util.List<Integer> out = stops0();
+        stopsCache = out; stopsGen = layoutGen; stopsPad = tailPad; stopsH = getHeight();
+        return out;
+    }
+
+    private java.util.List<Integer> stops0() {
         java.util.List<Integer> out = new java.util.ArrayList<Integer>();
         out.add(0);
         int content = getChildCount() > 0 ? getChildAt(0).getHeight() - tailPad : 0, h = getHeight();

@@ -57,7 +57,7 @@ final class BlocksSettings {
         switch (key) {
         case BlocksHome.S_DISPLAY: return cfg + prefs.getString("quick", "") + prefs.getString("panelname", "") + AppFont.user(a) + st.get("light") + st.get("warmth") + st.get("lightmax") + st.get("haslight") + st.get("haswarmth") + Blocks.on(a);
         case BlocksHome.S_POWER: return cfg + st.get("sleep") + prefs.getBoolean("clock12", false) + "|" + java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_YEAR);
-        case BlocksHome.S_STORAGE: return st.get("wifi") + "|" + Transfer.get(a).running() + "|" + BlocksHome.storageUsed();
+        case BlocksHome.S_STORAGE: return st.get("wifi") + "|" + Transfer.get(a).running() + "|" + AdbWifi.on() + "|" + BlocksHome.storageUsed();
         case BlocksHome.S_CARDS: return prefs.getString(BlocksCards.KEY, BlocksCards.DEFAULT) + prefs.getString("blk_quick", "") + prefs.getString("wx_city", "") + prefs.getString("blk_readers", "") + a.appsVersion();
         default: return "";
         }
@@ -194,7 +194,7 @@ final class BlocksSettings {
         for (int i = 0; i < FONT_S.length; i++) if (Math.abs(FONT_S[i] - fs) < Math.abs(FONT_S[fi] - fs)) fi = i;
         add(fg, Blocks.row(a, "应用字号", "App font size", new Blocks.Stepper(a, FONT_L, fi, new Blocks.Stepper.Listener() {
             @Override public void onStep(int i) { AppFont.setUser(a, FONT_S[i]); } })));
-        add(fg, Blocks.navRow(a, "每个应用的显示效果", "单独给某个应用设刷新、对比度、字号", new View.OnClickListener() {
+        add(fg, Blocks.navRow(a, "应用优化", "单独给某个应用设刷新、全刷、对比度、字号、保持后台", new View.OnClickListener() {
             @Override public void onClick(View v) { appDisplayPicker(); } }));
         LinearLayout ui = group(c, "界面");
         add(ui, Blocks.row(a, "界面风格", "Launcher style", new Blocks.Stepper(a, new String[] { "经典", "方块" }, 1, new Blocks.Stepper.Listener() {
@@ -316,17 +316,25 @@ final class BlocksSettings {
         final Transfer t = Transfer.get(a);
         add(w, Blocks.row(a, "网页传书", "Web file manager", toggle(t.running(), new Icons.Toggle.Listener() {
             @Override public void onToggle(boolean on) {
-                if (on) { t.setIdleMinutes(prefs.getInt("xfer_idle", 30)); if (!t.start()) VeraToast.show(a, "打不开传输服务"); } else t.stop();
+                if (on) { t.setIdleMinutes(prefs.getInt("xfer_idle", 30)); if (!t.start()) VeraToast.show(a, "打不开传输服务：" + t.lastError()); } else t.stop();
                 HostLink.cmd("status");
                 a.handler().postDelayed(new Runnable() { @Override public void run() { if (h.current() == BlocksHome.S_STORAGE) { h.show(BlocksHome.S_STORAGE); a.changed(); } } }, 900);
             } })));
         String ip = st.get("lanip");
-        TextView addr = Ui.text(a, t.running() ? (ip == null || ip.length() == 0 ? "正在获取地址…" : "http://" + ip + ":" + Transfer.PORT) + "\nPIN  " + t.pin()
+        TextView addr = Ui.text(a, t.running() ? (ip == null || ip.length() == 0 ? "正在获取地址…" : "http://" + ip + ":" + t.port()) + "\nPIN  " + t.pin()
             : "打开后，手机和 Kindle 连同一个 Wi-Fi，在浏览器里输入这里显示的地址和 PIN。", t.running() ? 20 : 13, t.running());
         addr.setPadding(dp(12), dp(8), dp(12), dp(10));
         add(w, addr);
         add(w, Blocks.navRow(a, "传书页面", "大字显示地址和 PIN", new View.OnClickListener() {
             @Override public void onClick(View v) { a.startActivity(new Intent(a, TransferActivity.class).addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)); a.overridePendingTransition(0, 0); } }));
+        // 无线调试（adb）：默认关，只认传书网页里添加过的电脑公钥，30 分钟后自动关（AdbWifi / 宿主 webadmin.sh）
+        add(w, Blocks.row(a, "无线调试 (adb)", "adb over Wi-Fi", toggle(AdbWifi.on(), new Icons.Toggle.Listener() {
+            @Override public void onToggle(boolean on) {
+                AdbWifi.set(a, on, 30, new Runnable() { @Override public void run() { if (h.current() == BlocksHome.S_STORAGE) { h.show(BlocksHome.S_STORAGE); a.changed(); } } });
+            } })));
+        TextView adbNote = Ui.text(a, AdbWifi.DESC, 13, false);
+        adbNote.setPadding(dp(12), dp(4), dp(12), dp(10));
+        add(w, adbNote);
         return shell("Storage / network", "存储与连接", c);
     }
 
@@ -369,7 +377,7 @@ final class BlocksSettings {
             }
             names[i + off] = n;
         }
-        new VeraDialog.Builder(a).title("哪个应用的显示效果").items(names, new VeraDialog.OnPick() {
+        new VeraDialog.Builder(a).title("优化哪个应用").items(names, new VeraDialog.OnPick() {
             @Override public void onPick(int w) {
                 if (off > 0 && w == 0) {
                     new VeraDialog.Builder(a).title("全部恢复默认").message("单独设置过的应用都回到内置推荐 / 全局设置（字号的单独设置不变）。")

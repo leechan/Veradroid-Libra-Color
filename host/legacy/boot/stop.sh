@@ -5,7 +5,7 @@
 VD=${VD:-$(cd "$(dirname "$0")/.." && pwd)}
 . "$VD/boot/lib/common.sh"
 for m in settings memory freeze framework container input network tester; do . "$VD/boot/lib/$m.sh"; done
-# VD_STOP_REASON：调用方说明为什么停（安装器等）。父进程常常已经退出，光看父进程看不出是谁停的（用户诊断 632015）
+# VD_STOP_REASON：调用方说明为什么停（安装器等）。父进程常常已经退出，光看父进程看不出是谁停的（用户诊断）
 [ "$1" = "--stale" ] || { test_on && tup > $W/test.stop0 2>/dev/null; }
 [ "$1" = "--stale" ] || echo "[$(date +%H:%M:%S)] stop.sh called (parent $PPID: $(tr '\000' ' ' < /proc/$PPID/cmdline 2>/dev/null | cut -c1-120))${VD_STOP_REASON:+ reason: $VD_STOP_REASON}" >> $LOG
 STALE=; [ "$1" = "--stale" ] && STALE=1

@@ -20,9 +20,9 @@ need   "$S/HomeActivity.java" 'confirm\("不用壁纸？"' '去掉 wallpaper ask
 forbid "$S/HomeActivity.java" 'onClick\(View v\) \{ Theme\.clearWallpaper\(\)' 'one tap clears the wallpaper'
 # a style changed elsewhere (SettingsActivity over an app) is applied when Home comes back
 need   "$S/HomeActivity.java" 'shownStyle\.equals\(styleName\(Blocks\.on\(this\)\)\)\) applyStyle' 'Home re-syncs the UI style on resume'
-# reader footnotes
-need   "$S/ReaderActivity.java" 'k\.back = type\.contains\("back"\)' 'back links jump, not pop up'
-need   "$S/ReaderActivity.java" 'static String pctDecode' 'chapter entries and link targets percent-decoded alike'
-need   "$S/ReaderActivity.java" 'k\.end <= k\.start && !k\.back' 'image-only note markers kept'
+# reader footnotes (EPUB parsing moved to Epub.java)
+need   "$S/Epub.java" 'k\.back = type\.contains\("back"\)' 'back links jump, not pop up'
+need   "$S/Epub.java" 'static String pctDecode' 'chapter entries and link targets percent-decoded alike'
+need   "$S/Epub.java" 'k\.end <= k\.start && !k\.back' 'image-only note markers kept'
 [ $fail = 0 ] && echo "home-ui099: ok"
 exit $fail

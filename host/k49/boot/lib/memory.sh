@@ -4,7 +4,7 @@
 # 小内存机型（PW5/KT5/KT6，512 MB）：lab126 4.9 内核的启发式 overcommit 拒绝“大于当前可用内存”的单块私有可写映射，
 # ART 的 256 MB 堆（memfd + MAP_PRIVATE）和 zygote fork 都会被拒 → zygote 无限崩溃。运行期间改为 1，停止时恢复。
 # 957 MB 的 PW6（5.15 内核）不受影响，不改。
-# 2026-11-16：1 GB 的机型也要（Kindle Scribe，4.9.77，987 MB，用户诊断 09227072475006）：微信读书打开书时要起 :seg 进程
+# 2026-11-16：1 GB 的机型也要（Kindle Scribe，4.9.77，987 MB，用户诊断）：微信读书打开书时要起 :seg 进程
 # （com.tencent.weread.reader.segment.aidl.SegmentService），zygote 的 fork() 失败（“Starting VM process through Zygote failed /
 # fork() failed”，zygote 自己不记原因），ActivityManager 就以 “start failure” 强行停掉整个微信读书 —— 用户看到的“打开书闪退”，
 # 连续两次。zram 换满时 4.9 的启发式只把 空闲 + 文件缓存 − shmem（ART 的 memfd 堆都算 shmem）+ swap 剩余 当可用，fork 时
@@ -122,9 +122,11 @@ zram_on() {
         [ -f $W/wsf.state ] || cat /proc/sys/vm/watermark_scale_factor > $W/wsf.state
         echo "$VM_WATERMARK" > /proc/sys/vm/watermark_scale_factor 2>/dev/null
     fi
+    type zram_extra >/dev/null 2>&1 && zram_extra     # zram0 被占着、比 ZRAM_MB 小：再加一块（memkeep.sh）
     t "zram ${ZRAM_MB}MB on"
 }
 zram_restore() {
+    type mem_keep_off >/dev/null 2>&1 && mem_keep_off
     overcommit_restore
     [ -f $W/zram.state ] || return 0
     read sw pc < $W/zram.state

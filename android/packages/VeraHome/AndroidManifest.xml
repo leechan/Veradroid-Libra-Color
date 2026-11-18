@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.veradroid.home"
-    android:versionCode="83"
-    android:versionName="0.33.2">
+    android:versionCode="85"
+    android:versionName="0.35.0">
     <uses-sdk android:minSdkVersion="25" android:targetSdkVersion="25" />
     <uses-permission android:name="android.permission.MANAGE_ACTIVITY_STACKS" />
     <uses-permission android:name="android.permission.INTERNET" />
@@ -23,6 +23,7 @@
     <uses-permission android:name="android.permission.GET_TASKS" />
     <uses-permission android:name="android.permission.REAL_GET_TASKS" />
     <uses-permission android:name="android.permission.REORDER_TASKS" />
+    <uses-permission android:name="android.permission.REMOVE_TASKS" />
     <uses-permission android:name="android.permission.INJECT_EVENTS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
@@ -87,6 +88,12 @@
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize" />
         <activity
             android:name=".StorageActivity"
+            android:theme="@android:style/Theme.Holo.Light.NoActionBar"
+            android:excludeFromRecents="true"
+            android:screenOrientation="nosensor"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize" />
+        <activity
+            android:name=".BackupActivity"
             android:theme="@android:style/Theme.Holo.Light.NoActionBar"
             android:excludeFromRecents="true"
             android:screenOrientation="nosensor"

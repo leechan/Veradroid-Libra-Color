@@ -24,7 +24,7 @@ import java.util.List;
 
 /**
  * Always-on listener for what the host sends: "open this app" (ctl/app) and gesture actions (ctl/act.panel, act.home,
- * act.switch, act.back). Uses inotify, so it costs nothing while idle (no polling).
+ * act.switch, act.back, act.appopt). Uses inotify, so it costs nothing while idle (no polling).
  */
 public class HostService extends Service {
     private final Handler handler = new Handler();
@@ -240,6 +240,7 @@ public class HostService extends Service {
             if (act.equals("panel")) { if (Panel.isOpen()) Panel.close(); else Panel.open(this); }
             else if (Panel.isOpen() && act.equals("back")) Panel.close();
             else if (act.equals("switch")) { Panel.close(); start(SwitcherActivity.class); }
+            else if (act.equals("appopt")) appOpt();
             else if (act.equals("home")) { Panel.close(); goHome(false); }
             else if (act.equals("back")) key(KeyEvent.KEYCODE_BACK);
         }
@@ -315,6 +316,30 @@ public class HostService extends Service {
         } catch (Throwable t) { android.util.Log.w("VeraHome", "notice dialog: " + t); }
     }
 
+    /**
+     * 底边左段上划（宿主 action.sh 的 appopt）：前台应用的“应用优化”页
+     * （刷新方式、全刷、对比度、字号……只对它生效）。前台是桌面或我们自己的页面时没有“当前应用”，打开下拉面板（全局的显示设置）。
+     * 我们盖在应用上面的页面（面板、切换器、设置）不算：按底下那个应用算（profPkg）。
+     */
+    private void appOpt() {
+        String top = topActivity(this), pkg = null;
+        if (top != null) {
+            String tp = top.substring(0, top.indexOf('/')), tc = top.substring(top.indexOf('/') + 1);
+            if (tc.endsWith(".AppDisplayActivity")) return;          // 已经开着
+            if (!tp.equals(getPackageName())) pkg = tp;
+            else if (AppFont.overlay(tc) && profPkg != null && !profPkg.equals("home")) pkg = profPkg;
+        }
+        if (pkg == null) { if (!Panel.isOpen()) Panel.open(this); return; }
+        Panel.close();
+        String label = pkg;
+        try { label = String.valueOf(getPackageManager().getApplicationLabel(getPackageManager().getApplicationInfo(pkg, 0))); } catch (Throwable ignored) { }
+        Intent i = new Intent(this, AppDisplayActivity.class);
+        i.putExtra("pkg", pkg);
+        i.putExtra("label", label);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        startActivity(i);
+    }
+
     private void start(Class<?> c) {
         Intent i = new Intent(this, c);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
@@ -330,9 +355,7 @@ public class HostService extends Service {
     private void goHome(boolean settings) {
         if (settings) { SettingsActivity.open(this); return; }   // 设置盖在当前应用上面，返回回到它（不切到桌面）
         HostLink.cmd("appdisp home");
-        Intent i = new Intent(this, HomeActivity.class);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION);
-        if (settings) i.putExtra("settings", true);
+        Intent i = HomeActivity.homeIntent(this);
         startActivity(i);
     }
 

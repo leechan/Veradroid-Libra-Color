@@ -22,12 +22,12 @@ esac
 umask 022
 VD=${VD:-$(cd "$(dirname "$0")/.." && pwd)}
 . "$VD/boot/lib/common.sh"
-for m in settings memory slim imgclass props freeze framework container input network sleep status cmd watchdog afterboot splash bootwatch diagboot compile energy tz jankrec; do . "$VD/boot/lib/$m.sh"; done
+for m in settings memory memkeep slim imgclass props freeze framework container input network sleep status cmd watchdog afterboot splash bootwatch diagboot compile energy idle tz jankrec; do . "$VD/boot/lib/$m.sh"; done
 mkdir -p $SYS $W
 # 上次停在某个应用时留下的“当前应用显示参数”不带进这一次（开机时前台是桌面；appprof.sh）。
 # 解冻（Android 冻着、还活着）时不删：显示桥一直在跑，手里还是那个应用的参数（比如微信读书的 KFB_MODE=1 / FLASH=6）。以前这里删了，
 # 解冻后打开桌面时 appprof_fg 比较“新 = 全局、旧 = 空”判成“same as before”，不发 SET，桌面就一直用微信读书的灰度最准刷新
-# （每次局部刷新都是 GC16、每 6 页闪一次；Scribe 用户诊断 09227072475006 1.04：“卡顿不跟手”）。冷启动在下面另外删。
+# （每次局部刷新都是 GC16、每 6 页闪一次；Scribe 用户诊断 1.04：“卡顿不跟手”）。冷启动在下面另外删。
 if ! { [ -f $W/frozen ] && kill -0 "$(cat $W/pid 2>/dev/null)" 2>/dev/null; }; then rm -f $SYS/settings.app $W/appprof.pkg; fi
 settings_load
 
@@ -51,7 +51,7 @@ APP=${1:-$SYSTEM_APP}
 
 # Kindle 正在关机 / 重启（/etc/upstart/shutdown.conf 第一步写 /tmp/shutdown_in_progress）：这时不能再启动——会把系统盘重新挂到
 # /mnt/base-us 上，Kindle 卸不掉用户存储，关机卡住；而且关机钩子（vdshutwatch）一启动就看到这个标记，立刻用 --shutdown 把刚起来的
-# Android 停掉，并且不恢复 Kindle 界面（volumd / awesome 一直停着，屏幕不动、USB 也不通，只能强制重启。用户诊断 632015 里
+# Android 停掉，并且不恢复 Kindle 界面（volumd / awesome 一直停着，屏幕不动、USB 也不通，只能强制重启。用户诊断 里
 # "started" 之后 0.3 秒 stop.sh 被一个已经退出的父进程调用、之后再点启动没有任何反应，和这条路径吻合，但没法确证）。标记在、关机任务却没在跑 = 残留的标记：照常启动，但不挂关机钩子。
 kindle_shutting_down() {
     [ -e /tmp/shutdown_in_progress ] || return 1
@@ -125,6 +125,10 @@ start_helpers() {
     fi
 }
 
+# 书库入口“VeraDroid 启动”不见了（误删；这次是从 KUAL / 备用入口点进来的）：每次启动都补回去（framework.sh 的 launcher_restore，
+# 入口在就什么都不做）。USB 里 veradroid/ 的说明文件也补上（tidy.sh 的 vd_where_notes，内容一样就不写）。
+type launcher_restore >/dev/null 2>&1 && launcher_restore
+type vd_where_notes >/dev/null 2>&1 && vd_where_notes
 
 P=$(cat $W/pid 2>/dev/null)
 if [ -n "$P" ] && kill -0 $P 2>/dev/null; then

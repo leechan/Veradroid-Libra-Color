@@ -207,6 +207,8 @@ final class SysUpdate {
             }
         }
         box.addView(text(a, "更新时会短暂退出 Android；数据、书架、绑定账号都保留。有增量补丁时只下载变了的部分。", 13, false, 14));
+        // 更新前备份关着（设置 → 设备与更新 → 更新前备份）：更新前说清楚
+        if (BackupActivity.off()) box.addView(text(a, "更新前备份已关闭：这次不备份，更新出问题时无法恢复。可以在 设置 → 设备与更新 → 更新前备份 里打开。", 15, true, 10));
         // 更新内容放在固定高度的一块里一页一页翻（划动或点“上一页 / 下一页”），“更新 / 以后再说”一直在下面看得见
         LinearLayout wrap = new LinearLayout(a);
         wrap.setOrientation(LinearLayout.VERTICAL);
@@ -232,7 +234,7 @@ final class SysUpdate {
         });
         new VeraDialog.Builder(a)
             .title("新版本 " + i.latest)
-            .message(i.current == null ? "这次更新的内容：" : "现在是 " + i.current + "。这次更新的内容：")
+            .message((i.current == null ? "这次更新的内容：" : "现在是 " + i.current + "。这次更新的内容：") + (BackupActivity.off() ? "\n（更新前备份已关闭，更新出问题时无法恢复）" : ""))
             .view(wrap)
             .negative("以后再说", new Runnable() { @Override public void run() {
                 Store.prefs(a, "home").edit().putString("sysupdate_later", i.latest).apply();

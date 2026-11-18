@@ -35,8 +35,17 @@ ns_pids() {
 # （libslirp 的 slow timer），屏保 / 回到 Kindle 时没人用它，只是白白唤醒 CPU。解冻前先放开。没有 slirp（chroot 模式）时什么都不做。
 net_pause()  { sp=$(cat $W/slirp.pid 2>/dev/null); [ -n "$sp" ] && kill -STOP "$sp" 2>/dev/null; return 0; }
 net_resume() { sp=$(cat $W/slirp.pid 2>/dev/null); [ -n "$sp" ] && kill -CONT "$sp" 2>/dev/null; return 0; }
+# 触摸前端（veradroid-input）：Android 里所有按下的触点都抬起。冻结前 / 解冻前各发一次：冻结期间或之前
+# 被手势吞掉的触摸不会在解冻后变成永远按着的触点。写 inject FIFO 用 1<>：没人读也不会阻塞；veradroid-input 没在跑就不写。
+vinput_reset() {
+    [ -p $W/inject ] && kill -0 "$(cat $W/input.pid 2>/dev/null)" 2>/dev/null || return 0
+    echo "reset ${1:-host}" 1<>$W/inject 2>/dev/null
+    return 0
+}
 android_freeze() {
     freezer_setup || return 1
+    vinput_reset freeze
+    rm -f $W/idlefz        # 空闲冻结（idle.sh）中：从这里起归屏保 / 返回 Kindle 管
     sync
     if fz_signal; then
         kill -STOP $(ns_pids) 2>/dev/null
@@ -53,6 +62,8 @@ android_freeze() {
     [ "$(freezer_state)" = FROZEN ]
 }
 android_thaw() {
+    rm -f $W/idlefz
+    vinput_reset thaw
     cpu_gov_restore 2>/dev/null || true
     net_resume
     freezer_setup || return 1

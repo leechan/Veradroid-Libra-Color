@@ -22,6 +22,8 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import com.veradroid.home.Epub.Chapter;
+import com.veradroid.home.Epub.Link;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -56,6 +58,12 @@ public class ReaderActivity extends Activity {
     private final List<Page> pages = new ArrayList<Page>();
     private final List<Chapter> chapters = new ArrayList<Chapter>();
     private final List<Integer> chapterStart = new ArrayList<Integer>();
+    /** 目录（Epub.TocItem：标题、层级、第几个文件的第几个字）和每一条所在的页（分完页才有）。 */
+    private final List<Epub.TocItem> toc = new ArrayList<Epub.TocItem>();
+    private int[] tocAt = new int[0];
+    /** 整本读完、还没分完页时的章节（目录跳转、往后翻页先用它们）；目录缓存里的每章文件名（整本还没读完时跳章用）。 */
+    private List<Chapter> preChapters;
+    private List<String> tocEntries;
     private int page, textSize = 22;
     private String fontPath, fontName = "系统默认", bookTitle = "";
     private float lineSpacing = 1.35f;
@@ -64,6 +72,8 @@ public class ReaderActivity extends Activity {
     /** 段距（字高的倍数，0 = 没有）、首行缩进（字数）、极简全屏（不显示页脚）、点按方式（0 左边上一页 / 1 全屏下一页）。 */
     private float paraSpacing = 0f;
     private int indent = 0, tapMode = 0;
+    /** 点按翻页：0 左边四分之一上一页（Kindle）、1 全屏下一页、2 三栏（左上一页 / 中间菜单 / 右下一页） */
+    static final String[] TAP_L = { "左边上一页", "全屏下一页", "三栏" };
     private boolean minimal;
     /** 方块风格（主页设置里选的界面风格）：点屏幕中间出上下两条工具栏，下面六个按钮各开一张设置单。 */
     private boolean blk;
@@ -90,15 +100,7 @@ public class ReaderActivity extends Activity {
     private int availH;
     private String leftBase = "";
 
-    private static class Chapter {
-        String title; String text; String entry;
-        /** EPUB 里的 id → 在 text 里的位置；块级元素（p / li / aside……）的 id 还记下结束位置和标签名（注释正文用）。 */
-        java.util.Map<String, int[]> ids = java.util.Collections.emptyMap();   // {起, 止(-1 = 不知道), 是不是注释元素 1/0, 是不是块 1/0}
-        List<Link> links = java.util.Collections.emptyList();
-    }
-    /** 正文里的一个书内链接：text[start, end) 是链接文字，target = “章节文件#id” 或 “章节文件”。 */
-    private static final class Link { int start, end; String target; boolean noteref, back; }   // entry = EPUB 里这一章的文件名（续读时先只读这一章）
-    private static class Page { int chapter; int start; String text; }   // start = 这一页在章节文字里的起始字符位置
+    private static class Page { int chapter; int start, end; }   // [start, end) = 这一页在章节文字里的字符范围（文字不另存一份：长篇网文要多占几十 MB）
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -353,11 +355,20 @@ public class ReaderActivity extends Activity {
                         return;
                     }
                     List<Chapter> all = null;
+                    List<Epub.TocItem> bookToc = null;
                     Chapter first = null;
                     int firstIdx = 0, from = 0;
                     if ("epub".equals(ext)) {
-                        if (hasPos && entry0 != null) { first = loadEpubChapter(f, entry0); firstIdx = c0; from = o0; }
-                        else if (fresh) { all = loadEpub(f); if (!all.isEmpty()) first = all.get(0); }
+                        if (hasPos && entry0 != null) { first = Epub.loadChapter(f, entry0); firstIdx = c0; from = o0; }
+                        else if (fresh) {
+                            first = Epub.firstChapter(f);
+                            if (first == null) { Epub.Book b = loadBook(f); all = b.chapters; bookToc = b.toc; if (!all.isEmpty()) first = all.get(0); }
+                        }
+                        // 目录缓存：整本读完之前目录就能用
+                        final Epub.Cached cached = Epub.readCache(tocCache(f));
+                        if (cached != null) ui.post(new Runnable() { @Override public void run() {
+                            if (toc.isEmpty()) { toc.addAll(cached.toc); tocEntries = cached.entries; }
+                        } });
                     } else {
                         Chapter c = new Chapter();
                         c.title = f.getName();
@@ -365,6 +376,7 @@ public class ReaderActivity extends Activity {
                         if (c.text.trim().length() == 0) throw new Exception("这是一个空文件");
                         all = new ArrayList<Chapter>();
                         all.add(c);
+                        bookToc = Epub.txtToc(c);       // TXT 网文：“第X章”一行一行找出来当目录
                         if (hasPos || fresh) { first = c; from = hasPos ? o0 : 0; }
                     }
                     if (first != null && from >= 0 && from < first.text.length()) {
@@ -378,15 +390,25 @@ public class ReaderActivity extends Activity {
                             showFirst(fc, fi, start, end, same ? savedPg : -1, same ? savedTotal : 0, same ? savedLeft : "");
                         } });
                     }
-                    if (all == null) all = loadEpub(f);
+                    if (all == null) {
+                        Epub.Book b = loadBook(f); all = b.chapters; bookToc = b.toc;
+                        if (!b.chapters.isEmpty()) Epub.saveCache(b, tocCache(f));
+                    }
                     if (all.isEmpty()) throw new Exception("EPUB 里没有可读的章节");
                     final List<Chapter> chs = all;
+                    final List<Epub.TocItem> tc = bookToc;
+                    // 分页前：目录换成整本读出来的那份，翻页 / 跳章先用读进来的章节（大书分页要几十秒）
+                    ui.post(new Runnable() { @Override public void run() {
+                        if (isDestroyed()) return;
+                        preChapters = chs;
+                        if (tc != null) { toc.clear(); toc.addAll(tc); tocEntries = null; }
+                    } });
                     final List<Page> pg = new ArrayList<Page>();
                     final List<Integer> starts = new ArrayList<Integer>();
                     long tp0 = SystemClock.uptimeMillis();
                     paginate(chs, g, pg, starts);
                     android.util.Log.i("VeraPerf", "reader whole book: " + pg.size() + " pages in " + (SystemClock.uptimeMillis() - tp0) + " ms (background)");
-                    ui.post(new Runnable() { @Override public void run() { installPages(chs, pg, starts, g.sig); } });
+                    ui.post(new Runnable() { @Override public void run() { if (tc != null) { toc.clear(); toc.addAll(tc); } installPages(chs, pg, starts, g.sig); } });
                 } catch (Throwable t) {
                     final String msg = String.valueOf(t.getMessage());
                     ui.post(new Runnable() {
@@ -404,6 +426,16 @@ public class ReaderActivity extends Activity {
     }
 
     private boolean isPdfExt() { return "pdf".equals(ext); }
+
+    private static File tocCache(File book) { return new File(Store.cache("readertoc"), Epub.cacheName(book)); }
+
+    private static Epub.Book loadBook(File f) throws Exception {
+        long t0 = SystemClock.uptimeMillis();
+        Epub.Book b = Epub.load(f);
+        android.util.Log.i("VeraPerf", "reader epub: " + b.chapters.size() + " files, toc " + b.toc.size() + " (" + b.tocSource + ")"
+            + (b.truncated ? ", truncated" : "") + " in " + (SystemClock.uptimeMillis() - t0) + " ms");
+        return b;
+    }
 
     /** 分页之前先显示的那一页。 */
     private void showFirst(Chapter c, int idx, int start, int end, int savedPage, int savedTotal, String left) {
@@ -435,11 +467,12 @@ public class ReaderActivity extends Activity {
         pages.clear(); pages.addAll(pg);
         chapterStart.clear(); chapterStart.addAll(starts);
         isPdf = false;
+        mapToc();
         if (pages.isEmpty()) { firstShown = true; return; }
         if (provIndex >= 0) page = pageAt(provIndex, provStart);
         else page = savedTextPage();
         boolean sameText = provIndex >= 0 && pages.get(page).chapter == provIndex && pages.get(page).start == provStart
-            && pages.get(page).text.equals(String.valueOf(content.getText()));
+            && pageText(pages.get(page)).equals(String.valueOf(content.getText()));
         provChapter = null; provIndex = -1;
         if (!sig.equals(geometry().sig)) { rebuildKeepPosition(); firstShown = true; return; }   // 分页时改了字号等
         if (sameText) { paintProgress(); savePage(); }
@@ -450,14 +483,20 @@ public class ReaderActivity extends Activity {
     // ------------------------------------------------------------------ turning
 
     private void prev() {
+        turned();
         if (isPdf) {
             if (page > 0) { page--; readPages++; showPdf(page); }
         } else if (page > 0) { page--; readPages++; showText(); }
     }
 
     private void next() {
+        turned();
         if (isPdf) {
             if (page < pdfPages - 1) { page++; readPages++; showPdf(page); }
+        } else if (pages.isEmpty() && provChapter != null && preChapters != null && skipBreaks(provChapter.text, provEnd) >= provChapter.text.length()
+                && provIndex >= 0 && provIndex + 1 < preChapters.size()) {
+            // 还没分完页、这一章翻完了：整本已经读进来，接着排下一章的第一页
+            showProv(preChapters.get(provIndex + 1), provIndex + 1, 0);
         } else if (pages.isEmpty() && provChapter != null && provEnd < provChapter.text.length()) {
             // 整本还没分完页：从这一页的末尾接着排下一页（页码等分完再显示）
             Geometry g = geometry();
@@ -482,6 +521,8 @@ public class ReaderActivity extends Activity {
         // 方块风格：点屏幕中间一块叫出工具栏（顶上一条也算）
         if (blk && lastX > w / 3f && lastX < w * 2 / 3f && lastY > h / 4f && lastY < h * 3 / 4f) { toggleChrome(); return; }
         if (tapMode == 1 && lastY >= h * 0.14f) { next(); return; }
+        // 三栏：左三分之一上一页、中间一栏叫出 / 收起工具栏、右三分之一下一页
+        if (tapMode == 2) { if (lastX < w / 3f) prev(); else if (lastX > w * 2 / 3f) next(); else toggleChrome(); return; }
         if (lastY < h * 0.14f) toggleChrome();
         else if (lastX < w / 4f) prev();
         else next();
@@ -544,9 +585,14 @@ public class ReaderActivity extends Activity {
         String right = (page + 1) + " / " + total + " · " + pct + "%";
         String left = "";
         leftBase = "";
-        if (!isPdf && !pages.isEmpty() && chapterStart.size() > 1) {
+        if (!isPdf && !pages.isEmpty() && (chapterStart.size() > 1 || tocAt.length > 1)) {
             int ch = pages.get(Math.max(0, Math.min(pages.size() - 1, page))).chapter;
             int end = ch + 1 < chapterStart.size() ? chapterStart.get(ch + 1) : pages.size();
+            if (tocAt.length > 1) {
+                // 按目录算“本章”：一个文件里好几章、或者一章拆成几个文件（Calibre 的 index_split_*）都对
+                end = pages.size();
+                for (int at : tocAt) if (at > page && at < end) end = at;
+            }
             int remain = Math.max(0, end - page - 1);
             left = remain == 0 ? "本章最后一页" : "本章还剩 " + remain + " 页";
             leftBase = left;
@@ -616,12 +662,39 @@ public class ReaderActivity extends Activity {
         paintBookmark();
     }
 
+    /**
+     * 跳到第 to 页（目录、书签、百分比、页码）。和书内链接一样记下原来那一页，左下角出“‹ 返回第 N 页”；
+     * 几秒内接着跳（百分比步进器一步一步点）只记最早那一页。
+     */
     private void jump(int to) {
         int total = isPdf ? pdfPages : pages.size();
         if (total <= 0) return;
+        int from = page;
         page = Math.max(0, Math.min(total - 1, to));
+        long now = android.os.SystemClock.uptimeMillis();
+        boolean chain = now - lastJumpAt < 5000 && from == lastJumpTo;
+        if (page != from && !chain) pushBack(from);
+        lastJumpAt = now; lastJumpTo = page;
         if (chromeVisible) toggleChrome();
         if (isPdf) showPdf(page); else showText();
+        paintBackChip();
+    }
+    private long lastJumpAt;
+    private int lastJumpTo = -1;
+    /** 跳过去以后又自己翻了几页：这么多页以后“返回”收起（返回键也不再先回原处，而是照常退出）。 */
+    private static final int BACK_KEEP_TURNS = 5;
+    private int turnsSinceJump;
+
+    private void pushBack(int from) {
+        backStack.add(from);
+        while (backStack.size() > 10) backStack.remove(0);
+        turnsSinceJump = 0;
+    }
+
+    /** 每翻一页调一次：跳转后读了 BACK_KEEP_TURNS 页，“返回”就收起。 */
+    private void turned() {
+        if (backStack.isEmpty()) return;
+        if (++turnsSinceJump >= BACK_KEEP_TURNS) { backStack.clear(); paintBackChip(); }
     }
 
     /** “转到”：目录、书签、按位置跳。 */
@@ -630,7 +703,7 @@ public class ReaderActivity extends Activity {
         if (total <= 0) return;
         final List<String> items = new ArrayList<String>();
         final List<Runnable> acts = new ArrayList<Runnable>();
-        if (!isPdf && chapters.size() > 1) { items.add("目录（" + chapters.size() + " 章）"); acts.add(new Runnable() { @Override public void run() { showToc(); } }); }
+        if (!isPdf && toc.size() > 1) { items.add("目录（" + toc.size() + " 条）"); acts.add(new Runnable() { @Override public void run() { showToc(); } }); }
         final List<String> bms = bookmarks();
         if (!bms.isEmpty()) { items.add("书签（" + bms.size() + " 个）"); acts.add(new Runnable() { @Override public void run() { bookmarkDialog(); } }); }
         items.add("开头"); acts.add(new Runnable() { @Override public void run() { jump(0); } });
@@ -652,7 +725,7 @@ public class ReaderActivity extends Activity {
             if (pg < 0) continue;
             String label = "第 " + (pg + 1) + " 页 · " + ((pg + 1) * 100 / Math.max(1, total)) + "%";
             if (!isPdf && pg < pages.size()) {
-                String t = pages.get(pg).text.replace('\n', ' ').trim();
+                String t = pageText(pages.get(pg)).replace('\n', ' ').trim();
                 label += "  " + (t.length() > 18 ? t.substring(0, 18) + "…" : t);
             }
             names.add(label);
@@ -668,7 +741,7 @@ public class ReaderActivity extends Activity {
         Page p = pages.get(Math.max(0, Math.min(pages.size() - 1, page)));
         applyStyle();
         String ch = chapters.get(p.chapter).text;
-        setPageText(indent > 0 || paraSpacing > 0 ? styled(ch, p.start, p.start + p.text.length()) : p.text, ch, p.start, p.start + p.text.length());
+        setPageText(indent > 0 || paraSpacing > 0 ? styled(ch, p.start, p.end) : pageText(p), ch, p.start, p.end);
         paintProgress();
         if (blk && chromeVisible) paintBlocksTop();
         if (bookTitle.length() > 0 && !bookTitle.equals(String.valueOf(title.getText()))) title.setText(bookTitle);
@@ -725,7 +798,7 @@ public class ReaderActivity extends Activity {
         final File f = new File(path);
         new Thread(new Runnable() { @Override public void run() {
             Chapter c = null;
-            try { c = loadEpubChapter(f, entry); } catch (Throwable ignored) { }
+            try { c = Epub.loadChapter(f, entry); } catch (Throwable ignored) { }
             final Chapter fc = c;
             ui.post(new Runnable() { @Override public void run() {
                 if (isDestroyed()) return;
@@ -795,8 +868,7 @@ public class ReaderActivity extends Activity {
         if (pages.isEmpty()) { VeraToast.show(this, "还在分页，稍等一下再点"); return; }
         int to = pageAt(ci, off);
         if (to == page) return;
-        backStack.add(page);
-        while (backStack.size() > 10) backStack.remove(0);
+        pushBack(page);
         page = to;
         readPages++;
         showText();
@@ -841,25 +913,34 @@ public class ReaderActivity extends Activity {
 
     private void goBack() {
         if (backStack.isEmpty()) return;
-        page = Math.max(0, Math.min(pages.size() - 1, backStack.remove(backStack.size() - 1)));
-        showText();
+        int total = isPdf ? pdfPages : pages.size();
+        page = Math.max(0, Math.min(Math.max(0, total - 1), backStack.remove(backStack.size() - 1)));
+        turnsSinceJump = 0;
+        lastJumpTo = -1;
+        if (chromeVisible) toggleChrome();
+        if (isPdf) showPdf(page); else showText();
         paintBackChip();
     }
 
     private void paintBackChip() {
         if (backChip == null) {
-            backChip = Ui.text(this, "‹ 返回", 16, true);
+            // 放在页脚正中（左右是“本章还剩”和页码，中间空着），不盖正文的最后一行
+            backChip = Ui.text(this, "‹ 返回", 14, true);
             backChip.setTextColor(Color.BLACK);
             backChip.setBackground(Blocks.plain(this));
             int st = Blocks.stroke(this);
-            backChip.setPadding(dp(14) + st, dp(6) + st, dp(14) + st, dp(6) + st);
+            backChip.setPadding(dp(14) + st, dp(3) + st, dp(14) + st, dp(3) + st);
             backChip.setClickable(true);
             backChip.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { goBack(); } });
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.START);
-            lp.leftMargin = dp(12); lp.bottomMargin = dp(26);
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            lp.bottomMargin = dp(2);
             ((FrameLayout) content.getParent()).addView(backChip, lp);
         }
         int vis = backStack.isEmpty() ? View.GONE : View.VISIBLE;
+        if (!backStack.isEmpty()) {
+            String t = "‹ 返回第 " + (backStack.get(backStack.size() - 1) + 1) + " 页";
+            if (!t.contentEquals(backChip.getText())) backChip.setText(t);
+        }
         if (backChip.getVisibility() != vis) backChip.setVisibility(vis);
     }
 
@@ -901,6 +982,7 @@ public class ReaderActivity extends Activity {
         paginate(chapters, geometry(), pg, starts);
         pages.clear(); pages.addAll(pg);
         chapterStart.clear(); chapterStart.addAll(starts);
+        mapToc();
     }
 
     /** 跳过页首的空行（每页都不以空行开头）。 */
@@ -956,8 +1038,10 @@ public class ReaderActivity extends Activity {
                 Page p = new Page();
                 p.chapter = ci;
                 p.start = i;
-                p.text = trimEnd(s.substring(i, end));
-                if (p.text.length() > 0) out.add(p);
+                int e = end;
+                while (e > i && (s.charAt(e - 1) == '\n' || s.charAt(e - 1) == '\r' || s.charAt(e - 1) == ' ')) e--;   // 和以前的 trimEnd 一样
+                p.end = e;
+                if (e > i) out.add(p);
                 i = end;
             }
         }
@@ -969,17 +1053,149 @@ public class ReaderActivity extends Activity {
         return t.substring(0, e);
     }
 
+    private String pageText(Page p) { return chapters.get(p.chapter).text.substring(p.start, p.end); }
+
+    /**
+     * 目录每一条在第几页（分完页 / 重新分页以后算一次）。目录是空的（老书、TXT 没找到“第X章”）就按文件一个一条，和以前一样。
+     */
+    private void mapToc() {
+        if (toc.isEmpty() && chapters.size() > 1)
+            for (int i = 0; i < chapters.size(); i++) toc.add(new Epub.TocItem(String.valueOf(chapters.get(i).title), 0, i, 0));
+        int[] at = new int[toc.size()];
+        for (int i = 0; i < at.length; i++) at[i] = pageAt(toc.get(i).chapter, toc.get(i).offset);
+        tocAt = at.length > 1 ? at : new int[0];
+    }
+
+    /** 现在这一页属于目录的哪一条（最后一个不在这一页后面的条目）；没有目录 -1。 */
+    private int curToc() {
+        int ch, end;
+        if (!pages.isEmpty()) { Page p = pages.get(Math.max(0, Math.min(pages.size() - 1, page))); ch = p.chapter; end = p.end; }
+        else if (provIndex >= 0) { ch = provIndex; end = provEnd; }     // 还没分完页：按先显示的那一页
+        else return -1;
+        int best = -1;
+        for (int i = 0; i < toc.size(); i++) {
+            Epub.TocItem t = toc.get(i);
+            if (t.chapter < ch || t.chapter == ch && t.offset < end) {
+                if (best < 0) best = i;
+                else { Epub.TocItem b = toc.get(best); if (t.chapter > b.chapter || t.chapter == b.chapter && t.offset >= b.offset) best = i; }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 跳到目录第 i 条。分完页了按页跳；还没分完：整本已经读进来就直接排那一章的那一页，
+     * 没读完就按目录缓存里的文件名单独读那一个文件（大书第一次打开以外，目录一打开就能用）。
+     */
+    private void gotoToc(int i) {
+        if (i < 0 || i >= toc.size()) return;
+        final Epub.TocItem t = toc.get(i);
+        if (!pages.isEmpty()) { jump(pageAt(t.chapter, t.offset)); return; }
+        if (chromeVisible) toggleChrome();
+        if (preChapters != null && t.chapter < preChapters.size()) { showProv(preChapters.get(t.chapter), t.chapter, t.offset); return; }
+        if (tocEntries == null || t.chapter >= tocEntries.size() || !"epub".equals(ext)) { VeraToast.show(this, "还在读这本书，稍等一下再点"); return; }
+        final String entry = tocEntries.get(t.chapter);
+        final File f = new File(path);
+        new Thread(new Runnable() { @Override public void run() {
+            Chapter c = null;
+            try { c = Epub.loadChapter(f, entry); } catch (Throwable ignored) { }
+            final Chapter fc = c;
+            ui.post(new Runnable() { @Override public void run() {
+                if (isDestroyed()) return;
+                if (fc == null) { VeraToast.show(ReaderActivity.this, "这一章读不出来"); return; }
+                showProv(fc, t.chapter, t.offset);
+            } });
+        } }, "reader-tocjump").start();
+    }
+
+    /** 还没分完页时显示某一章的某个位置（分完页后 installPages 按 provIndex / provStart 找回这一页）。 */
+    private void showProv(Chapter c, int idx, int off) {
+        if (!pages.isEmpty()) { jump(pageAt(idx, off)); return; }
+        int start = skipBreaks(c.text, Math.max(0, Math.min(off, c.text.length())));
+        if (start >= c.text.length()) start = skipBreaks(c.text, 0);
+        if (start >= c.text.length()) return;
+        int end = pageEnd(c.text, start, geometry());
+        provChapter = c; provIndex = idx; provStart = start; provEnd = end;
+        readPages++;
+        applyStyle();
+        content.setVisibility(View.VISIBLE);
+        setPageText(styled(c.text, start, end), c.text, start, end);
+        footLeft.setText(""); pageOverlay.setText(""); pageInfo.setText("");
+        savePage();
+    }
+
+    /** 目录条目显示的字：分卷下面的章缩进两格。 */
+    private String tocLabel(int i) {
+        Epub.TocItem t = toc.get(i);
+        if (t.depth <= 0) return t.title;
+        StringBuilder b = new StringBuilder();
+        for (int d = 0; d < Math.min(4, t.depth); d++) b.append("\u3000");
+        return b.append(t.title).toString();
+    }
+
+    /**
+     * 经典风格的目录：一页几条（按屏幕高算），‹ › 或左右 / 上下划翻页，点中间的页码输入第几条；打开时翻到现在读的这一章。
+     * 以前是一个对话框里一条一个按钮全部列出来：一千多章的网文要建一千多个控件、在墨水屏上一屏屏往下翻。
+     */
+    private int tocDlgPage;
     private void showToc() {
-        if (chapters.size() <= 1) return;
-        String[] titles = new String[chapters.size()];
-        for (int i = 0; i < titles.length; i++) titles[i] = chapters.get(i).title;
-        new VeraDialog.Builder(this)
-            .title("目录")
-            .items(titles, new VeraDialog.OnPick() {
-                @Override public void onPick(int which) {
-                    jump(chapterStart.get(Math.max(0, Math.min(chapterStart.size() - 1, which))));
-                }
-            }).show();
+        if (toc.size() <= 1) return;
+        final int cur = curToc();
+        final int per = Math.max(5, Math.min(14, (int) ((getResources().getDisplayMetrics().heightPixels * 0.62f) / dp(50))));
+        final int pagesN = (toc.size() + per - 1) / per;
+        tocDlgPage = cur >= 0 ? cur / per : 0;
+        final LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        final PagedBox rows = new PagedBox(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        body.addView(rows, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, per * dp(50)));
+        LinearLayout nav = new LinearLayout(this);
+        nav.setGravity(Gravity.CENTER_VERTICAL);
+        final TextView pageNo = Ui.text(this, "", 16, true);
+        pageNo.setGravity(Gravity.CENTER);
+        final Dialog[] dlg = new Dialog[1];
+        final Runnable[] fill = new Runnable[1];
+        fill[0] = new Runnable() { @Override public void run() {
+            tocDlgPage = Math.max(0, Math.min(pagesN - 1, tocDlgPage));
+            rows.removeAllViews();
+            for (int n = tocDlgPage * per; n < Math.min(toc.size(), tocDlgPage * per + per); n++) {
+                final int to = n;
+                TextView t = Ui.text(ReaderActivity.this, tocLabel(n), 17, n == cur);
+                t.setSingleLine(true);
+                t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                t.setGravity(Gravity.CENTER_VERTICAL);
+                t.setPadding(dp(12), 0, dp(12), 0);
+                if (n == cur) { t.setBackgroundColor(Color.BLACK); t.setTextColor(Color.WHITE); }
+                t.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { if (dlg[0] != null) dlg[0].dismiss(); gotoToc(to); } });
+                rows.addView(t, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
+            }
+            pageNo.setText((tocDlgPage + 1) + " / " + pagesN);
+        } };
+        rows.setListener(new PagedBox.Listener() { @Override public void onPage(int dir) { tocDlgPage += dir; fill[0].run(); } });
+        nav.addView(Ui.button(this, "‹", 18, false, new View.OnClickListener() { @Override public void onClick(View v) { tocDlgPage--; fill[0].run(); } }));
+        nav.addView(pageNo, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        nav.addView(Ui.button(this, "›", 18, false, new View.OnClickListener() { @Override public void onClick(View v) { tocDlgPage++; fill[0].run(); } }));
+        pageNo.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+            tocNumberInput(new OnTocNumber() { @Override public void go(int n) { tocDlgPage = n / per; fill[0].run(); } });
+        } });
+        body.addView(nav, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        fill[0].run();
+        dlg[0] = new VeraDialog.Builder(this).title("目录（" + toc.size() + " 条）").view(body).negative("关闭", null).show();
+    }
+
+    private interface OnTocNumber { void go(int index); }
+
+    /** 输入第几条目录（1 起），翻到那一条所在的目录页。 */
+    private void tocNumberInput(final OnTocNumber cb) {
+        final android.widget.EditText in = new android.widget.EditText(this);
+        in.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        in.setSingleLine(true);
+        in.setTextSize(22);
+        in.setPadding(dp(12), dp(10), dp(12), dp(10));
+        new VeraDialog.Builder(this).title("翻到第几条").message("1 – " + toc.size()).view(in).negative("取消", null)
+            .positive("翻过去", new Runnable() { @Override public void run() {
+                try { cb.go(Math.max(0, Math.min(toc.size() - 1, Integer.parseInt(in.getText().toString().trim()) - 1))); } catch (Throwable ignored) { }
+            } }).show();
     }
 
     // ------------------------------------------------------------------ pdf
@@ -1069,353 +1285,6 @@ public class ReaderActivity extends Activity {
         return s.replace("\r\n", "\n").replace('\r', '\n');
     }
 
-    private static List<Chapter> loadEpub(File f) throws Exception {
-        ZipFile z = new ZipFile(f);
-        try {
-            String opf = null;
-            String container = readEntry(z, "META-INF/container.xml");
-            if (container != null) opf = attr(container, "rootfile", "full-path");
-            if (opf == null) {
-                Enumeration<? extends ZipEntry> en = z.entries();
-                while (en.hasMoreElements()) {
-                    String n = en.nextElement().getName();
-                    if (n.toLowerCase(Locale.US).endsWith(".opf")) { opf = n; break; }
-                }
-            }
-            if (opf == null) throw new Exception("EPUB 缺少 OPF");
-            String opfXml = readEntry(z, opf);
-            if (opfXml == null) throw new Exception("EPUB 的 OPF 读不到");
-            String base = opf.contains("/") ? opf.substring(0, opf.lastIndexOf('/') + 1) : "";
-
-            List<String> order = new ArrayList<String>();
-            Matcher sp = Pattern.compile("(?is)<itemref\\b[^>]*>").matcher(opfXml);
-            java.util.Map<String, String> items = new java.util.HashMap<String, String>();
-            Matcher im = Pattern.compile("(?is)<item\\b[^>]*>").matcher(opfXml);
-            while (im.find()) {
-                String id = attr(im.group(), "id");
-                String href = attr(im.group(), "href");
-                if (id != null && href != null) items.put(id, href);
-            }
-            while (sp.find()) {
-                String idref = attr(sp.group(), "idref");
-                if (idref != null && items.containsKey(idref)) order.add(items.get(idref));
-            }
-            if (order.isEmpty()) {
-                for (String href : items.values()) if (href.matches("(?i).*\\.(x?html?|htm)$")) order.add(href);
-            }
-
-            List<Chapter> out = new ArrayList<Chapter>();
-            long total = 0;
-            for (String href : order) {
-                if (out.size() >= 120) break;
-                // 章的文件名一律存解码后的（OPF 里常写成 %E7%AC%AC1.xhtml）：书内链接的目标也是解码后的，两边对得上才能跳过去
-                String name = resolve(base, pctDecode(href));
-                String html = readEntry(z, name);
-                if (html == null) { String raw = resolve(base, href); html = readEntry(z, raw); if (html != null) name = raw; }
-                if (html == null) { html = readEntry(z, href); name = href; }
-                if (html == null) continue;
-                Chapter c = parseChapter(html, name);
-                String text = c.text;
-                if (text.length() < 8) continue;
-                total += text.length();
-                if (total > 6 * 1024 * 1024) break;
-                c.title = chapterTitle(html, out.size());
-                out.add(c);
-            }
-            return out;
-        } finally {
-            try { z.close(); } catch (Exception ignored) { }
-        }
-    }
-
-    /** 续读时先只读上次那一章（不解析整本书）。 */
-    private static Chapter loadEpubChapter(File f, String entry) throws Exception {
-        ZipFile z = new ZipFile(f);
-        try {
-            String html = readEntry(z, entry);
-            if (html == null) return null;
-            Chapter c = parseChapter(html, entry);
-            c.title = "";
-            return c;
-        } finally {
-            try { z.close(); } catch (Exception ignored) { }
-        }
-    }
-
-    private static String readEntry(ZipFile z, String name) {
-        try {
-            ZipEntry e = z.getEntry(name);
-            if (e == null) {
-                String decoded = java.net.URLDecoder.decode(name, "UTF-8");
-                e = z.getEntry(decoded);
-            }
-            if (e == null) return null;
-            InputStream in = z.getInputStream(e);
-            ByteArrayOutputStream bo = new ByteArrayOutputStream();
-            byte[] b = new byte[8192];
-            int n;
-            while ((n = in.read(b)) > 0) { bo.write(b, 0, n); if (bo.size() > 2 * 1024 * 1024) break; }
-            in.close();
-            return new String(bo.toByteArray(), Charset.forName("UTF-8"));
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    /** 百分号解码（UTF-8），+ 不动；解不了就原样返回。 */
-    static String pctDecode(String s) {
-        if (s == null || s.indexOf('%') < 0) return s;
-        try {
-            ByteArrayOutputStream b = new ByteArrayOutputStream();
-            for (int i = 0; i < s.length(); ) {
-                char ch = s.charAt(i);
-                if (ch == '%' && i + 3 <= s.length()) {
-                    int v = Integer.parseInt(s.substring(i + 1, i + 3), 16);
-                    b.write(v); i += 3;
-                } else { b.write(String.valueOf(ch).getBytes("UTF-8")); i++; }
-            }
-            return new String(b.toByteArray(), "UTF-8");
-        } catch (Throwable t) { return s; }
-    }
-
-    private static String resolve(String base, String href) {
-        String p = base + href;
-        p = p.replace("%20", " ");
-        String[] parts = p.split("/");
-        java.util.ArrayList<String> out = new java.util.ArrayList<String>();
-        for (String part : parts) {
-            if (part.length() == 0 || part.equals(".")) continue;
-            if (part.equals("..")) { if (!out.isEmpty()) out.remove(out.size() - 1); }
-            else out.add(part);
-        }
-        StringBuilder sb = new StringBuilder();
-        for (String part : out) { if (sb.length() > 0) sb.append('/'); sb.append(part); }
-        return sb.toString();
-    }
-
-    private static String attr(String tag, String name, String attrName) {
-        Matcher m = Pattern.compile("(?is)" + Pattern.quote(attrName) + "\\s*=\\s*\"([^\"]*)\"").matcher(tag);
-        if (m.find()) return m.group(1);
-        m = Pattern.compile("(?is)" + Pattern.quote(attrName) + "\\s*=\\s*'([^']*)'").matcher(tag);
-        if (m.find()) return m.group(1);
-        return null;
-    }
-    private static String attr(String tag, String attrName) { return attr(tag, null, attrName); }
-
-    private static String chapterTitle(String html, int index) {
-        Matcher m = Pattern.compile("(?is)<title[^>]*>(.*?)</title>").matcher(html);
-        if (m.find()) {
-            String s = htmlToText(m.group(1)).trim();
-            if (s.length() > 0) return s;
-        }
-        m = Pattern.compile("(?is)<h[1-3][^>]*>(.*?)</h[1-3]>").matcher(html);
-        if (m.find()) {
-            String s = htmlToText(m.group(1)).trim();
-            if (s.length() > 0) return s;
-        }
-        return "第 " + (index + 1) + " 章";
-    }
-
-    // ------------------------------------------------------------------ EPUB 的书内链接（注释号、目录）
-
-    /** 标记字符：私用区，书里不会有。标记夹在原来的文字里走完 stripHtml 的整套替换，最后拿掉并记下位置。 */
-    private static final char MK = '\uE000', MK_END = '\uE001';
-    private static final Pattern TAG = Pattern.compile("<(/?)([A-Za-z][\\w:.-]*)([^>]*)>");
-    private static final java.util.Set<String> BLOCKS = new java.util.HashSet<String>(java.util.Arrays.asList(
-        "p", "li", "div", "aside", "section", "dd", "dt", "td", "blockquote", "ol", "ul", "dl", "table", "body", "h1", "h2", "h3", "h4", "h5", "h6"));
-
-    /**
-     * 一章的 HTML → 文字 + id 的位置 + 书内链接。文字和以前的 stripHtml 一模一样（续读位置、书签都按字符位置记，不能变），
-     * 只是另外记下：每个带 id 的元素从哪个字开始（块级元素还有到哪里结束）、每个 &lt;a href&gt; 盖住哪几个字、指向哪里。
-     */
-    private static Chapter parseChapter(String html, String entry) {
-        Chapter c = new Chapter();
-        c.entry = entry;
-        String s = html;
-        s = s.replaceAll("(?is)<head[^>]*>.*?</head>", " ");
-        s = s.replaceAll("(?is)<script[^>]*>.*?</script>", " ");
-        s = s.replaceAll("(?is)<style[^>]*>.*?</style>", " ");
-        if (s.indexOf(MK) >= 0 || s.indexOf(MK_END) >= 0) { s = s.replace(MK, ' ').replace(MK_END, ' '); }
-        List<int[]> tags = new ArrayList<int[]>();          // {起, 止, 是闭合标签 1/0}
-        List<String> names = new ArrayList<String>(), attrsL = new ArrayList<String>();
-        Matcher m = TAG.matcher(s);
-        while (m.find()) {
-            tags.add(new int[] { m.start(), m.end(), m.group(1).length() > 0 ? 1 : 0 });
-            names.add(m.group(2).toLowerCase(Locale.US));
-            attrsL.add(m.group(3));
-        }
-        if (tags.isEmpty()) { c.text = stripHtml(s); return c; }
-        String dir = entry.contains("/") ? entry.substring(0, entry.lastIndexOf('/') + 1) : "";
-        List<String> idNames = new ArrayList<String>();
-        List<int[]> idInfo = new ArrayList<int[]>();             // {是注释 1/0, 是块 1/0}
-        List<Link> links = new ArrayList<Link>();
-        java.util.Map<Integer, List<Integer>> closeAt = new java.util.HashMap<Integer, List<Integer>>();
-        StringBuilder out = new StringBuilder(s.length() + 64);
-        int last = 0, open = -1;
-        for (int i = 0; i < tags.size(); i++) {
-            int[] t = tags.get(i);
-            String name = names.get(i), at = attrsL.get(i);
-            out.append(s, last, t[0]);
-            List<Integer> ends = closeAt.get(i);
-            if (ends != null) for (int n : ends) out.append(MK).append('X').append(n).append(MK_END);
-            if (t[2] == 1) {
-                if ("a".equals(name) && open >= 0) { out.append(MK).append('E').append(MK_END); open = -1; }
-            } else {
-                String id = attr(at, "id");
-                if (id == null && "a".equals(name)) id = attr(at, "name");
-                if (id != null && id.length() > 0) {
-                    int n = idNames.size();
-                    String type = (String.valueOf(attr(at, "epub:type")) + " " + String.valueOf(attr(at, "class")) + " " + String.valueOf(attr(at, "role"))).toLowerCase(Locale.US);
-                    // 注释元素：aside，或 epub:type / class / role 带 note（footnote、endnote、rearnote……）。
-                    // 但注释号本身（noteref、带 href 的 <a>）和回链（backlink、footnote-back）不是：从注释“返回正文”时要跳回去，
-                    // 以前 pandoc 一类的书（<a id="fnref1" class="footnote-ref">）回链也弹出一个注释框
-                    boolean note = "aside".equals(name) || type.contains("note") && !type.contains("noteref") && !type.contains("back")
-                        && !type.contains("-ref") && !("a".equals(name) && attr(at, "href") != null);
-                    boolean block = BLOCKS.contains(name);
-                    idNames.add(id); idInfo.add(new int[] { note ? 1 : 0, block ? 1 : 0 });
-                    out.append(MK).append('I').append(n).append(MK_END);
-                    if (block && !at.trim().endsWith("/")) {   // 找对应的闭合标签（同名的嵌套要数层数）
-                        int depth = 0;
-                        for (int j = i + 1; j < tags.size(); j++) {
-                            if (!name.equals(names.get(j))) continue;
-                            if (tags.get(j)[2] == 0) { if (!attrsL.get(j).trim().endsWith("/")) depth++; }
-                            else if (depth == 0) {
-                                List<Integer> l = closeAt.get(j);
-                                if (l == null) { l = new ArrayList<Integer>(); closeAt.put(j, l); }
-                                l.add(n);
-                                break;
-                            } else depth--;
-                        }
-                    }
-                }
-                String href = "a".equals(name) ? attr(at, "href") : null;
-                if (href != null && href.length() > 0 && !href.matches("(?i)^[a-z][a-z0-9+.-]*:.*")) {
-                    if (open >= 0) out.append(MK).append('E').append(MK_END);
-                    Link k = new Link();
-                    int hash = href.indexOf('#');
-                    String file = hash >= 0 ? href.substring(0, hash) : href, frag = hash >= 0 ? href.substring(hash + 1) : "";
-                    file = pctDecode(file); frag = pctDecode(frag);   // 不用 URLDecoder：它把 + 当空格（文件名里的 + 就对不上了）
-                    String target = file.length() == 0 ? entry : resolve(dir, file);
-                    k.target = frag.length() > 0 ? target + "#" + frag : target;
-                    String type = (String.valueOf(attr(at, "epub:type")) + " " + String.valueOf(attr(at, "class")) + " " + String.valueOf(attr(at, "role"))).toLowerCase(Locale.US);
-                    k.back = type.contains("back") || type.contains("return");   // backlink、footnote-back、doc-backlink、returnlink……
-                    k.noteref = !k.back && (type.contains("noteref") || type.contains("footnote") || type.contains("endnote") || type.contains("-ref"));
-                    open = links.size();
-                    links.add(k);
-                    out.append(MK).append('L').append(open).append(MK_END);
-                }
-            }
-            out.append(s, t[0], t[1]);
-            last = t[1];
-        }
-        out.append(s, last, s.length());
-        if (open >= 0) out.append(MK).append('E').append(MK_END);
-        String marked = stripHtml(out.toString());
-        // 拿掉标记、记下位置。只在标记的地方补做 stripHtml 本来会做的空白合并（标记把两个空格 / 换行隔开了），
-        // 别处一个字都不动：没有链接的书得到的文字和以前完全一样
-        StringBuilder t = new StringBuilder(marked.length());
-        int[] idStart = new int[idNames.size()], idEnd = new int[idNames.size()];
-        java.util.Arrays.fill(idStart, -1); java.util.Arrays.fill(idEnd, -1);
-        int[] linkStart = new int[links.size()], linkEnd = new int[links.size()];
-        java.util.Arrays.fill(linkStart, -1); java.util.Arrays.fill(linkEnd, -1);
-        int cur = -1;
-        boolean afterMark = false;
-        for (int i = 0; i < marked.length(); i++) {
-            char ch = marked.charAt(i);
-            if (ch == MK) {
-                int e = marked.indexOf(MK_END, i);
-                if (e < 0) break;
-                char kind = marked.charAt(i + 1);
-                int n = -1;
-                try { if (e > i + 2) n = Integer.parseInt(marked.substring(i + 2, e)); } catch (NumberFormatException ignored) { }
-                int pos = t.length();
-                if (kind == 'I' && n >= 0 && n < idStart.length) idStart[n] = pos;
-                else if (kind == 'X' && n >= 0 && n < idEnd.length) idEnd[n] = pos;
-                else if (kind == 'L' && n >= 0 && n < linkStart.length) { linkStart[n] = pos; cur = n; }
-                else if (kind == 'E' && cur >= 0) { linkEnd[cur] = pos; cur = -1; }
-                i = e;
-                afterMark = true;
-                continue;
-            }
-            if (afterMark) {
-                int len = t.length();
-                char prev = len > 0 ? t.charAt(len - 1) : '\n';
-                boolean ws = ch == ' ' || ch == '\t';
-                if (len == 0 && (ws || ch == '\n')) continue;
-                if (ws && (prev == ' ' || prev == '\n')) continue;
-                if (ch == '\n' && prev == '\n' && len > 1 && t.charAt(len - 2) == '\n') continue;
-                if (ch == '\n' && prev == ' ') { t.setLength(len - 1); }
-                if (!ws && ch != '\n') afterMark = false;
-            }
-            t.append(ch);
-        }
-        int n = t.length();
-        while (n > 0 && Character.isWhitespace(t.charAt(n - 1))) n--;
-        t.setLength(n);
-        c.text = t.toString();
-        java.util.Map<String, int[]> ids = new java.util.HashMap<String, int[]>();
-        for (int i = 0; i < idNames.size(); i++) {
-            if (idStart[i] < 0 || ids.containsKey(idNames.get(i))) continue;
-            int st = Math.min(idStart[i], n), en = idEnd[i] < 0 ? -1 : Math.min(idEnd[i], n);
-            ids.put(idNames.get(i), new int[] { st, en, idInfo.get(i)[0], idInfo.get(i)[1] });
-        }
-        c.ids = ids;
-        List<Link> kept = new ArrayList<Link>();
-        for (int i = 0; i < links.size(); i++) {
-            Link k = links.get(i);
-            k.start = Math.min(linkStart[i], n); k.end = Math.min(linkEnd[i] < 0 ? linkStart[i] : linkEnd[i], n);
-            if (k.start < 0) continue;
-            while (k.start < k.end && Character.isWhitespace(c.text.charAt(k.start))) k.start++;
-            while (k.end > k.start && Character.isWhitespace(c.text.charAt(k.end - 1))) k.end--;
-            if (k.end <= k.start && !k.back && k.target.indexOf('#') > 0) {
-                // 没有字的链接：注释号是一张小图（多看格式 <a class="duokan-footnote"><img/></a> 很常见）。以前整个丢掉，这种注释根本点不开。
-                // 正文不能多出字（续读位置、书签都按字符位置记）：链接挂在它前面那个字上（行首就挂后面那个字），那个字画虚下划线、点了弹注释
-                int p = Math.min(k.start, n);
-                while (p > 0 && Character.isWhitespace(c.text.charAt(p - 1))) p--;
-                if (p > 0) { k.start = p - 1; k.end = p; }
-                else { p = Math.min(k.start, n); while (p < n && Character.isWhitespace(c.text.charAt(p))) p++; if (p < n) { k.start = p; k.end = p + 1; } }
-                k.noteref = true;
-            }
-            if (k.end > k.start) kept.add(k);
-        }
-        c.links = kept;
-        return c;
-    }
-
-    private static String stripHtml(String html) {
-        String s = html;
-        s = s.replaceAll("(?is)<head[^>]*>.*?</head>", " ");
-        s = s.replaceAll("(?is)<script[^>]*>.*?</script>", " ");
-        s = s.replaceAll("(?is)<style[^>]*>.*?</style>", " ");
-        s = s.replaceAll("(?i)<br\\s*/?>", "\n");
-        s = s.replaceAll("(?i)</p\\s*>", "\n\n");
-        s = s.replaceAll("(?i)</div\\s*>", "\n");
-        s = s.replaceAll("(?i)</h[1-6]\\s*>", "\n\n");
-        s = s.replaceAll("(?i)<li[^>]*>", "\n· ");
-        s = s.replaceAll("(?s)<[^>]+>", " ");
-        s = htmlToText(s);
-        s = s.replaceAll("[ \\t\\x0B\\f]+", " ");
-        s = s.replaceAll("\\n[ \\t]+", "\n");
-        s = s.replaceAll("\\n{3,}", "\n\n");
-        return s.trim();
-    }
-
-    private static String htmlToText(String s) {
-        s = s.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-             .replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'");
-        Matcher m = Pattern.compile("&#(x?)([0-9a-fA-F]+);").matcher(s);
-        StringBuffer sb = new StringBuffer();
-        while (m.find()) {
-            try {
-                int cp = Integer.parseInt(m.group(2), m.group(1).length() > 0 ? 16 : 10);
-                m.appendReplacement(sb, new String(Character.toChars(cp)));
-            } catch (Exception e) {
-                m.appendReplacement(sb, "");
-            }
-        }
-        m.appendTail(sb);
-        return sb.toString();
-    }
 
     // ------------------------------------------------------------------ progress
 
@@ -1442,8 +1311,13 @@ public class ReaderActivity extends Activity {
             int total = isPdf ? pdfPages : pages.size();
             if (total <= 0) {
                 // 整本还没分完页（先显示的那一页）：只记位置，不动页码和总页数
-                if (!isPdf && provIndex >= 0) prefs().edit().putInt("c:" + path, provIndex).putInt("o:" + path, provStart)
-                    .putLong("r:" + path, System.currentTimeMillis()).apply();
+                if (!isPdf && provIndex >= 0) {
+                    SharedPreferences.Editor e = prefs().edit().putInt("c:" + path, provIndex).putInt("o:" + path, provStart)
+                        .putLong("r:" + path, System.currentTimeMillis());
+                    // 从目录跳到了别的章：续读时先读的那个文件也要跟着改（以前这里只在同一章里往后翻，文件名不会变）
+                    if (provChapter != null && provChapter.entry != null) e.putString("e:" + path, provChapter.entry);
+                    e.apply();
+                }
                 return;
             }
             SharedPreferences.Editor e = prefs().edit().putInt("p:" + path, page).putInt("t:" + path, total)
@@ -1454,7 +1328,9 @@ public class ReaderActivity extends Activity {
                 e.putInt("c:" + path, cur.chapter).putInt("o:" + path, cur.start);
                 // 下次打开时先只排这一页用：EPUB 这一章的文件名、排版条件、页脚左边那句
                 if (cur.chapter < chapters.size() && chapters.get(cur.chapter).entry != null) e.putString("e:" + path, chapters.get(cur.chapter).entry);
-                if (chapters.size() > 1 && cur.chapter < chapters.size()) e.putString("ch:" + path, String.valueOf(chapters.get(cur.chapter).title));   // 方块主页“继续阅读”显示的章名
+                int ti = curToc();
+                if (ti >= 0) e.putString("ch:" + path, toc.get(ti).title);   // 方块主页“继续阅读”显示的章名
+                else if (chapters.size() > 1 && cur.chapter < chapters.size()) e.putString("ch:" + path, String.valueOf(chapters.get(cur.chapter).title));
                 e.putString("st:" + path, geometry().sig).putString("fl:" + path, leftBase);
             }
             e.apply();   // 翻页时不在主线程同步写盘
@@ -1738,7 +1614,7 @@ public class ReaderActivity extends Activity {
     /**
      * 改了字号 / 行距 / 边距 / 字体、正文区域高度变了：整本重新分页，停在同一段文字。
      * 以前在主线程上整本重排（buildPages）：大 TXT 在 512 MB 的 PW5 上要十几秒，触摸 5 秒没回应就是 ANR
-     * （用户诊断 0011115150：5 次“Input dispatching timed out”，主线程都在 rebuildKeepPosition → paginate → StaticLayout）。
+     * （用户诊断：5 次“Input dispatching timed out”，主线程都在 rebuildKeepPosition → paginate → StaticLayout）。
      * 现在和打开书时一样：先用新排版只排当前这一页马上显示（showFirst 的临时页，可以往后翻），整本在后台线程分完再换上
      * 页表（installPages 按字符位置找回这一页；期间又改了排版，它发现 sig 不对会再来一次）。rebuildGen 丢掉过时的结果。
      */
@@ -1859,6 +1735,17 @@ public class ReaderActivity extends Activity {
         alignRow.addView(center, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         alignRow.addView(both, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         box.addView(alignRow);
+
+        box.addView(Ui.text(this, "点按翻页", 17, true));
+        LinearLayout tapRow = new LinearLayout(this);
+        tapRow.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < TAP_L.length; i++) {
+            final int m = i;
+            tapRow.addView(Ui.button(this, TAP_L[i], 14, tapMode == i, new View.OnClickListener() {
+                @Override public void onClick(View v) { tapMode = m; saveStyle(); d.dismiss(); }
+            }), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        }
+        box.addView(tapRow);
 
         box.addView(Ui.text(this, "阅读背景", 17, true));
         LinearLayout bgRow = new LinearLayout(this);
@@ -2072,7 +1959,7 @@ public class ReaderActivity extends Activity {
         sheetBox.removeAllViews();
         if (i < 0) { sheetBox.setVisibility(View.GONE); return; }
         switch (i) {
-        case 0: sheetToc(0); break;
+        case 0: sheetToc(-1); break;
         case 1: sheetFont(); break;
         case 2: sheetLayout(); break;
         case 3: sheetDisplay(); break;
@@ -2097,29 +1984,29 @@ public class ReaderActivity extends Activity {
         sheetBox.addView(r, Blocks.match());
     }
 
-    /** 目录 / 书签：一页 6 条，翻页条翻。 */
+    /** 目录 / 书签：一页 6 条，翻页条翻，点翻页条中间的页码输入第几条。pg = -1：翻到现在读的这一章。 */
     private int tocPage, tocSeg;
     private void sheetToc(int pg) {
         sheetBox.removeAllViews();
         tocPage = pg;
         final List<String> bms = bookmarks();
-        boolean hasToc = !isPdf && chapters.size() > 1;
+        boolean hasToc = !isPdf && toc.size() > 1;
         if (!hasToc) tocSeg = 1;
         sheetHead("Contents", hasToc ? "目录" : "书签");
-        if (hasToc && !bms.isEmpty()) sheetBox.addView(new Blocks.SegBar(this, new String[] { "目录（" + chapters.size() + "）", "书签（" + bms.size() + "）" }, tocSeg,
-            new Blocks.SegBar.Listener() { @Override public void onPick(int k) { tocSeg = k; sheetToc(0); } }), Blocks.match());
+        if (hasToc && !bms.isEmpty()) sheetBox.addView(new Blocks.SegBar(this, new String[] { "目录（" + toc.size() + "）", "书签（" + bms.size() + "）" }, tocSeg,
+            new Blocks.SegBar.Listener() { @Override public void onPick(int k) { tocSeg = k; sheetToc(-1); } }), Blocks.match());
         final List<String> names = new ArrayList<String>();
         final List<Integer> targets = new ArrayList<Integer>();
-        int curCh = !isPdf && !pages.isEmpty() ? pages.get(Math.max(0, Math.min(pages.size() - 1, page))).chapter : -1;
         int highlight = -1;
         if (tocSeg == 0 && hasToc) {
-            for (int c = 0; c < chapters.size() && c < chapterStart.size(); c++) { names.add(String.valueOf(chapters.get(c).title)); targets.add(chapterStart.get(c)); if (c == curCh) highlight = c; }
+            highlight = curToc();
+            for (int c = 0; c < toc.size(); c++) { names.add(tocLabel(c)); targets.add(-1 - c); }   // 负数 = 目录第几条（还没分完页也能跳）
         } else {
             int total = isPdf ? pdfPages : pages.size();
             for (String k : bms) { int p = bookmarkPage(k); if (p < 0) continue; names.add("第 " + (p + 1) + " 页 · " + ((p + 1) * 100 / Math.max(1, total)) + "%"); targets.add(p); }
         }
         final int per = 6, pages0 = Math.max(1, (names.size() + per - 1) / per);
-        if (pg == 0 && highlight >= 0) tocPage = highlight / per;
+        if (pg < 0) tocPage = highlight >= 0 ? highlight / per : 0;   // 打开时翻到现在读的这一章（以前翻回第 1 页也会被拉回这里）
         tocPage = Math.max(0, Math.min(pages0 - 1, tocPage));
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
@@ -2133,7 +2020,7 @@ public class ReaderActivity extends Activity {
             t.setGravity(Gravity.CENTER_VERTICAL);
             if (n == highlight) { t.setBackgroundColor(Color.BLACK); t.setTextColor(Color.WHITE); }
             t.setClickable(true);
-            t.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { jump(to); } });
+            t.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { if (to < 0) gotoToc(-1 - to); else jump(to); } });
             Blocks.fast(t);
             if (list.getChildCount() > 0) list.addView(Blocks.hair(this));
             list.addView(t, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
@@ -2141,8 +2028,11 @@ public class ReaderActivity extends Activity {
         if (names.isEmpty()) { TextView t = Ui.text(this, "这本书没有目录，也还没有书签。", 15, false); t.setPadding(dp(10), dp(14), dp(10), dp(14)); list.addView(t); }
         sheetBox.addView(list, Blocks.gap(this, 6));
         if (pages0 > 1) {
-            Blocks.Pager pager = new Blocks.Pager(this, new Blocks.Pager.Listener() { @Override public void onPage(int dir) { sheetToc(tocPage + dir); } });
+            Blocks.Pager pager = new Blocks.Pager(this, new Blocks.Pager.Listener() { @Override public void onPage(int dir) { sheetToc(Math.max(0, tocPage + dir)); } });
             pager.set(tocPage + 1, pages0);
+            if (tocSeg == 0 && hasToc) pager.onMidTap(new View.OnClickListener() { @Override public void onClick(View v) {
+                tocNumberInput(new OnTocNumber() { @Override public void go(int n) { sheetToc(n / per); } });
+            } });
             sheetBox.addView(pager, Blocks.gap(this, 6));
         }
         // 跳到：百分比步进器（一步 5%），点中间的值输入页码
@@ -2286,7 +2176,7 @@ public class ReaderActivity extends Activity {
         final String anim = cfg.get("KFB_ANIM_MODE");
         sheetRow("翻页动画", "Page animation", new Blocks.Switch(this, anim == null || !"0".equals(anim), new Icons.Toggle.Listener() {
             @Override public void onToggle(boolean on) { HostLink.settings("KFB_ANIM_MODE=" + (on ? 1 : 0) + "\n"); } }));
-        sheetRow("点按翻页", "Tap zones", new Blocks.Stepper(this, new String[] { "左边上一页", "全屏下一页" }, tapMode, new Blocks.Stepper.Listener() {
+        sheetRow("点按翻页", "Tap zones", new Blocks.Stepper(this, TAP_L, tapMode, new Blocks.Stepper.Listener() {
             @Override public void onStep(int i) { tapMode = i; saveStyle(); } }).wrap());
     }
 

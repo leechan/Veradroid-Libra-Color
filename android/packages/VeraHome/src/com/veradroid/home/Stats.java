@@ -127,6 +127,26 @@ final class Stats {
     /** 最近 days 天（含今天）的阅读毫秒数（方块主页“本周阅读时长”、“我的”页本月）。 */
     static long readingMs(Context c, int days) {
         SharedPreferences sp = p(c);
+        // 方块主页 / “我的”的签名每次换页、回到前台都要算（本月最多 31 次日期格式化）：同一天、阅读记录没变就用上次的
+        if (readL == null) {
+            readL = new SharedPreferences.OnSharedPreferenceChangeListener() {
+                @Override public void onSharedPreferenceChanged(SharedPreferences p, String k) { if (k == null || k.startsWith("read.")) READ_MEMO.clear(); }
+            };
+            sp.registerOnSharedPreferenceChangeListener(readL);
+        }
+        String key = days + "|" + (System.currentTimeMillis() + java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis())) / 86400000L;
+        Long memo = READ_MEMO.get(key);
+        if (memo != null) return memo;
+        long ms = readingMs0(sp, days);
+        if (READ_MEMO.size() > 8) READ_MEMO.clear();
+        READ_MEMO.put(key, ms);
+        return ms;
+    }
+    private static final java.util.Map<String, Long> READ_MEMO = new java.util.concurrent.ConcurrentHashMap<String, Long>();
+    private static SharedPreferences.OnSharedPreferenceChangeListener readL, bmL;
+    private static volatile int bmMemo = -1;
+
+    private static long readingMs0(SharedPreferences sp, int days) {
         SimpleDateFormat f = new SimpleDateFormat("yyyyMMdd", Locale.US);
         long now = System.currentTimeMillis(), ms = 0;
         for (int i = 0; i < days; i++) ms += sp.getLong("read." + f.format(new Date(now - i * 86400000L)) + ".ms", 0);
@@ -151,12 +171,23 @@ final class Stats {
 
     /** 所有书的书签总数（阅读器存在 reader 偏好的 bm:<路径>，分号隔开）。 */
     static int bookmarkCount(Context c) {
+        // 以前每次都把阅读器偏好整个复制一遍（每本书好几项）：签名里要用，换页、回到前台、预搭时一再调用。书签变了才重数
+        SharedPreferences rp = Store.prefs(c, "reader");
+        if (bmL == null) {
+            bmL = new SharedPreferences.OnSharedPreferenceChangeListener() {
+                @Override public void onSharedPreferenceChanged(SharedPreferences p, String k) { if (k == null || k.startsWith("bm:")) bmMemo = -1; }
+            };
+            rp.registerOnSharedPreferenceChangeListener(bmL);
+        }
+        int memo = bmMemo;
+        if (memo >= 0) return memo;
         int n = 0;
         try {
-            for (java.util.Map.Entry<String, ?> e : Store.prefs(c, "reader").getAll().entrySet())
+            for (java.util.Map.Entry<String, ?> e : rp.getAll().entrySet())
                 if (e.getKey().startsWith("bm:") && e.getValue() instanceof String)
                     for (String x : ((String) e.getValue()).split(";")) if (x.length() > 0) n++;
         } catch (Throwable ignored) { }
+        bmMemo = n;
         return n;
     }
 
@@ -172,6 +203,7 @@ final class Stats {
     static void pruneAsync(final Context c) {
         final Context a = c.getApplicationContext() != null ? c.getApplicationContext() : c;
         new Thread(new Runnable() { @Override public void run() {
+            Ui.lowPriority();
             try { prune(a); } catch (Throwable t) { android.util.Log.w("VeraHome", "prefs prune failed", t); }
         } }, "prefs-prune").start();
     }

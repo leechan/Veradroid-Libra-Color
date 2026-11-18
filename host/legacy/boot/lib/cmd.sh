@@ -23,7 +23,7 @@ fwd_on() {
     upload_dir_fix 2>/dev/null     # 打开传书：暂存目录现在就要能写（common.sh）
     # 共用 Kindle 网络（chroot / hostnet：KT6 5.17、老机型）时没有 slirp，传书网页的端口就在 Kindle 自己的 wlan0 上，
     # 但 Kindle 的防火墙默认拦掉进来的连接：临时放行这一个端口（关传书时撤掉）。以前这里只记一句 "no slirp control"，
-    # 传书网页打不开（用户诊断 632015 连开了 5 次）。
+    # 传书网页打不开（用户诊断 连开了 5 次）。
     if [ "$(cat $W/mode 2>/dev/null)" = chroot ] || hostns; then
         fdev=$(sed -n 's/^iface=\([A-Za-z0-9_.-]*\)$/\1/p' $X/hostnet 2>/dev/null | head -1); [ -n "$fdev" ] || fdev=wlan0
         iptables -C INPUT -i $fdev -p tcp --dport $1 -j ACCEPT 2>/dev/null || iptables -I INPUT -i $fdev -p tcp --dport $1 -j ACCEPT 2>/dev/null
@@ -173,7 +173,7 @@ cmd_listen() {
     cmdfifo=$X/ctl/cmd
     # 已经是 FIFO 就沿用，不要先删再建：解冻时桌面马上会发命令（appdisp / status），删掉的那一瞬间
     # Java 的 FileOutputStream 会在原地建一个普通文件，mkfifo 随之失败（"File exists"），命令通道从此没了，
-    # 返回 Kindle / 设置全都没反应（用户诊断 632015：解冻后只能重启 Kindle）。不是 FIFO 就删掉重建，重试几次。
+    # 返回 Kindle / 设置全都没反应（用户诊断：解冻后只能重启 Kindle）。不是 FIFO 就删掉重建，重试几次。
     i=0
     while [ ! -p $cmdfifo ] && [ $i -lt 20 ]; do
         rm -f $cmdfifo; mkfifo $cmdfifo 2>/dev/null; i=$((i + 1))

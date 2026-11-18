@@ -75,7 +75,7 @@ sleep_watch() {
                 # Freeze Android first; otherwise its last frame can overwrite
                 # the screensaver image right after eips draws it.
                 # 正在装 APK（afterboot.sh 写 $W/installing）时不冻结：冻在 dex2oat 中间、几小时后解冻，PackageManager
-                # 线程还卡着，system_server 会被自己的 Watchdog 杀掉（用户诊断 092A03）。ctl/sleep 已经挡住显示桥；
+                # 线程还卡着，system_server 会被自己的 Watchdog 杀掉（用户诊断）。ctl/sleep 已经挡住显示桥；
                 # 机器真睡下去（suspended）时整个系统一起停，uptime 也停，不会触发 Watchdog。
                 if alive $W/installing; then
                     touch $W/saver_nofreeze; t "screensaver: an apk is being installed, android left running"

@@ -70,7 +70,7 @@ hostnet_write() {
         [ -n "$addr" ] && echo "addr=$addr"
         [ -n "$gw" ] && echo "gw=$gw"
         for d in $ANDROID_DNS; do echo "dns=$d"; done
-        # 只要 IPv4：以前的 [0-9.]* 把 IPv6 的 "240c::6666" 截成了 "240"（用户诊断 632015 的 dns=240）
+        # 只要 IPv4：以前的 [0-9.]* 把 IPv6 的 "240c::6666" 截成了 "240"（用户诊断 的 dns=240）
         sed -n 's/^nameserver[[:space:]]*\([0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)[[:space:]]*$/dns=\1/p' "$(readlink -f /etc/resolv.conf)" 2>/dev/null
     } > $X/hostnet
     chmod 644 $X/hostnet

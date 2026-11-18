@@ -7,7 +7,7 @@
 #        pw6 | k49-512 | k49-1g | a7-512 | a9-512 | a9-256   -> rootfs-<class>-<git>.tar.gz
 #   build_rootfs.sh repack-class <class>                  pack the last build of that class again
 #   Family pw6 and class pw6 of one revision have the same output name (rootfs-pw6-<git>): give them different DEST.
-# Paths can be overridden (e.g. for a second build host): VD_AOSP, VD_LOCK, WORK, DEST, VD_CPUS, VD_JOBS, VD_MEM, VD_MEMSWAP.
+# Paths can be overridden (e.g. for a second build host): VD_AOSP, VD_LOCK, WORK, DEST, VD_CPUS, VD_JOBS, VD_MEM, VD_MEMSWAP, VD_OC.
 # Parallel builds (one per out dir): VD_CNAME=<container name>, VD_LOCK=<lock per out dir>, VD_NOSYNC=1 (run 'sync' once before
 # starting them: a sync while another build compiles from the same tree removes and re-copies VeraIME / VeraHome under it).
 # The k49 family build edits device/veradroid/kindle/BoardConfig.mk (shared with class pw6 / family pw6): give it its own VD_SRC.
@@ -61,7 +61,7 @@ sync_src() {
     for d in src res assets; do rm -rf "$D/$d"; cp -a "$W/$d" "$D/$d"; done
     cp "$W/AndroidManifest.xml" "$W/Android.mk" "$D/"
     find "$SRC/device/veradroid" "$SRC/packages/apps/VeraHome" "$D" -name '._*' -delete
-    chmod -R a+rX "$SRC/device/veradroid" "$SRC/packages/apps/VeraHome" "$D" "$SRC/packages/apps/AndroidManifest.xml"
+    chmod -R a+rX "$SRC/device/veradroid" "$SRC/packages/apps/VeraHome" "$D" "$SRC/packages/apps/AndroidManifest.xml" "$SRC/packages/apps/res" "$SRC/packages/apps/Android.mk"
     grep -q 'config_enableWallpaperService">false' "$SRC/device/veradroid/kindle/overlay/frameworks/base/core/res/res/values/config.xml"
     echo "synced $REV into $SRC"
 }
@@ -164,14 +164,14 @@ case "${1:-all}" in
             a9-256)  set -- "$1" veradroid_a9_256  kindle32   cortex-a9 ;;
             *) echo "unknown class $CLASS" >&2; exit 2 ;;
         esac
-        PRODUCT=$2; DEV=$3; CPU=$4; OC=$A/out-c-$CLASS
+        PRODUCT=$2; DEV=$3; CPU=$4; OC=${VD_OC:-$A/out-c-$CLASS}   # VD_OC: a private out dir for this class
         # seed a new out dir from the last family build (host tools, target/common Java intermediates, ccache-warm objects;
         # the build container runs as uid 1000, so an empty dir made here would not even be writable)
         if [ ! -d "$OC" ]; then
             SEED=$O64; [ "$DEV" = kindle32 ] && [ -d "$A/out-legacy" ] && SEED=$A/out-legacy
             nice -n 15 cp -a --reflink=auto "$SEED" "$OC.partial" && mv "$OC.partial" "$OC"
         fi
-        if [ "$1" = class ]; then [ -n "${VD_NOSYNC:-}" ] || sync_src; build "$OC" "$A/log/build-class-$CLASS.log" "$DEV"; fi
+        if [ "$1" = class ]; then [ -n "${VD_NOSYNC:-}" ] || sync_src; build "$OC" "${VD_LOG:-$A/log/build-class-$CLASS.log}" "$DEV"; fi
         pack "$CLASS" "$OC/target/product/$DEV" ;;
     *) echo "usage: prepare|sync|pw6|k49|all|class <c>|repack-class <c>" >&2; exit 2 ;;
 esac

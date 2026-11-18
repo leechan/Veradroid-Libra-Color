@@ -320,26 +320,55 @@ fw_tidy_crash() {
     return 0
 }
 
+# 书库入口“VeraDroid 启动”（documents/VeraDroid 启动.sh）。用户找不到它是最常见的“进不去”：误删了、从 KUAL / 备用入口启动的、
+# 书库按“最近”排时被新书挤到后面几页（KO3 上）。补回去的地方：安装器、veradroid.sh 每次启动（launcher_restore）、
+# 回到 Kindle 时（launcher_ensure）、KUAL 菜单“恢复书库入口”（kual/restore-entry.sh，同样几步，不依赖这里）。
+LAUNCH_ENTRY="/mnt/us/documents/VeraDroid 启动.sh"
+# 入口文件不在：从程序目录的备用入口拷一份，标题改回正式的。补了返回 0
+launcher_restore() {
+    [ -d /mnt/us/documents ] || return 1
+    [ -f "$LAUNCH_ENTRY" ] && return 1
+    [ -f "$VD/VeraDroid-Launch.sh" ] || return 1
+    sed 's/^# Name: .*/# Name: VeraDroid 启动/' "$VD/VeraDroid-Launch.sh" > "$LAUNCH_ENTRY" 2>/dev/null && chmod 755 "$LAUNCH_ENTRY" 2>/dev/null \
+        || { rm -f "$LAUNCH_ENTRY" 2>/dev/null; return 1; }
+    t "launcher: library entry file restored"
+    lipc-set-prop com.lab126.scanner reScanFile "$LAUNCH_ENTRY" 2>/dev/null && t "launcher: asked the scanner to index the library entry"
+    return 0
+}
 launcher_ensure() {
     [ -d /mnt/us/documents ] || return 0
-    L="/mnt/us/documents/VeraDroid 启动.sh"
-    if [ ! -f "$L" ]; then
-        [ -f "$VD/VeraDroid-Launch.sh" ] || return 0
-        # 程序目录里那份的标题是“备用入口”（见 bootstrap.sh：用户把 veradroid 文件夹拷进 documents 时不和正式入口重名），放回书库时改回正式标题
-        sed 's/^# Name: .*/# Name: VeraDroid/' "$VD/VeraDroid-Launch.sh" > "$L" 2>/dev/null && chmod 755 "$L" 2>/dev/null && t "launcher: library entry file restored" || return 0
-    elif command -v sqlite3 >/dev/null 2>&1 && [ -f /var/local/cc.db ]; then
-        n=$(sqlite3 /var/local/cc.db "select count(*) from Entries where p_location='$L'" 2>/dev/null)
-        if [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null; then
-            # 已经在书库里。封面：索引服务从脚本头的 "# Icon:" 解出 <文件>.sdr/icon.png；没有这张图时书库显示成普通文档的样子。
-            # 每个固件版本只补扫一次（有的越狱环境不解图标，不要每次返回都重扫）。
-            [ -f "$L.sdr/icon.png" ] && return 0
-            fwv=$(head -1 /etc/prettyversion.txt 2>/dev/null)
-            [ "$(cat $SYS/launcher-icon.tried 2>/dev/null)" = "$fwv" ] && return 0
-            echo "$fwv" > $SYS/launcher-icon.tried 2>/dev/null
-            lipc-set-prop com.lab126.scanner reScanFile "$L" 2>/dev/null && t "launcher: entry has no cover image, asked the scanner to index it again"
-            return 0
+    L=$LAUNCH_ENTRY
+    launcher_restore && return 0
+    [ -f "$L" ] || return 0
+    # 以前的入口标题是“VeraDroid”，说明文字里却一直写“VeraDroid 启动”：改成一样的（只认我们的那一行）
+    if head -3 "$L" 2>/dev/null | grep -q '^# Name: VeraDroid$'; then
+        sed 's/^# Name: VeraDroid$/# Name: VeraDroid 启动/' "$L" > "$L.tmp" 2>/dev/null && chmod 755 "$L.tmp" 2>/dev/null && mv -f "$L.tmp" "$L" \
+            && { t "launcher: entry title changed to VeraDroid 启动"; lipc-set-prop com.lab126.scanner reScanFile "$L" 2>/dev/null; return 0; }
+        rm -f "$L.tmp" 2>/dev/null
+    fi
+    command -v sqlite3 >/dev/null 2>&1 && [ -f /var/local/cc.db ] || return 0
+    n=$(sqlite3 /var/local/cc.db "select count(*) from Entries where p_location='$L'" 2>/dev/null)
+    if [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null; then
+        # 书库按“最近”排（p_lastAccess）：比入口新的书 / 文档有 4 本以上，入口就不在第一屏了。改一下文件时间再让索引服务重扫，
+        # 它把“最近”记成文件的修改时间（测试机实测：安装器 touch 过的入口 p_lastAccess = p_modificationTime），入口回到前面。
+        # 只在被挤下去时做：正在读的书仍排在它前面。
+        la=$(sqlite3 /var/local/cc.db "select max(p_lastAccess) from Entries where p_location='$L'" 2>/dev/null)
+        case "$la" in ''|*[!0-9]*) la= ;; esac
+        if [ -n "$la" ]; then
+            nb=$(sqlite3 /var/local/cc.db "select count(*) from Entries where p_isVisibleInHome=1 and p_type like 'Entry:Item%' and p_type!='Entry:Item:Dictionary' and p_location!='$L' and p_lastAccess>$la" 2>/dev/null)
+            if [ -n "$nb" ] && [ "$nb" -ge 4 ] 2>/dev/null; then
+                touch "$L" 2>/dev/null
+                lipc-set-prop com.lab126.scanner reScanFile "$L" 2>/dev/null && t "launcher: entry was behind $nb newer items in the library, indexed it again to bring it forward"
+                return 0
+            fi
         fi
-    else
+        # 已经在书库里。封面：索引服务从脚本头的 "# Icon:" 解出 <文件>.sdr/icon.png；没有这张图时书库显示成普通文档的样子。
+        # 每个固件版本只补扫一次（有的越狱环境不解图标，不要每次返回都重扫）。
+        [ -f "$L.sdr/icon.png" ] && return 0
+        fwv=$(head -1 /etc/prettyversion.txt 2>/dev/null)
+        [ "$(cat $SYS/launcher-icon.tried 2>/dev/null)" = "$fwv" ] && return 0
+        echo "$fwv" > $SYS/launcher-icon.tried 2>/dev/null
+        lipc-set-prop com.lab126.scanner reScanFile "$L" 2>/dev/null && t "launcher: entry has no cover image, asked the scanner to index it again"
         return 0
     fi
     lipc-set-prop com.lab126.scanner reScanFile "$L" 2>/dev/null && t "launcher: asked the scanner to index the library entry"

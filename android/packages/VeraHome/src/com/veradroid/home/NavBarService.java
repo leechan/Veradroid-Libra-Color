@@ -115,9 +115,7 @@ public class NavBarService extends Service {
     }
 
     private void home() {
-        Intent i = new Intent(this, HomeActivity.class);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION);
-        startActivity(i);
+        startActivity(HomeActivity.homeIntent(this));
     }
 
     private void recents() {

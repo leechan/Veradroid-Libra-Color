@@ -6,6 +6,8 @@ SYS=/mnt/base-us/system/veradroid          # 数据：rootfs、data、日志、�
 SYSTEM_IMG=/mnt/base-us/veradroid-sys.img   # vfat /mnt/base-us 上的 ext4 系统盘（PW5 等）
 # 日志 / 标记 / 备份的位置（veradroid/logs、state、backup）和根目录旧文件的搬迁：tidy.sh
 [ -f "$VD/boot/lib/tidy.sh" ] && . "$VD/boot/lib/tidy.sh"
+# 更新前备份的设置和“已备份的数据”（列出 / 删除）：backup.sh
+[ -f "$VD/boot/lib/backup.sh" ] && . "$VD/boot/lib/backup.sh"
 # 有的机型（KT6，eink-emulator 实测）loop 节点只有 /dev/loop/N，没有 /dev/loopN，`mount -o loop` 找不到空闲设备。
 # 先试 mount -o loop，不行就自己挑一个空闲节点用 busybox losetup 绑定。
 loop_mount() { # img dir
@@ -292,7 +294,12 @@ docs_verify() { # list [why]
         t "!!! documents: restored $((dv_n - dv_left)) of $dv_n from ${dv_b##*/}"; echo "[$(date '+%F %T')] restored $((dv_n - dv_left)) of $dv_n from $dv_b" >> $VD/DOCUMENTS-LOSS.log 2>/dev/null
         dv_r=1; [ $dv_left -eq 0 ] && break
     done
-    [ $dv_r = 1 ] || t "!!! documents: no pre-install backup to restore from"
+    if [ $dv_r != 1 ]; then
+        dv_bm=$(sed -n 's/^result=//p' /mnt/base-us/veradroid/state/backup.last 2>/dev/null | tail -1)
+        t "!!! documents: no pre-install backup to restore from${dv_bm:+ (last pre-install backup: $dv_bm)}"
+        # 更新前备份关着（设置 → 设备与更新 → 更新前备份）/ 空间不够没做：清单照样核对，但没有东西可以补
+        echo "[$(date '+%F %T')] 没有安装前备份，少了的文件补不回来${dv_bm:+（这次安装的备份：$dv_bm；off = 更新前备份已关闭）}" >> $VD/DOCUMENTS-LOSS.log 2>/dev/null
+    fi
     sync
     return 1
 }

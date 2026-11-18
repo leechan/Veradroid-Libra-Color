@@ -45,4 +45,10 @@ PRODUCT_PROPERTY_OVERRIDES += \
     ro.zygote=zygote32 \
     persist.sys.usb.config=none \
     debug.hwui.renderer=skia \
-    ro.kernel.qemu=0
+    ro.kernel.qemu=0 \
+    ro.vd.oec=1
+
+# adbd only accepts computers whose key is in adb_keys (userdebug builds leave ro.adb.secure unset = any computer is
+# 'device'). Read-only, so it goes into default.prop, which adbd reads before anything can change it.
+PRODUCT_DEFAULT_PROPERTY_OVERRIDES += \
+    ro.adb.secure=1

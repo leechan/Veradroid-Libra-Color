@@ -115,3 +115,38 @@ vd_root_tidy() {
     return 0
 }
 # END vd_root_tidy
+# BEGIN vd_where_notes
+# 用户用 USB 打开 Kindle 盘时看到的说明（2026-11-19，“东西放在哪”）：veradroid/说明.txt 写清每个子文件夹是什么，
+# veradroid/screensaver/把屏保图片放这里.txt 说屏保图片放这里。安装器每次运行、veradroid.sh 每次启动都写（内容一样就不动）。
+# 这一段在 bootstrap*.sh 和各机型 boot/lib/tidy.sh 里是同一份（tests/where-notes-test.sh 核对）。set -eu 下也不能失败。
+vd_note_put() { # 文件 内容：内容不同才写（文件名是中文：用户存储是 ext4 / vfat 都能存 UTF-8 名字）
+    [ "$(cat "$1" 2>/dev/null || true)" = "$2" ] && return 0
+    printf '%s\n' "$2" > "$1.tmp" 2>/dev/null && mv -f "$1.tmp" "$1" 2>/dev/null || rm -f "$1.tmp" 2>/dev/null || true
+    return 0
+}
+vd_where_notes() {
+    vwn=${VD_TOP:-/mnt/base-us}/veradroid
+    [ -d "$vwn" ] || return 0
+    vd_note_put "$vwn/说明.txt" "VeraDroid 程序文件夹（不要删、不要改名；书和 Android 的数据不在这里）
+
+你可能会用到的：
+  screensaver/            屏保图片：把 jpg / png 放进来，在 Android 的 设置 → 屏保 里选
+  update/                 离线更新：把离线包原样放进来，下次点“VeraDroid 启动”时自动安装
+  VeraDroid-Launch.sh     备用入口：书库里找不到“VeraDroid 启动”时，把它拷进 documents，在书库里点它；
+                          启动一次以后，书库里的“VeraDroid 启动”会自动放回去
+  VeraDroid-Uninstall.sh  卸载：Android 起不来时才用，拷进 documents 再点，按屏幕上的说明做
+  logs/                   日志：反馈问题时附上 install.log 和 boot.log
+  backup/                 安装前自动做的备份，留着
+  kindle-crash/           Kindle 自己的崩溃记录（从书库里挪出来的），可以删
+
+其余的（boot、bin、apps、fonts、state 等）是程序本身。
+找不到书库入口，也可以用 KUAL 菜单：VeraDroid → 恢复书库入口。"
+    mkdir -p "$vwn/screensaver" 2>/dev/null || return 0
+    vd_note_put "$vwn/screensaver/把屏保图片放这里.txt" "把屏保图片（jpg / png）放在这个文件夹里。
+Kindle 休眠时，VeraDroid 显示这里的图片。在 Android 的 设置 → 屏保 里可以选“轮换全部图片”或只用其中一张。
+竖图、和屏幕差不多大最好；单张不要超过 8 MB。default.png 是自带的图，不算。
+
+图片也可以放在 Android 的 内部存储/Screensaver 文件夹（传书网页的“文件”里能上传，屏保页的“从内部存储导入…”也会放到那里）。"
+    return 0
+}
+# END vd_where_notes

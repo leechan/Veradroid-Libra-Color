@@ -117,6 +117,11 @@ PATCHES = [
     ("frameworks/opt/net/ethernet/java/com/android/server/ethernet/EthernetNetworkFactory.java",
      "        mIfaceMatch = context.getResources().getString(\n                com.android.internal.R.string.config_ethernet_iface_regex);\n",
      "        mIfaceMatch = context.getResources().getString(\n                com.android.internal.R.string.config_ethernet_iface_regex);\n        final String vdHostIface = VdHostNet.iface();  // VeraDroid: shared Kindle network\n        if (vdHostIface != null) mIfaceMatch = java.util.regex.Pattern.quote(vdHostIface);\n"),
+    # 以前的中间版本（只有 VdHostNet.linkProperties 那一行）打过的源码树：升级成最终版本。干净的源码树里没有这段，跳过。
+    # 必须排在下面“原版 → 最终版”那一条前面：中间版本的树里没有原版那行，那一条会报 text not found。
+    ('frameworks/opt/net/ethernet/java/com/android/server/ethernet/EthernetNetworkFactory.java',
+     '                final LinkProperties vdHostLp = VdHostNet.linkProperties(mIface);  // VeraDroid\n                if (vdHostLp != null) {\n                    linkProperties = vdHostLp;\n                } else if (config.getIpAssignment() == IpAssignment.STATIC) {',
+     '                final LinkProperties vdHostLp = VdHostNet.enabled() ? VdHostNet.waitForKindle(mIface) : null;  // VeraDroid: never DHCP in hostnet\n                if (VdHostNet.enabled() && vdHostLp == null) {\n                    Log.i(TAG, "VeraDroid hostnet: provisioning of " + mIface + " stopped before the Kindle configured it");\n                    synchronized(EthernetNetworkFactory.this) { mIpProvisioningThread = null; }\n                    return;\n                } else if (vdHostLp != null) {\n                    linkProperties = vdHostLp;\n                } else if (config.getIpAssignment() == IpAssignment.STATIC) {', "optional"),
     ('frameworks/opt/net/ethernet/java/com/android/server/ethernet/EthernetNetworkFactory.java',
      '                if (config.getIpAssignment() == IpAssignment.STATIC) {',
      '                final LinkProperties vdHostLp = VdHostNet.enabled() ? VdHostNet.waitForKindle(mIface) : null;  // VeraDroid: never DHCP in hostnet\n                if (VdHostNet.enabled() && vdHostLp == null) {\n                    Log.i(TAG, "VeraDroid hostnet: provisioning of " + mIface + " stopped before the Kindle configured it");\n                    synchronized(EthernetNetworkFactory.this) { mIpProvisioningThread = null; }\n                    return;\n                } else if (vdHostLp != null) {\n                    linkProperties = vdHostLp;\n                } else if (config.getIpAssignment() == IpAssignment.STATIC) {'),
@@ -251,10 +256,6 @@ PATCHES = [
     # hostnet：Kindle 的 Wi-Fi 在 Android 开机时还没连上（真机 PW4 第一份报告），宿主写的 hostnet 里没有地址，上面那段返回 null，
     # 原来的代码就在 Kindle 自己的 wlan0 上跑 DHCP（拿到第二个租约，应用照样上不了网）。hostnet 模式下一律等 Kindle 自己把网卡配好
     # （VdHostNet.waitForKindle，地址 / 网关直接读内核），绝不跑 DHCP、不改网卡。
-    # 以前的中间版本（只有上面 VdHostNet.linkProperties 那一行）打过的源码树：升级成最终版本。干净的源码树里没有这段，跳过。
-    ('frameworks/opt/net/ethernet/java/com/android/server/ethernet/EthernetNetworkFactory.java',
-     '                final LinkProperties vdHostLp = VdHostNet.linkProperties(mIface);  // VeraDroid\n                if (vdHostLp != null) {\n                    linkProperties = vdHostLp;\n                } else if (config.getIpAssignment() == IpAssignment.STATIC) {',
-     '                final LinkProperties vdHostLp = VdHostNet.enabled() ? VdHostNet.waitForKindle(mIface) : null;  // VeraDroid: never DHCP in hostnet\n                if (VdHostNet.enabled() && vdHostLp == null) {\n                    Log.i(TAG, "VeraDroid hostnet: provisioning of " + mIface + " stopped before the Kindle configured it");\n                    synchronized(EthernetNetworkFactory.this) { mIpProvisioningThread = null; }\n                    return;\n                } else if (vdHostLp != null) {\n                    linkProperties = vdHostLp;\n                } else if (config.getIpAssignment() == IpAssignment.STATIC) {', "optional"),
     # 老 Kindle 内核（3.0.35 / 4.1.15-lab126）没有 IPv6：java.net 的每个 socket 都按 AF_INET6 建（双栈），内核回 EAFNOSUPPORT，
     # 所有 Java 联网（HttpURLConnection / OkHttp：商店、在线更新、大多数应用）都失败，“Address family not supported by protocol”
     # （真机 PW4 第一份报告：商店的请求一个都没到服务器；PW4 模拟器复现）。浏览器内核（Chromium）用自己的 AF_INET socket，所以 EinkBro 能上网。

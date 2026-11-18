@@ -161,6 +161,43 @@ final class Cleaner {
         return stopped;
     }
 
+    /**
+     * 用户在切换应用里点了“关闭”：任务已经拿掉了，这里结束它的进程（不在主线程调）。先 killBackgroundProcesses，还活着的
+     * 再 killUid（只是进程没了，不是“强行停止”：闹钟、通知、同步还在）；有前台服务的不动。不看“保持后台”（用户点的就是它）。
+     * 返回进程是不是没了。
+     */
+    static boolean closeSync(Context c, String pkg) {
+        if (pkg == null || !userApp(c, pkg)) return false;
+        ActivityManager am = (ActivityManager) c.getSystemService(Context.ACTIVITY_SERVICE);
+        Log.i(TAG, "switcher close: " + pkg);
+        if (pkg.equals(front)) front = null;   // 切换器盖在它上面：任务已经拿掉，它不再是前台
+        // 任务已经拿掉，但切换器是盖在它上面的半屏窗口，它的 Activity 要等切换器走了才销毁，这之前它的进程还算“前台”，
+        // 所以这里不按 importance 判断。用户点的就是关它；只有在跑前台服务（音乐、下载、朗读）的不动。
+        try {
+            List<ActivityManager.RunningServiceInfo> svcs = am.getRunningServices(200);
+            if (svcs != null) for (ActivityManager.RunningServiceInfo si : svcs)
+                if (si.foreground && si.service != null && pkg.equals(si.service.getPackageName())) {
+                    Log.i(TAG, "switcher close: " + pkg + " runs a foreground service - process left alone");
+                    return false;
+                }
+        } catch (Throwable ignored) { }
+        try { am.killBackgroundProcesses(pkg); } catch (Throwable t) { Log.w(TAG, "switcher close: " + pkg + ": " + t); }
+        try { Thread.sleep(300); } catch (InterruptedException ignored) { }
+        try {
+            List<ActivityManager.RunningAppProcessInfo> procs = am.getRunningAppProcesses();
+            int uid = -1;
+            if (procs != null) for (ActivityManager.RunningAppProcessInfo p : procs)
+                if (p.pkgList != null && java.util.Arrays.asList(p.pkgList).contains(pkg)) uid = p.uid;
+            if (uid >= Process.FIRST_APPLICATION_UID) {
+                Object amn = Class.forName("android.app.ActivityManagerNative").getMethod("getDefault").invoke(null);
+                amn.getClass().getMethod("killUid", int.class, int.class, String.class).invoke(amn, uid % 100000, uid / 100000, "VeraHome switcher close");
+                Log.i(TAG, "switcher close: " + pkg + " process ended (killUid)");
+            }
+        } catch (Throwable t) { Log.w(TAG, "switcher close killUid " + pkg + ": " + t); }
+        try { Thread.sleep(300); } catch (InterruptedException ignored) { }
+        return !runningPackages(c).contains(pkg);
+    }
+
     // ------------------------------------------------------------------ 共用
 
     /** 现在有进程活着的用户应用，去掉前台的、保持后台的。 */

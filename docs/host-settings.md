@@ -33,6 +33,21 @@
 `G_TL` / `G_TR` / `G_BL` / `G_BR`（四角长按）键不变，只是能选的动作多了（第 2 节）。
 **2026-11-14 起 `G_BL` 默认 `kindle`**（左下角长按 2 秒回到 Kindle：Android 卡住时总有一个不经过 Android 的出口）；其余三个角默认 `none`。用户自己设过的值不变（写进 `settings.conf` 的优先），`G_BL=default` 回到 `kindle`。只有动作不是 `none` 的角才算手势：宿主把它们写进 `gestures` 文件的 `G_CORNERS`（如 `bl`），`veradroid-input` 下一次触摸就读到，其余角落的长按照样给 Android（以前任一角配了动作，四个角的 2 秒长按都会被吞掉）。
 
+### 底边分三段（分支 `feat/edge-thirds`）
+
+| 键 | 取值（默认） | 作用 |
+|---|---|---|
+| `G_EDGE_THIRDS` | `0` \| `1`（`0`） | `1`：从底边条（120 px，随 `G_EDGE_SENS`）往上划时，按起手位置在逻辑宽度的左 / 中 / 右三分之一分别做 `G_EB_L` / `G_EB_M` / `G_EB_R`；上划后手指停住（30 px 内，按 1272 px 宽折算）`G_EB_HOLD_MS` 毫秒做 `G_EB_HOLD`。`0`：整条底边都是返回（原来的做法） |
+| `G_EB_L` / `G_EB_M` / `G_EB_R` | 第 2 节的动作名（`appopt` / `home` / `back`） | `back` 由 veradroid-input 直接发返回键（和原来的底边返回一样快），其余交给 `action.sh eb <动作>`。`none` 且 `G_EB_HOLD=none` 时这一段不算手势，触摸照常给 Android |
+| `G_EB_HOLD` | 动作名（`switch`） | 上划后停住：默认切换应用（VeraHome 的切换器 = 最近任务）。`none` = 不等停住，划够距离马上做（和原来的底边返回同样的时机）；有停住动作时三段的动作在松手时才做 |
+| `G_EB_HOLD_MS` | 200..3000（`500`） | 停住多久算 |
+
+只在手势总开关开着（没有 `nogestures`）、`G_EDGE_BACK=1`、前台应用不在 `G_BACK_EXCLUDE` 里时生效；手势总开关关掉时底边仍是普通返回（不分段）。
+和别的手势不冲突：四角长按要手指不动 2 秒，分段手势要先往上划够 `EDGE_SWIPE`；底边条里的轻点 / 长按照常 60 ms 后交给 Android；
+上划被认出来时已经交给 Android 的触摸会先收回（取消）。滑动提示（`SCROLL 1`）在认出手势时就收回（`SCROLL 0`）。
+左段为什么是“应用优化”而不是下拉面板：在应用里左段针对当前应用（刷新模式等）；
+我们的“应用优化”页正是“只对这个应用”的刷新 / 全刷 / 对比度 / 字号；在桌面上没有“当前应用”，就开下拉面板（全局对比度、刷新等）。
+
 PW5 / KT5 / KT6（k49，`goodix-ts`）以前触摸直通、没有任何全局手势；现在和 PW6 一样经过 veradroid-input，上面的手势全部可用
 。只写进 `settings.conf`、不进界面的应急键：`KFB_TOUCH_RAW=1` = goodix 回到原样直通
 （没有全局手势，竖屏时有效），下次启动 Android 生效。四角长按（角落 160 px 内按住不动 2 秒）现在从上下边缘条（120 px）里起手
@@ -55,6 +70,7 @@ PW5 / KT5 / KT6（k49，`goodix-ts`）以前触摸直通、没有任何全局手
 | `screenshot` | 截图，存到 Android 的 `Screenshots/` | 新（宿主 `screenshot` 命令） |
 | `wifi` | Wi-Fi 开关 | 新 |
 | `app.<包名>` | 打开指定应用，例如 `app.com.tencent.weread.eink` | 新。走 `ctl/app`（和“启动时打开某应用”同一个通道）；包名只许 `A-Za-z0-9._` |
+| `appopt` | 前台应用的显示设置：桌面的“应用优化”页（`AppDisplayActivity`，只对这个应用生效）；前台是桌面 / 我们自己的页面时打开下拉面板（全局显示设置） | 新（`feat/edge-thirds`）。要 VeraHome 认识 `ctl/act.appopt`（`feat/edge-thirds-home`），老桌面收到不认识的动作什么都不做，2 秒后提示“没有响应”。牌子字库里没有“显示优化”，所以这个动作只在没有响应时提示 |
 
 界面上给一个固定列表即可；`app.` 那一项让用户从已装应用里挑。
 
@@ -418,3 +434,18 @@ PW5 / KT5 / KT6 / Scribe（`host/k49`）。PW6（`host/pw6`）没有镜像，And
 - 实测（测试机，同一个二进制 ANIMHOLD 0 / 180 对比）：
   - 晋江：每次翻页 1 块 REAGL（之前 2–8 块），轻点到刷完 0.98–1.23 s（之前 1.02–1.07 s），10 次里 9 次进了合并。
   - 微信读书 / 多看（墨水屏版）/ 掌阅精选（墨水屏版）：一次也没进合并，刷新块数和时间不变（各 6 次）。
+
+## 14. 更新前备份可选、已备份的数据（分支 `feat/backup-opt` / `feat/backup-opt-legacy`，`boot/lib/backup.sh`）
+
+- 设置键 `UPDATE_BACKUP`（默认 `full`）：`full` 设置、阅读进度和 300 MB 以内的书（以前的做法）| `light` 只备份设置、阅读进度、笔记这些小文件 | `off` 不备份。
+  不在 `settings_apply` 的键里：只能经管理请求 `updatebackup`（VeraHome 私有目录里的请求，别的应用冒充不了）改，免得别的应用悄悄把备份关掉。
+  宿主每次发布设置时在 `veradroid/state/update-backup` 写一份副本（系统盘是镜像的机型，安装时镜像可能没挂上）。
+- 安装器（两个 bootstrap 的 `vd_backup_mode` 块，和 backup.sh 一字不差）：环境变量 `VD_UPDATE_BACKUP` > settings.conf > 副本 > `full`。
+  `off`：不备份、屏幕上说“更新出问题时无法恢复”；书库清单照样记、第一次开机照样核对（少了只能记下来）。
+  完整备份放不下（剩余要够备份 + 100 MB；新机型还要够安装本身）先退到 `light`、屏幕上说，再放不下才跳过。legacy 的 emulator-only 机型 `off` 按 `light` 做。
+  结果写 `veradroid/state/backup.last`（stamp / mode / kind / result=ok|off|nospace|failed|empty / file），每份备份是哪种记在 `state/backup-kinds`。
+  离线更新（localupdate.sh）把设置传给包里的安装器；老安装器不认 `off`，`light` / `off` 时至少传 `VD_BACKUP_MB=0`（不备份书）。
+- 管理请求：`backups`（列表）、`backupdel new|root <名字>` / `backupdel all`。只认安装器按固定格式起的名字（`user-backup-<时间>.tgz`、`cc.db.<时间>`、
+  `documents-backup.tgz`、`documents-backup.restored-<时间>.tgz`、`media-keep/`），路径由宿主拼：`veradroid/backup/` 里的，或根目录里同名的
+  `veradroid-<名字>`（老版本留下、vd_root_tidy 还没搬的）。不认链接、目录本身是链接也不删；KEEP 等改过名的、`vd18-keep/` 等一律不碰。
+  不能删：有安装 / 离线更新在进行时全部；书库核对完之前（`state/docs-manifest` 还在）这次安装的那份备份和书库数据库。

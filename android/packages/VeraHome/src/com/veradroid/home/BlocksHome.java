@@ -125,7 +125,7 @@ final class BlocksHome {
         cur = key;
         a.blocksWall(key);
         nav.setActive(key == S_LIBRARY ? HOME : key >= 10 ? ME : key);
-        if (key == HOME) { tickClock(); BlocksCards.maybeFetchWeather(a, new BlocksCards.Changed() { @Override public void changed() { if (cur == HOME) { show(HOME); a.changed(); } } }); }
+        if (key == HOME) { tickClock(); BlocksCards.maybeFetchWeather(a, new BlocksCards.Changed() { @Override public void changed() { if (cur == HOME) { dataChanged(); a.changed(); } } }); }
         if (key == ME) refreshMe();
         if (key == catKey(HomeActivity.CAT_XFER_)) a.updateTransferInfo();
     }
@@ -156,6 +156,8 @@ final class BlocksHome {
         String s = sig(key);
         View v = pages.get(key);
         if (v != null && s.equals(sigs.get(key))) return v;
+        // 首页：卡片的排列没变时只换掉数据变了的那几张卡片（天气取回来、统计变了、封面做好……），不整页重搭
+        if (v != null && key == HOME && patchHome()) { sigs.put(key, s); return v; }
         View nv = build(key);
         if (v != null) body.removeView(v);
         nv.setVisibility(View.GONE);
@@ -176,7 +178,8 @@ final class BlocksHome {
         }
     }
     /** 闲下来时先搭好的页：四个标签和“我的”下面的设置页（和经典风格的设置页一样都预先搭）。 */
-    private static final int[] PREBUILD = { HOME, FILES, APPS, ME, S_DISPLAY, S_POWER, S_STORAGE, S_ABOUT, S_CARDS };
+    private static final int[] PREBUILD = Ui.ONE_CORE ? new int[] { HOME, FILES, APPS, ME }   // 单核：只搭四个标签，设置页点进去时再搭
+        : new int[] { HOME, FILES, APPS, ME, S_DISPLAY, S_POWER, S_STORAGE, S_ABOUT, S_CARDS };
     boolean prebuilt() { for (int k : PREBUILD) if (pages.get(k) == null || !sig(k).equals(sigs.get(k))) return false; return true; }
 
     private String sig(int key) {
@@ -189,11 +192,15 @@ final class BlocksHome {
                 + "|" + a.appsVersion() + "|" + prefs.getString("blk_quick", "") + "|" + a.libOn() + "|" + prefs.getInt(Blocks.WALLCARD_KEY, 0);
         }
         case FILES: return caps + "|" + files.sig();
-        case APPS: return caps + "|" + a.appsVersion() + "|" + prefs.getInt("cols", 3) + "|" + prefs.getInt("iconstyle", 0) + "|" + prefs.getString("blk_pins", "") + prefs.getString("blk_hidden", "") + showHidden + prefs.getInt("sort", 0);
+        case APPS: return appsSig(caps, a.appsVersion());
         case ME: return caps + "|" + Stats.monthMs(a) / 60000 + "|" + Stats.bookmarkCount(a) + "|" + Lib.version() + "|" + prefs.getString("name", "VeraDroid");
         case S_LIBRARY: return caps + "|" + Lib.version() + "|" + libSort;
         default: return caps + "|" + settings.sig(key);
         }
+    }
+
+    private String appsSig(String caps, long appsVer) {
+        return caps + "|" + appsVer + "|" + prefs.getInt("cols", 3) + "|" + prefs.getInt("iconstyle", 0) + "|" + prefs.getString("blk_pins", "") + prefs.getString("blk_hidden", "") + showHidden + prefs.getInt("sort", 0);
     }
 
     private View build(int key) {
@@ -237,14 +244,85 @@ final class BlocksHome {
         String t = Ui.clock(a);
         for (TextView v : clocks) if (v.isAttachedToWindow() && !t.contentEquals(v.getText())) v.setText(t);
         int day = Calendar.getInstance().get(Calendar.DAY_OF_YEAR);
-        if (tickDay >= 0 && day != tickDay && cur == HOME) show(HOME);   // 过了零点：日期、日历、诗词都换（一天一次）
+        if (tickDay >= 0 && day != tickDay && cur == HOME) dataChanged();   // 过了零点：日期、日历、诗词都换（一天一次）
         tickDay = day;
     }
 
     // ------------------------------------------------------------------ 首页
 
+    /** 首页上的一张卡片：它是哪张、挂在哪、搭它时用到的数据（{@link #cardSig}）。view 为 null = 那时没搭出来。 */
+    private static final class Slot { String id, sig; View view; }
+    private final List<Slot> homeSlots = new ArrayList<Slot>();
+    private String homeLayoutSig;
+
+    /** 首页的排列：哪些卡片、什么顺序、横竖屏、字体、遮盖、标题里的书数。这些变了要整页重搭。 */
+    private String homeLayoutSig() {
+        boolean wide = a.getResources().getDisplayMetrics().widthPixels > a.getResources().getDisplayMetrics().heightPixels;
+        return Blocks.caps(a) + "/" + Fonts.weight(a) + "|" + prefs.getString(BlocksCards.KEY, BlocksCards.DEFAULT) + "|" + a.libOn()
+            + "|" + prefs.getInt(Blocks.WALLCARD_KEY, 0) + "|" + wide + "|" + (a.libOn() ? Lib.all().size() : 0);
+    }
+
+    /** 一张卡片用到的数据（和 sig(HOME) 里的各项对应：每一项都至少落在一张卡片上）。 */
+    private String cardSig(String id) {
+        int day = Calendar.getInstance().get(Calendar.DAY_OF_YEAR);
+        if ("continue".equals(id)) return Lib.version() + "|" + prefs.getString("la_pkg", "") + prefs.getLong("la_time", 0) + "|" + a.appsVersion();
+        if ("stats".equals(id)) return Stats.weekMs(a) / 60000 + "|" + Stats.bookmarkCount(a);
+        if ("recent".equals(id)) return String.valueOf(Lib.version());
+        if ("weather".equals(id)) return prefs.getLong("wx_at", 0) + prefs.getString("wx_city", "") + "|" + day;
+        if ("apps".equals(id)) return prefs.getString("blk_quick", "") + "|" + a.appsVersion();
+        if (BlocksCards.isWidget(id)) return "";   // 小部件自己会更新，重搭反而要重新绑定
+        return String.valueOf(day);   // 时钟（日期）、日历、诗词
+    }
+
+    /**
+     * 首页的签名变了而排列没变：只重搭数据变了的卡片，换在原来的位置上（其余卡片、标题、翻页条都不动）。
+     * 先把要换的都搭好再一起换，搭不出来就返回 false 让调用方整页重搭。调用方保证手指没按在屏幕上（dataChanged）。
+     */
+    private boolean patchHome() {
+        if (homeSlots.isEmpty() || !homeLayoutSig().equals(homeLayoutSig)) return false;
+        List<Slot> todo = new ArrayList<Slot>();
+        List<String> newSigs = new ArrayList<String>();
+        for (Slot sl : homeSlots) {
+            String cs = cardSig(sl.id);
+            if (cs.equals(sl.sig)) continue;
+            if (sl.view == null || !(sl.view.getParent() instanceof ViewGroup)) return false;
+            todo.add(sl); newSigs.add(cs);
+        }
+        if (todo.isEmpty()) return true;
+        List<View> made = new ArrayList<View>();
+        for (Slot sl : todo) {
+            View c = card(sl.id);
+            if (c == null) return false;
+            if (c.getBackground() == null) c.setBackground(new Blocks.Veil());
+            made.add(c);
+        }
+        for (int i = 0; i < todo.size(); i++) {
+            Slot sl = todo.get(i);
+            ViewGroup parent = (ViewGroup) sl.view.getParent();
+            int idx = parent.indexOfChild(sl.view);
+            ViewGroup.LayoutParams lp = sl.view.getLayoutParams();
+            dropClocksIn(sl.view);
+            parent.removeViewAt(idx);
+            parent.addView(made.get(i), idx, lp);
+            sl.view = made.get(i);
+            sl.sig = newSigs.get(i);
+        }
+        return true;
+    }
+
+    /** 被换掉的卡片里的时钟不再按分钟更新。 */
+    private void dropClocksIn(View old) {
+        for (int i = clocks.size() - 1; i >= 0; i--) {
+            View v = clocks.get(i);
+            while (v != null && v != old) v = v.getParent() instanceof View ? (View) v.getParent() : null;
+            if (v == old) clocks.remove(i);
+        }
+    }
+
     private View buildHome() {
         clocks.clear();
+        homeSlots.clear();
+        homeLayoutSig = homeLayoutSig();
         LinearLayout pg = new LinearLayout(a);
         pg.setOrientation(LinearLayout.VERTICAL);
         int n = a.libOn() ? Lib.all().size() : 0;
@@ -271,7 +349,12 @@ final class BlocksHome {
         }
         int n0 = 0;
         for (String id : BlocksCards.order(a)) {
+            Slot sl = new Slot();
+            sl.id = id;
+            sl.sig = cardSig(id);
+            homeSlots.add(sl);
             View c = card(id);
+            sl.view = c;
             if (c == null) continue;
             if (c.getBackground() == null) c.setBackground(new Blocks.Veil());   // 没有框的卡片（最近阅读……）的字不直接压在壁纸上
             LinearLayout col = colR != null && (n0 % 2 == 1) ? colR : colL;
@@ -881,6 +964,8 @@ final class BlocksHome {
     private int appPerPage;
 
     private View buildApps() {
+        appsHeadN = a.appList().size();
+        appsVerBuilt = a.appsVersion();
         LinearLayout pg = new LinearLayout(a);
         pg.setOrientation(LinearLayout.VERTICAL);
         pg.addView(Blocks.pageHead(a, "Apps / " + a.appList().size() + " installed", "应用", Blocks.squareButton(a, Icons.Kind.MORE, new View.OnClickListener() {
@@ -1018,7 +1103,7 @@ final class BlocksHome {
 
     private void appMenu(final ResolveInfo ri) {
         final String pkg = ri.activityInfo.packageName;
-        new VeraDialog.Builder(a).title(a.labelFor(ri)).items(new String[] { "打开", pins().contains(pkg) ? "取消置顶" : "置顶", hidden().contains(pkg) ? "取消隐藏" : "隐藏", "更多（图标、名字、显示效果、保持后台、卸载…）" },
+        new VeraDialog.Builder(a).title(a.labelFor(ri)).items(new String[] { "打开", pins().contains(pkg) ? "取消置顶" : "置顶", hidden().contains(pkg) ? "取消隐藏" : "隐藏", "更多（图标、名字、应用优化、保持后台、卸载…）" },
             new VeraDialog.OnPick() { @Override public void onPick(int w) {
                 switch (w) {
                 case 0: a.launch(ri); break;
@@ -1029,7 +1114,26 @@ final class BlocksHome {
             } }).negative("取消", null).show();
     }
 
-    void appsChanged() { if (pages.get(APPS) != null && appPerPage > 0 && cur == APPS) renderApps(); dataChanged(); }
+    /**
+     * 应用列表变了（装卸、改名、换图标）。正显示着“应用”页、标题里的个数也没变：只重排格子（不整页重搭，也不排两遍）。
+     * 手指按着的时候不动控件树（抬手再做，见 HomeActivity.touching）。
+     */
+    private final Runnable appsChangedLater = new Runnable() { @Override public void run() { appsChanged(); } };
+    void appsChanged() {
+        if (a.touching()) { a.afterTouch(appsChangedLater); return; }
+        if (pages.get(APPS) != null && appPerPage > 0 && cur == APPS && appsHeadN == a.appList().size()) {
+            String old = sigs.get(APPS), caps = Blocks.caps(a) + "/" + Fonts.weight(a);
+            // 只有应用列表的版本不一样（排序、列数、置顶 / 隐藏都没变）
+            if (old != null && old.equals(appsSig(caps, appsVerBuilt)) && appsVerBuilt != a.appsVersion()) {
+                renderApps();
+                appsVerBuilt = a.appsVersion();
+                sigs.put(APPS, sig(APPS));
+            }
+        }
+        dataChanged();
+    }
+    private int appsHeadN = -1;
+    private long appsVerBuilt = -1;
 
     // ------------------------------------------------------------------ 我的
 

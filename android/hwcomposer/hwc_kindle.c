@@ -34,6 +34,13 @@
  *   hz         refresh rate for vsync, 10..60
  *   hwc.dim    checked at run time: how much a dim layer darkens, 0..255 (default 51 = 20 %); -1 = leave dim frames to
  *              GLES at the app's own alpha (the old behaviour)
+ *   fb2.ok     checked at run time, written by veradroid-epd when it starts: the bridge can show page 2 (/dev/kfb/fb2).
+ *              Without it dim frames go to GLES as before page 2 existed. Why: legacy 0.8.10 shipped this module with a
+ *              bridge that did not know page 2 ("P 2" was read as page 0). The first dialog (阅读 / Legado's privacy dialog
+ *              at the first start, the Wi-Fi password dialog on a PW4) sent the picture to page 2, and because every later
+ *              overlay frame kept writing into the page of the frame before, nothing the app drew after that reached the
+ *              panel: the screen kept page 0, a framebuffer target that only ever held SurfaceFlinger's dim quad, and
+ *              stayed like that, back / home included, until VeraDroid was restarted.
  *
  * Buffers come from the default gralloc (hardware/libhardware/modules/gralloc): its handle has no width / height / format,
  * so the layer geometry is checked against the handle's size (stride = width rounded up to 2, 32 bpp) and everything
@@ -59,16 +66,20 @@
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer.h>
 
-#define KFB_FILE "/dev/kfb/fb"
-#define KFB_INFO "/dev/kfb/info"
-#define KFB_FIFO "/dev/kfb/epd.fifo"
-#define KFB_OFF  "/dev/kfb/hwc.off"
-#define KFB_GLES "/dev/kfb/hwc.gles"
-#define KFB_HZ   "/dev/kfb/hz"
-#define KFB_PAGE "/dev/kfb/page"
-#define KFB_ONEPAGE "/dev/kfb/onepage"
-#define KFB_DIM  "/dev/kfb/hwc.dim"
-#define KFB_FB2  "/dev/kfb/fb2"
+#ifndef KFB_DIR
+#define KFB_DIR "/dev/kfb"            /* tests/hwc-test.sh builds the module for the host with another directory */
+#endif
+#define KFB_FILE KFB_DIR "/fb"
+#define KFB_INFO KFB_DIR "/info"
+#define KFB_FIFO KFB_DIR "/epd.fifo"
+#define KFB_OFF  KFB_DIR "/hwc.off"
+#define KFB_GLES KFB_DIR "/hwc.gles"
+#define KFB_HZ   KFB_DIR "/hz"
+#define KFB_PAGE KFB_DIR "/page"
+#define KFB_ONEPAGE KFB_DIR "/onepage"
+#define KFB_DIM  KFB_DIR "/hwc.dim"
+#define KFB_FB2  KFB_DIR "/fb2"
+#define KFB_FB2OK KFB_DIR "/fb2.ok"
 #define DIM_DEFAULT 51
 
 /* the default gralloc's private_handle_t (gralloc_priv.h), C view */
@@ -92,6 +103,8 @@ struct ctx {
     uint8_t *fb;              /* 2 pages of RGBX */
     uint8_t *fb2;             /* page 2: /dev/kfb/fb2, ours alone (frames with a dim layer, see hwc_set) */
     int fb2_failed;
+    int fb2_ok;               /* fb2.ok: the bridge shows page 2 (checked once a second) */
+    unsigned long n_leave2;   /* frames that moved the picture from page 2 back to page 0 / 1 */
     size_t page_bytes;
     int fifo;
     int last_page;            /* the page veradroid-epd was told about last */
@@ -171,7 +184,7 @@ static int fb2_map(struct ctx *c)
    first buffer). It is black, premultiplied, its strength is planeAlpha. */
 static int is_dim(const struct ctx *c, const hwc_layer_1_t *l)
 {
-    return c->dim_cap >= 0 && !c->onepage && !l->handle && (l->flags & HWC_SKIP_LAYER) &&
+    return c->dim_cap >= 0 && !c->onepage && c->fb2_ok && !c->fb2_failed && !l->handle && (l->flags & HWC_SKIP_LAYER) &&
            l->compositionType == HWC_FRAMEBUFFER && l->blending == HWC_BLENDING_PREMULT &&
            l->displayFrame.right > l->displayFrame.left && l->displayFrame.bottom > l->displayFrame.top;
 }
@@ -333,6 +346,7 @@ static int hwc_prepare(hwc_composer_device_1_t *dev, size_t n, hwc_display_conte
         FILE *f = fopen(KFB_DIM, "re");
         if (f) { if (fscanf(f, "%d", &v) != 1) v = DIM_DEFAULT; fclose(f); }
         c->dim_cap = v < 0 ? -1 : v > 255 ? 255 : v;
+        c->fb2_ok = access(KFB_FB2OK, F_OK) == 0;
     }
     size_t nl = list->numHwLayers ? list->numHwLayers - 1 : 0;      /* the last one is the framebuffer target */
     int ok = !c->force_gles && nl > 0 && nl <= 32 && c->fb;
@@ -407,6 +421,12 @@ static int hwc_set(hwc_composer_device_1_t *dev, size_t n, hwc_display_contents_
                 }
             }
             c->n_dim++;
+        } else if (page == 2) {
+            /* the dialog is gone: back to the framebuffer pages at once. Page 2 is only for frames with a dim layer; a
+               picture that stays there depends on the bridge reading page 2 for every later frame as well. The page we
+               go to holds an old picture, so all of it is announced. */
+            page = 0; dst = page_ptr(c, 0); whole = 1;
+            c->n_leave2++;
         }
         int y0 = -1, y1 = 0;
         const size_t rb = (size_t)c->w * 4;
@@ -517,10 +537,11 @@ static void hwc_register_procs(hwc_composer_device_1_t *dev, hwc_procs_t const *
 static void hwc_dump(hwc_composer_device_1_t *dev, char *buf, int len)
 {
     struct ctx *c = (struct ctx *)dev;
-    snprintf(buf, len, "hwc_kindle: %dx%d %ld Hz, frames written here %lu + unchanged %lu (last %ld us, max %ld us, avg %ld us), rows direct %lu blended %lu, GLES frames %lu, page syncs %lu, dim frames %lu (cap %d), force_gles=%d onepage=%d\n",
+    snprintf(buf, len, "hwc_kindle: %dx%d %ld Hz, frames written here %lu + unchanged %lu (last %ld us, max %ld us, avg %ld us), rows direct %lu blended %lu, GLES frames %lu, page syncs %lu, dim frames %lu (cap %d, page 2 %s, left page 2 %lu), force_gles=%d onepage=%d\n",
              c->w, c->h, 1000000000L / c->period_ns, c->n_ovl, c->n_same, c->last_us, c->max_us,
              (c->n_ovl + c->n_same) ? (long)(c->sum_us / (c->n_ovl + c->n_same)) : 0L, c->n_rows_direct, c->n_rows_blend,
-             c->n_gles, c->n_sync, c->n_dim, c->dim_cap, c->force_gles, c->onepage);
+             c->n_gles, c->n_sync, c->n_dim, c->dim_cap, c->fb2_ok ? (c->fb2_failed ? "failed" : "yes") : "no bridge", c->n_leave2,
+             c->force_gles, c->onepage);
 }
 
 static int hwc_get_configs(hwc_composer_device_1_t *dev, int disp, uint32_t *configs, size_t *num)

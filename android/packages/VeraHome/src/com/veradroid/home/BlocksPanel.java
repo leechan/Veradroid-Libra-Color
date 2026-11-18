@@ -242,7 +242,7 @@ final class BlocksPanel {
         appBar.setPadding(dp(14), dp(6), dp(14), dp(6));
         appBar.setMinimumHeight(dp(52));
         appBar.addView(new Icons.IconView(ctx, Icons.Kind.EYE), Blocks.lp(dp(24), dp(24)));
-        LinearLayout at = Blocks.titled(ctx, "This app", "当前应用的显示设置", 16, true);
+        LinearLayout at = Blocks.titled(ctx, "This app", "当前应用的优化", 16, true);
         LinearLayout.LayoutParams atp = Blocks.weight(1);
         atp.leftMargin = dp(12);
         appBar.addView(at, atp);
@@ -422,10 +422,14 @@ final class BlocksPanel {
         if ("wifi".equals(id)) { wifiOn = wifiOn == 1 ? 0 : 1; HostLink.cmd("wifi " + wifiOn); paintTiles(); }
         else if ("bt".equals(id)) { finish(); BluetoothActivity.open(ctx); }
         else if ("invert".equals(id)) { invertOn = invertOn == 1 ? 0 : 1; HostLink.cmd("invert"); paintTiles(); }
-        else if ("clear".equals(id)) HostLink.cmd("clear");
+        else if ("clear".equals(id)) {
+            // 先收起面板、等它从屏幕上下去（约 0.5 秒）再整屏刷新：以前面板还在时就刷，刷完收起面板又在那块留下残影
+            finish();
+            handler.postDelayed(new Runnable() { @Override public void run() { HostLink.cmd("clear"); } }, 500);
+        }
         else if ("xfer".equals(id)) {
             Transfer t = Transfer.get(ctx);
-            if (t.running()) t.stop(); else t.start();
+            if (t.running()) t.stop(); else if (!t.start()) VeraToast.show(ctx, "传输没打开：" + t.lastError());
             HostLink.cmd("status");
             paintTiles();
         }

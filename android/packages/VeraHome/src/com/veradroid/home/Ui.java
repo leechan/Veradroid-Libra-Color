@@ -26,6 +26,28 @@ final class Ui {
 
     private Ui() { }
 
+    /**
+     * 后台线程（扫书库、读应用列表、解码图标 / 封面 / 壁纸……）一开始调一下：降成后台优先级。单核的老机型（PW4 i.MX6SLL）上
+     * 后台线程和主线程同优先级时各分一半 CPU，主页的第一帧和点按后的重画都要多等一倍；降下来以后主线程闲着时它照样全速跑。
+     */
+    /** 单核机型（PW4 i.MX6SLL、KT4 等）：主线程上能省的预先工作（预搭设置页之类）少做一些。 */
+    static final boolean ONE_CORE = Runtime.getRuntime().availableProcessors() <= 1;
+
+    static void lowPriority() {
+        try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND); } catch (Throwable ignored) { }
+    }
+
+    /** 后台优先级的单线程执行器（{@link #lowPriority}）。 */
+    static java.util.concurrent.ExecutorService lowExecutor(final String name) {
+        return java.util.concurrent.Executors.newSingleThreadExecutor(new java.util.concurrent.ThreadFactory() {
+            @Override public Thread newThread(final Runnable r) {
+                Thread t = new Thread(new Runnable() { @Override public void run() { lowPriority(); r.run(); } }, name);
+                t.setDaemon(true);
+                return t;
+            }
+        });
+    }
+
     static int dp(Context c, int v) { return (int) (v * c.getResources().getDisplayMetrics().density + 0.5f); }
 
     static TextView text(Context c, String s, float sp, boolean bold) {
@@ -97,7 +119,7 @@ final class Ui {
                     if (e.getX() < -slop || e.getY() < -slop || e.getX() > view.getWidth() + slop || e.getY() > view.getHeight() + slop) armed = false;
                     return true;
                 case android.view.MotionEvent.ACTION_UP:
-                    if (armed) { armed = false; view.performClick(); }
+                    if (armed) { armed = false; clickAfterDispatch(view); }
                     return true;
                 default:
                     armed = false;
@@ -105,6 +127,15 @@ final class Ui {
                 }
             }
         });
+    }
+
+    /**
+     * 抬手的点按排到这次触摸分发之后再执行（和系统 View.onTouchEvent 的 PerformClick 一样 post 出去）。
+     * 点按常常重搭页面（removeAllViews / 换页）：在分发途中同步改控件树，ViewGroup 正在遍历的 TouchTarget 会指向已回收的
+     * 对象，resetCancelNextUpFlag 空指针，主页崩溃（KT5 上有卡住的第二个触点时）。只是往后排一条消息，不会变慢。
+     */
+    static void clickAfterDispatch(final View v) {
+        if (!v.post(new Runnable() { @Override public void run() { if (v.isAttachedToWindow()) v.performClick(); } })) v.performClick();
     }
 
     static View rule(Context c, int px, int color) {

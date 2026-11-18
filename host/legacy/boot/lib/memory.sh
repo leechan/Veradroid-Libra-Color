@@ -136,9 +136,11 @@ zram_on() {
         [ -f $W/wsf.state ] || cat /proc/sys/vm/watermark_scale_factor > $W/wsf.state
         echo "$VM_WATERMARK" > /proc/sys/vm/watermark_scale_factor 2>/dev/null
     fi
+    type zram_extra >/dev/null 2>&1 && zram_extra     # zram0 被占着、比 ZRAM_MB 小：再加一块（memkeep.sh）
     t "zram ${ZRAM_MB}MB on"
 }
 zram_restore() {
+    type mem_keep_off >/dev/null 2>&1 && mem_keep_off
     overcommit_restore
     tune_restore
     swapfile_off

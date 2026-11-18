@@ -8,6 +8,11 @@
  *   VT_OUT=<dir>    /dev/input/uinput and /dev/uinput open <dir>/uinput0 (touch), uinput1 (keys), ... Every
  *                   struct input_event written there gets the CLOCK_MONOTONIC time of the write (latency check);
  *                   UI_SET_ABSBIT calls are listed in <dir>/uinputN.abs.
+ *   VT_NOBTN=1      the touch device has no BTN_TOUCH (KT5 / KT6 pt_mt: the bridge makes it up for Android).
+ *   VT_SLOTS=n      ABS_MT_SLOT is 0..n-1 (default 10; pt_mt has 32).
+ *   VT_MTSTATE=<f>  EVIOCGMTSLOTS(ABS_MT_TRACKING_ID) works (otherwise ENOTTY, as on drivers without kernel slot state):
+ *                   the tracking ids come from the events read so far, unless <f> exists: then only the slots listed
+ *                   in it (whitespace separated) hold a finger -- "the kernel lost / never sent the lift" in a test.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -16,6 +21,7 @@
 #include <linux/input.h>
 #include <linux/uinput.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +30,25 @@
 #include <unistd.h>
 
 static int srcfd = -1, ufds[8], nufd = 0;
+static int mt_tid[64], mt_cur = 0, mt_init = 0;   /* slot state parsed from what vinput read (VT_MTSTATE) */
+static void mt_track(const void *buf, ssize_t n)
+{
+    if (!mt_init) { for (int i = 0; i < 64; i++) mt_tid[i] = -1; mt_init = 1; }
+    for (ssize_t o = 0; o + (ssize_t)sizeof(struct input_event) <= n; o += sizeof(struct input_event)) {
+        const struct input_event *e = (const struct input_event *)((const char *)buf + o);
+        if (e->type != EV_ABS) continue;
+        if (e->code == ABS_MT_SLOT && e->value >= 0 && e->value < 64) mt_cur = e->value;
+        else if (e->code == ABS_MT_TRACKING_ID) mt_tid[mt_cur] = e->value;
+    }
+}
+ssize_t read(int fd, void *buf, size_t n)
+{
+    static ssize_t (*real)(int, void *, size_t);
+    if (!real) real = dlsym(RTLD_NEXT, "read");
+    ssize_t r = real(fd, buf, n);
+    if (fd == srcfd && srcfd >= 0 && r > 0) mt_track(buf, r);
+    return r;
+}
 static int is_ufd(int fd) { for (int i = 0; i < nufd; i++) if (ufds[i] == fd) return i; return -1; }
 
 static int do_open(const char *path, int flags, mode_t mode, int (*real)(const char *, int, ...))
@@ -96,7 +121,7 @@ int ioctl(int fd, unsigned long req, ...)
     if (_IOC_TYPE(req) == 'E' && _IOC_NR(req) >= 0x20 && _IOC_NR(req) < 0x40) {  /* EVIOCGBIT(ev, len) */
         int ev = _IOC_NR(req) - 0x20, len = _IOC_SIZE(req);
         memset(arg, 0, len);
-        if (ev == EV_KEY) { setbit(arg, len, BTN_TOUCH); setbit(arg, len, BTN_TOOL_FINGER); }
+        if (ev == EV_KEY) { if (!getenv("VT_NOBTN")) setbit(arg, len, BTN_TOUCH); setbit(arg, len, BTN_TOOL_FINGER); }
         if (ev == EV_ABS) {
             if (st) { setbit(arg, len, ABS_X); setbit(arg, len, ABS_Y); }
             else {
@@ -120,11 +145,20 @@ int ioctl(int fd, unsigned long req, ...)
             if (c == ABS_MT_POSITION_X || (b && c == ABS_X)) { ai->maximum = maxx; ok = 1; }
             if (c == ABS_MT_POSITION_Y || (b && c == ABS_Y)) { ai->maximum = maxy; ok = 1; }
             if (c == ABS_MT_TOUCH_MAJOR) { ai->maximum = 255; ok = 1; }
-            if (b && c == ABS_MT_SLOT) { ai->maximum = 9; ok = 1; }
+            if (b && c == ABS_MT_SLOT) { ai->maximum = getenv("VT_SLOTS") ? atoi(getenv("VT_SLOTS")) - 1 : 9; ai->value = mt_cur; ok = 1; }
             if ((b || aid) && c == ABS_MT_TRACKING_ID) { ai->maximum = 65535; ok = 1; }
             if (pres && c == ABS_MT_PRESSURE) { ai->maximum = pres; ok = 1; }
         }
         if (!ok) { errno = EINVAL; return -1; }
+        return 0;
+    }
+    if (_IOC_TYPE(req) == 'E' && _IOC_NR(req) == 0x0a && b && getenv("VT_MTSTATE")) {   /* EVIOCGMTSLOTS */
+        if (!mt_init) mt_track(NULL, 0);
+        int32_t *q = arg; int len = _IOC_SIZE(req) / 4 - 1;
+        if (q[0] != ABS_MT_TRACKING_ID) { errno = EINVAL; return -1; }
+        FILE *f = fopen(getenv("VT_MTSTATE"), "r");
+        for (int i = 0; i < len; i++) q[1 + i] = i < 64 && !f ? mt_tid[i] : -1;
+        if (f) { int s; while (fscanf(f, "%d", &s) == 1) if (s >= 0 && s < len) q[1 + s] = 1000 + s; fclose(f); }
         return 0;
     }
     errno = ENOTTY;

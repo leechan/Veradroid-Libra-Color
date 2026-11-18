@@ -21,7 +21,7 @@ diag_save() {
     cp $LOG $d/veradroid.log 2>/dev/null
     cp $W/epd.log $d/epd.log 2>/dev/null
     cp $W/input.log $d/input.log 2>/dev/null
-    # 停止 / 安装的记录不在 veradroid.log 里：用户诊断 632015 里更新后有一次“启动后 10 秒被停掉、再点启动 20 分钟没反应”，
+    # 停止 / 安装的记录不在 veradroid.log 里：用户诊断 里更新后有一次“启动后 10 秒被停掉、再点启动 20 分钟没反应”，
     # 当时 stop.sh 和安装器写了什么没有带上来
     tail -c 65536 /tmp/veradroid-stop.log > $d/stop.log 2>/dev/null
     # 诊断包里的文件名照旧（veradroid-install.log 等）：新位置 veradroid/logs/ 没有就取根目录老版本写的那份   (root-legacy: 只是诊断包里的名字)
@@ -63,7 +63,7 @@ diag_save() {
         adb_sh 'export PATH=/system/bin:/system/xbin; logcat -b crash -d -v threadtime' > $d/android-logcat-crash.txt 2>&1
         adb_sh 'export PATH=/system/bin:/system/xbin; getprop' > $d/android-getprop.txt 2>&1
         # 没开机完成（system_server 起不来、binder 不通）时 dumpsys / settings / pm 每条都只会留下一行
-        # "Aborted"（用户诊断 001122、092A03：几十个 23 字节的文件）。日志和属性上面已经有了，这里只记一句。
+        # "Aborted"（用户诊断：几十个 23 字节的文件）。日志和属性上面已经有了，这里只记一句。
         if ! grep -q '^\[sys.boot_completed\]: \[1\]' $d/android-getprop.txt 2>/dev/null; then
             echo "android has not finished booting: dumpsys skipped (see android-logcat-all.txt and android-tombstones)" > $d/android-NOT-BOOTED.txt
         else
@@ -212,31 +212,36 @@ watchdog() {
         sleep $sleep_for
         kill -0 $P 2>/dev/null || { t "system exited"; log_release; sh $VD/boot/stop.sh >/dev/null 2>&1; break; }
         lmk_kernel_tune 2>/dev/null || true
+        # 空闲冻结（idle.sh，IDLE_FREEZE）：冻 / 定时唤醒 / 放回 watchdog 线程。屏保冻结、返回 Kindle 时不管
+        [ -f $W/saver_frozen ] || [ -f $W/frozen ] || { type idle_tick >/dev/null 2>&1 && idle_tick; }
         log_cap $W/epd.log 262144; log_cap $W/input.log 131072; log_cap $W/input.err 65536
-        if [ ! -f $W/saver_frozen ] && [ ! -f $W/frozen ]; then
+        if [ ! -f $W/saver_frozen ] && [ ! -f $W/frozen ] && [ ! -f $W/idlefz ]; then
             # 命令监听没了（FIFO 建不起来、被杀）：桌面的“返回 Kindle”、设置、手势全都没反应，只能重启 Kindle。重新起一个。
             alive $W/cmd.pid || { t "cmd listener gone, restarting it"; cmd_listen & echo $! > $W/cmd.pid; }
             # 显示桥 / 触摸前端没了（崩溃、被 OOM 杀掉）：以前没人管，屏幕永远停在最后一帧，或者 Android 再也收不到触摸，
             # 只能重启 Kindle。重新起一个（每次开机各最多 3 次，再多就是程序本身起不来，留给诊断）。
             helpers_supervise
+            # 桌面 / 输入法不换出、后台应用定时停止（memkeep.sh）
+            type mem_keep_tick >/dev/null 2>&1 && { mem_keep_tick; bg_stop_tick; wifi_idle_tick; }
             # system_server 重启（Watchdog 杀掉后软重启）以后 ActivityManager 会把 lmkd 的门槛写回原厂的大屏手机档，
-            # 512 MB 机型上前台的微信读书又会被反复杀掉（用户诊断 092A03）。pid 变了就重新设一次。
+            # 512 MB 机型上前台的微信读书又会被反复杀掉（用户诊断）。pid 变了就重新设一次。
             ss=$(pidof system_server 2>/dev/null | cut -d' ' -f1)
             if [ -n "$ss" ] && [ "$ss" != "$(cat $W/ss.pid 2>/dev/null)" ]; then
                 [ -f $W/ss.pid ] && [ -f $W/booted ] && { t "system_server restarted ($(cat $W/ss.pid) -> $ss): re-tuning lmkd"; ( sleep 20; lmk_tune; i=0; while [ $i -lt 30 ] && [ "$(adb_sh 'getprop sys.boot_completed' 2>/dev/null | tr -d '\r\n')" != 1 ]; do sleep 5; i=$((i+1)); done; trust_unlock ) & }
                 echo "$ss" > $W/ss.pid
             fi
         fi
-        [ -f $W/saver_frozen ] || [ -f $W/frozen ] || { [ -f $X/ctl/settings.new ] && settings_apply; }
+        [ -f $W/saver_frozen ] || [ -f $W/frozen ] || [ -f $W/idlefz ] || { [ -f $X/ctl/settings.new ] && settings_apply; }
         # Wi-Fi 省电（network.sh）、新装 / 更新的应用排队预编译（compile.sh）、电量记录（energy.sh）
-        if [ ! -f $W/saver_frozen ] && [ ! -f $W/frozen ]; then
+        if [ ! -f $W/saver_frozen ] && [ ! -f $W/frozen ] && [ ! -f $W/idlefz ]; then
             type wifi_ps_tick >/dev/null 2>&1 && wifi_ps_tick
             [ -f $W/booted ] && type compile_watch >/dev/null 2>&1 && compile_watch
         fi
         type bat_log >/dev/null 2>&1 && bat_log
+        type wa_adb_tick >/dev/null 2>&1 && wa_adb_tick     # 无线调试到时间自动关（webadmin.sh）
         var_guard
         # 系统盘快满了就自动扩（storage.sh）。冻结时不做。
-        [ -f $W/saver_frozen ] || [ -f $W/frozen ] || { type st_auto_tick >/dev/null 2>&1 && st_auto_tick; }
+        [ -f $W/saver_frozen ] || [ -f $W/frozen ] || [ -f $W/idlefz ] || { type st_auto_tick >/dev/null 2>&1 && st_auto_tick; }
         if [ -f $X/ctl/diag ]; then rm -f $X/ctl/diag; ( diag_save; touch $X/ctl/diag.done ) & fi
         [ -f $X/ctl/stop ] && { rm -f $X/ctl/stop; do_stop; }
         [ -f $X/ctl/restart ] && { rm -f $X/ctl/restart; do_restart; }

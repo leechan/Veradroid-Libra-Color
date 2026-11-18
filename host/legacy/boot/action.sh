@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # 手势动作：由 veradroid-input 调用。 用法：sh action.sh <名字> [参数]
 # 名字：clear（整屏刷新）invert（反色）light + / -（前光）warmth + / -（色温）panel（下拉面板）tl tr bl br（四角长按）poke（有人在用，别让 Kindle 睡）
+#       eb <动作>（底边分三段 G_EDGE_THIRDS：veradroid-input 已经按 G_EB_L / G_EB_M / G_EB_R / G_EB_HOLD 选好动作，"back" 它自己发键，不经过这里）
 #       hint back（veradroid-input 自己发了返回键，这里只画提示）
 # 四角长按（G_TL/G_TR/G_BL/G_BR；左下角默认 kindle，其余 none）、双指轻点（G_TWO_TAP_ACT，默认 clear）、双指长按（G_TWO_LONG_ACT，默认 invert）能绑的动作
 # （白名单，见 run_action；docs/host-settings.md 有完整列表）：
@@ -9,6 +10,7 @@
 #   frontlight lighton lightoff  前光开关 / 开 / 关      sleep  立即休眠（屏保）     restart  重启 Android
 #   screenshot  截图（存到 Android 的 Screenshots）      wifi  Wi-Fi 开关            refresh = clear，return = kindle（别名）
 #   app.<包名>  打开指定应用（例如 app.com.tencent.weread.eink）
+#   appopt  前台应用的显示设置（桌面的“应用优化”页；前台是桌面时打开下拉面板）。底边左段上划的默认动作
 VD=${VD:-/mnt/base-us/veradroid}
 W=/dev/shm/veradroid
 X=$W/kfb
@@ -50,7 +52,8 @@ watch_ctl() {   # watch_ctl <ctl 里的文件名>
 run_action() {
     case "$1" in
         ''|none) ;;
-        back|home|panel|switch)
+        back|home|panel|switch|appopt)
+            # appopt：桌面马上打开一个页面，本身就是反馈；牌子的字库里没有“显示优化”这几个字，只在没有响应时提示
             case "$1" in back) hint back "BACK|返回" ;; home) hint home "HOME|桌面" ;; panel) hint panel "PANEL|面板" ;; switch) hint switch "SWITCH APPS|切换" ;; esac
             touch $X/ctl/act.$1; watch_ctl act.$1 ;;
         kindle|return) hint kindle "KINDLE|回 Kindle"; send exit ;;
@@ -127,6 +130,7 @@ case "$1" in
     tr) POS=tr; run_action "${G_TR:-none}" ;;
     bl) POS=bl; run_action "${G_BL:-kindle}" ;;                 # 默认回到 Kindle（settings.sh）
     br) POS=br; run_action "${G_BR:-none}" ;;
+    eb) POS=b; run_action "$2" ;;                               # 底边分三段（veradroid-input 传来的是动作名，run_action 只认白名单）
     hint)   case "$2" in back) POS=b; hint back "BACK|返回" ;; esac ;;   # 底边上滑 / 双指左右滑：返回键已经由 veradroid-input 发出
     poke)   touch $W/lastinput 2>/dev/null   # 最近一次触摸（后台预编译据此判断“有人在用”，compile.sh）
             lipc-set-prop -i com.lab126.powerd touchScreenSaverTimeout 1 2>/dev/null ;;

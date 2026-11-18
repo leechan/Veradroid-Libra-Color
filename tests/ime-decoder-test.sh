@@ -14,7 +14,7 @@ grep -q 'pinyin.tsv' $M/src/com/veradroid/ime/*.java && fail "the old pinyin.tsv
 grep -q '"HINT 2500 5' $M/src/com/veradroid/ime/VeraImeService.java || fail "IME close HINT (0.96) lost"
 grep -q 'HorizontalScrollView' $M/src/com/veradroid/ime/*.java && fail "candidate bar must page, not scroll"
 grep -qE 'Animat|ValueAnimator' $M/src/com/veradroid/ime/*.java && fail "no animations in the IME"
-if [ -n "$DAT" ] \&\& command -v javac >/dev/null 2>&1 && javac -version >/dev/null 2>&1; then
+if [ -n "$DAT" ] && command -v javac >/dev/null 2>&1 && javac -version >/dev/null 2>&1; then
     o=${TMPDIR:-/tmp}/vd-ime-jvm.$$; rm -rf $o; mkdir -p $o
     javac -encoding UTF-8 -nowarn -d $o $M/src/com/veradroid/ime/PinyinDict.java $M/src/com/veradroid/ime/PinyinDecoder.java \
         $M/src/com/veradroid/ime/UserDict.java $M/src/com/veradroid/ime/KeyGrid.java $M/tests-jvm/com/veradroid/ime/*.java 2>&1 | grep -v '^Note' 

@@ -46,6 +46,7 @@ out=$(VD=$T/vd SYS=$T/sys W=$T/w X=$T/w/kfb sh -c '
     appprof_set "bad;pkg|KFB_MODE=1"; echo "I $(grep -c bad $SYS/settings.apps)"
     appprof_set "*|"; echo "J $(wc -c < $SYS/settings.apps | tr -d " ")"
     appprof_fg home; echo "K $([ -f $SYS/settings.app ] && echo app || echo global)"
+    for p in com.douban.book.reader com.jjwxc.reader cn.duku com.eusoft.eudic com.pldx.engang; do appprof_fg $p; echo "L $p $(tr "\n" ";" < $SYS/settings.app)"; done
 ')
 expect() { printf '%s\n' "$out" | grep -qxF "$1" || fail "expected '$1' in:
 $out"; }
@@ -60,6 +61,12 @@ expect "H KFB_MODE=1;KFB_FLASH=6;"
 expect "I 0"
 expect "J 0"
 expect "K global"
+# e-ink reader apps that run on the 32-bit container
+expect "L com.douban.book.reader KFB_MODE=1;KFB_FLASH=6;"
+expect "L com.jjwxc.reader KFB_MODE=1;KFB_FLASH=6;"
+expect "L cn.duku KFB_MODE=1;KFB_FLASH=6;"
+expect "L com.eusoft.eudic KFB_SCROLLDU=300;"
+expect "L com.pldx.engang KFB_SCROLLDU=300;"
 # display density (DENSITY=auto1080): IWindowManager mocked; one call per real change, reset on home, settings file scrubbed
 for hw in 1272:376 1236:366 1072:317 1264:374 1448:429; do
     w=${hw%%:*}; d=${hw#*:}

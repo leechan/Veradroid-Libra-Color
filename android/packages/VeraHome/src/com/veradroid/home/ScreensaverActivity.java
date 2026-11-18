@@ -42,7 +42,14 @@ public class ScreensaverActivity extends Activity {
     private final Handler handler = new Handler();
     private final List<Item> items = new ArrayList<Item>();
     private LinearLayout page, grid;
-    private TextView modeText, pageLabel;
+    private TextView modeText, foundText, pageLabel;
+    /** 三个放图的地方，和宿主写进两个文件夹的“把屏保图片放这里.txt”说的一样。 */
+    static final String WHERE =
+            "图片（jpg / png，竖图最好）放在这三个地方都行：\n"
+          + "· USB 连电脑：Kindle 盘 → veradroid → screensaver 文件夹\n"
+          + "· Android 里：内部存储 → Screensaver 文件夹（下面的“从内部存储导入…”也放到这里）\n"
+          + "· 传书网页：“文件” → Screensaver 文件夹 → 上传\n"
+          + "放好后回到这一页就能看到。";
     private Blocks.Pager pager;
     private int pageNo;
     private String mode, file;   // 当前选择
@@ -68,8 +75,15 @@ public class ScreensaverActivity extends Activity {
         title.setPadding(0, dp(8), 0, dp(4));
         page.addView(title);
         modeText = Ui.text(this, "正在读取…", 17, false);
-        modeText.setPadding(0, 0, 0, dp(8));
+        modeText.setPadding(0, 0, 0, dp(4));
         page.addView(modeText);
+        // 图片放在哪里：每次都写在页面上（用户问过“屏保图片放哪”），找到几张也直接说
+        foundText = Ui.text(this, "正在找你的图片…", 15, true);
+        foundText.setPadding(0, dp(2), 0, dp(2));
+        page.addView(foundText);
+        TextView where = Ui.text(this, WHERE, 14, false);
+        where.setPadding(0, 0, 0, dp(8));
+        page.addView(where);
         LinearLayout modes = new LinearLayout(this);
         modes.addView(Ui.button(this, "用 Kindle 自带的", 17, false, new View.OnClickListener() {
             @Override public void onClick(View v) { choose("kindle", null); }
@@ -146,12 +160,20 @@ public class ScreensaverActivity extends Activity {
         items.clear();
         File kp = new File(VD_DIR, ".kindle-preview.png");
         items.add(new Item("kindle", kp.isFile() ? kp : null, "Kindle 自带"));
-        for (File f : images(SD_DIR)) items.add(new Item("sd/" + f.getName(), f, f.getName()));
-        for (File f : images(VD_DIR)) items.add(new Item("vd/" + f.getName(), f, f.getName() + "（USB）"));
+        int nSd = 0, nVd = 0;
+        for (File f : images(SD_DIR)) { items.add(new Item("sd/" + f.getName(), f, f.getName())); nSd++; }
+        for (File f : images(VD_DIR)) { items.add(new Item("vd/" + f.getName(), f, f.getName() + "（USB）")); nVd++; }
         if (mode == null) mode = items.size() > 1 ? "rotate" : "kindle";   // 没选过：宿主照旧做法，有用户图就轮换
+        foundText.setText(found(nSd, nVd));
         pageNo = 0;
         showMode();
         renderPage();
+    }
+
+    /** “找到 N 张你的图片”：分开说两个文件夹各几张，一张都没有时说下一步做什么。 */
+    static String found(int nSd, int nVd) {
+        if (nSd + nVd == 0) return "还没有找到你的图片：按下面任一种方法放进去（现在用 Kindle 自带的屏保）。";
+        return "找到 " + (nSd + nVd) + " 张你的图片（Android 的 Screensaver " + nSd + " 张，USB 的 veradroid/screensaver " + nVd + " 张）。";
     }
 
     private void readChoice() {

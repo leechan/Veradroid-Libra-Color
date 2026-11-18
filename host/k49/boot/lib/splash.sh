@@ -20,7 +20,7 @@ splash_begin() {
     touch $X/ctl/sleep 2>/dev/null     # 显示桥：开机期间不要画 Android 的帧
     T="regular=$KFONT"
     # 位置和字号是按 PW6（1696 高）定的：KT5 / KT6（1448 高）上 top + bottom 超过屏高，FBInk 拒绝画字
-    # （"Opposing margins sum to greater than the viewport"，用户诊断 632015、092A03），开机画面只剩进度条。按屏高等比缩。
+    # （"Opposing margins sum to greater than the viewport"，用户诊断），开机画面只剩进度条。按屏高等比缩。
     SH=$($FBINK -e 2>/dev/null | tr ';' '\n' | sed -n 's/^viewHeight=//p' | head -1)
     [ "${SH:-0}" -gt 0 ] 2>/dev/null || SH=$(sed -n 's/.*[^0-9]\([0-9][0-9]*\)x\([0-9][0-9]*\)p.*/\2/p' /sys/class/graphics/fb0/modes 2>/dev/null | head -1)
     [ "${SH:-0}" -gt 0 ] 2>/dev/null || SH=1696

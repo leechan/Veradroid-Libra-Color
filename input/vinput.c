@@ -24,6 +24,13 @@
  *   G_CORNERS=tl,bl  -- only these corners take the long press (the ones with an action; "none" = no corner; key absent = all).
  *   G_BACK_EXCLUDE=pkg,pkg  -- no bottom-edge back while one of these apps is in front (--fg FILE holds the foreground
  *   package, written by VeraHome). WeRead uses its own swipe-up for the reader toolbar.
+ *   G_EDGE_THIRDS=1  -- bottom edge in thirds: the swipe up does G_EB_L / G_EB_M / G_EB_R depending on
+ *   where it started (left / middle / right third of the logical width), and "swipe up and hold still" for
+ *   G_EB_HOLD_MS (default 500) does G_EB_HOLD. Values are action names for action.sh ("eb <name>"), "back" is sent as
+ *   the key right here, "none" = nothing (a third whose action and the hold are both none is not a gesture at all: the
+ *   touch goes to Android). Defaults appopt / home / back / switch. Only while the gestures are on (--flag absent) and
+ *   the bottom-edge gesture itself is on (G_EDGE_BACK, not excluded); otherwise the plain bottom-edge back as before.
+ *   With a hold action the third's action fires when the finger is lifted (not when the swipe is long enough).
  *   With every two-finger gesture off, two-finger touches go to Android (pinch zoom).
  *
  * Actions run  sh <actdir>/action.sh <name> [arg]  (the host decides what they do), and are logged.
@@ -59,6 +66,34 @@
  *   source), so the gestures and Android see exactly what a B panel would give. The conversion adds no delay: it works
  *   on the frame as it is read.
  *
+ * Touch boost (gconf BOOST_MS, BOOST_KHZ): when the first finger lands, the CPU's minimum frequency
+ *   (cpufreq scaling_min_freq) is raised to BOOST_KHZ (0 = scaling_max_freq) and put back BOOST_MS after the last finger
+ *   left (default 150; 0 = off). Only with --cpufreq <dir> (the cpufreq directory, e.g. /sys/devices/system/cpu/cpu0/cpufreq). The Kindle's ondemand governor only steps up after a 20 ms sample >= 95 % busy, so the
+ *   app's answer to a tap used to start at 600 MHz.
+ * Scroll hints (gconf SCROLL_PX): a single finger that Android gets and that moved more than SCROLL_PX panel pixels
+ *   (default 20 on a 1272 px wide panel, scaled to the panel width; about Android's touch slop) sends "SCROLL 1" to the
+ *   display bridge, and "SCROLL 0" when it is lifted: veradroid-epd draws the drag with DU and cleans up once after
+ *   (KFB_SCROLLDELAY). 0 = off.
+ * Early release (gconf PASS_PX, default 12 on a 1272 px panel): a single finger that is still inside the two-finger window
+ *   (--window) but already moved more than PASS_PX from where it landed is a drag: it goes to Android at once instead of
+ *   after the window. 0 = always wait the window.
+ * --rt <prio>: run as SCHED_FIFO <prio> (reset on fork: action.sh and the like run normally).
+ * Idle freeze (host IDLE_FREEZE): the host freezes the Android container after a while with no touch
+ *   and no screen change, and leaves the file --idle-mark. On the next touch-down, before the frame is forwarded, this
+ *   program writes THAWED to --idle-freezer (the container's freezer.state), wakes the container's network helper
+ *   (SIGCONT to the pid in --slirp-pid) and removes the mark: Android's input reader then reads the queued touch as usual.
+ *   --touch-stamp FILE gets its modification time set on every touch-down (the host's "last input" clock).
+ *
+ * Stuck contacts: Android must never keep a contact down that the panel no longer has. Every frame
+ *   read from a protocol-B panel names its slot (ABS_MT_SLOT is added when the driver left it out), so frames that a
+ *   gesture swallowed can no longer leave Android's slot pointer somewhere else. Whenever a gesture takes a touch back,
+ *   every contact Android was given is lifted (by what was sent to the virtual touch screen, not by the panel's state).
+ *   After every frame: in a mode that holds or swallows the touch Android must have no contact, otherwise only contacts
+ *   the panel still has. A tracking id that changes without a lift is sent to Android as a lift + a new contact.
+ *   Watchdog (--stuck-ms, default 2000, 0 = off): no panel event for that long while a contact is down -> ask the kernel
+ *   (EVIOCGMTSLOTS) which slots really hold a finger and lift the others. "reset [why]" on the --inject FIFO lifts
+ *   everything in Android (the host sends it around freezing / thawing the container); the rest of a touch that is
+ *   still down then goes nowhere.
  * Usage: veradroid-input <touch-event-dev> <log-file> <action-script> [--gconf FILE] [--fg FILE] [--w 1272] [--h 1696] [--edge 60] [--window 50]
  *                        [--corner 160] [--corner-ms 2000] [--edge-hold 60] [--edge-swipe 80] [--edge-back 0|1] [--no-gestures]
  *                        [--rotate 0|90|180|270] [--proto b|a|st]
@@ -70,6 +105,7 @@
 #include <linux/input.h>
 #include <linux/uinput.h>
 #include <poll.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -82,7 +118,10 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MAXSLOT 16   /* cyttsp4 (PW2/PW3/Voyage/Oasis 1) has max_tchs+1 slots, typically 11; ilitek 10; fts_ts 2 */
+#define MAXSLOT 64   /* cyttsp4 (PW2/PW3/Voyage/Oasis 1) has max_tchs+1 slots, typically 11; ilitek 10; fts_ts 2; pt_mt (KT5 / KT6) 32.
+                        It was 16: a pt_mt contact in slot 16..31 was invisible to the gestures and to the stuck-contact
+                        bookkeeping */
+#define ASLOTS 16    /* slots of the virtual touch screen for protocol A / single-touch sources */
 #define MAXEV 512
 
 static int W = 1272, H = 1696, EDGE = 60, EDGE_TOP = -1, TOUCH_DEBUG = 0, WINDOW_MS = 80, CORNER = 160, CORNER_MS = 2000, GESTURES = 1, EDGE_BACK = 1;
@@ -91,17 +130,28 @@ static const char *LOGF = "/dev/null", *ACT = "", *FLAGF = NULL, *INJECT = NULL,
 static int G_EDGE_BACK = 1, G_EDGE_PANEL = 1, G_TWO_TAP = 1, G_TWO_LONG = 1, G_TWO_BACK = 1, G_TWO_SLIDE = 1;
 static int G_TAP = 1, G_TAP_KEY = KEY_VOLUMEDOWN;   /* bezel double tap (gesture_tap) -> this key, see the header */
 static int tapfd = -1;
+static int BOOST_MS = 150, BOOST_KHZ = 0, SCROLL_PX = 20, PASS_PX = 12;
+static int RT_PRIO = 0, RT_GCONF = -1, started = 0;   /* --rt, gconf RT= (overrides it while present) */
+static void set_rt(int prio, const char *who);   /* touch boost / scroll hints, see the header */
 static const char *TAPDEV = NULL;
 static int G_EDGE_SENS = 1;            /* edge swipe sensitivity: 0 low, 1 standard, 2 high (scales the strip width and the swipe distance) */
 static int EDGE_SWIPE;                 /* defined with its default further down */
 static int EDGE_BASE = -1, EDGE_TOP_BASE = -1, EDGE_SWIPE_BASE = -1;   /* command-line values, captured at startup */
 static char G_BACK_EXCLUDE[512] = "";
 static char G_CORNERS[24] = "all";   /* corners whose long press is a gesture ("tl,bl", "" = none, "all"); others stay Android's */
+/* bottom edge in thirds (see the header): G_EB[0..2] = left / middle / right swipe up, G_EB[3] = swipe up and hold */
+static int G_EDGE_THIRDS = 0, G_EB_HOLD_MS = 500;
+static char G_EB[4][24] = { "appopt", "home", "back", "switch" };
+static const char *const EB_KEY[4] = { "G_EB_L", "G_EB_M", "G_EB_R", "G_EB_HOLD" };
+static const char *const EB_DEF[4] = { "appopt", "home", "back", "switch" };
 /* rotation (see the header): ROT_ON = --rotate was given at all; PW/PH = panel size in pixels; W/H become the logical size */
 static int ROT = 0, ROT_ON = 0, PW = 0, PH = 0, VW = 0;   /* FLAGF exists -> gestures are off (only bottom-edge back stays) */
 static volatile sig_atomic_t quit = 0, want_release = 0, want_grab = 0;
 static int paused = 0;
-static int btn_down = 0;
+static int hw_slot = 0;          /* protocol B: the slot the panel's next events refer to (it only sends ABS_MT_SLOT on change) */
+static long last_hw_ms = 0;      /* last event read from the panel */
+static int STUCK_MS = 2000;      /* --stuck-ms: the watchdog, see the header */
+static unsigned long n_released = 0, n_tidchg = 0, n_wd = 0, n_reset = 0;
 static int src_btn_touch = 0;
 static int tfd = -1, ufd = -1, kfd = -1;
 enum { PROTO_B, PROTO_A, PROTO_ST };
@@ -134,6 +184,9 @@ static void gconf_load(void)
     gconf_sig = sig;
     G_EDGE_BACK = G_EDGE_PANEL = G_TWO_TAP = G_TWO_LONG = G_TWO_BACK = G_TWO_SLIDE = 1; G_BACK_EXCLUDE[0] = 0; G_EDGE_SENS = 1;
     G_TAP = 1; G_TAP_KEY = KEY_VOLUMEDOWN; snprintf(G_CORNERS, sizeof(G_CORNERS), "all");
+    BOOST_MS = 150; BOOST_KHZ = 0; SCROLL_PX = 20; PASS_PX = 12; RT_GCONF = -1;
+    G_EDGE_THIRDS = 0; G_EB_HOLD_MS = 500;
+    for (int i = 0; i < 4; i++) snprintf(G_EB[i], sizeof(G_EB[i]), "%s", EB_DEF[i]);
     FILE *f = !ok ? NULL : fopen(GCONF, "r");
     if (f) {
         char line[600];
@@ -148,6 +201,21 @@ static void gconf_load(void)
             else if (!strcmp(line, "G_TWO_BACK")) G_TWO_BACK = b;
             else if (!strcmp(line, "G_TWO_SLIDE")) G_TWO_SLIDE = b;
             else if (!strcmp(line, "G_TAP")) G_TAP = b;
+            else if (!strcmp(line, "G_EDGE_THIRDS")) G_EDGE_THIRDS = b;
+            else if (!strcmp(line, "G_EB_HOLD_MS")) { G_EB_HOLD_MS = atoi(v); if (G_EB_HOLD_MS < 200 || G_EB_HOLD_MS > 3000) G_EB_HOLD_MS = 500; }
+            else if (!strncmp(line, "G_EB_", 5)) {
+                for (int i = 0; i < 4; i++)
+                    if (!strcmp(line, EB_KEY[i])) {   /* an action name: plain characters only (action.sh checks it again) */
+                        int okv = v[0] != 0 && strlen(v) < sizeof(G_EB[i]);
+                        for (const char *c = v; *c; c++) if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '.' || *c == '_')) okv = 0;
+                        if (okv) snprintf(G_EB[i], sizeof(G_EB[i]), "%.23s", v);
+                    }
+            }
+            else if (!strcmp(line, "BOOST_MS")) { BOOST_MS = atoi(v); if (BOOST_MS < 0 || BOOST_MS > 2000) BOOST_MS = 150; }
+            else if (!strcmp(line, "BOOST_KHZ")) { BOOST_KHZ = atoi(v); if (BOOST_KHZ < 0) BOOST_KHZ = 0; }
+            else if (!strcmp(line, "RT")) { int r = atoi(v); if (r >= 0 && r <= 20) RT_GCONF = r; }
+            else if (!strcmp(line, "PASS_PX")) { PASS_PX = atoi(v); if (PASS_PX < 0 || PASS_PX > 400) PASS_PX = 12; }
+            else if (!strcmp(line, "SCROLL_PX")) { SCROLL_PX = atoi(v); if (SCROLL_PX < 0 || SCROLL_PX > 400) SCROLL_PX = 20; }
             else if (!strcmp(line, "G_TAP_KEY")) {
                 if (!strcmp(v, "pageup")) G_TAP_KEY = KEY_PAGEUP;
                 else if (!strcmp(v, "pagedown")) G_TAP_KEY = KEY_PAGEDOWN;
@@ -168,15 +236,17 @@ static void gconf_load(void)
         }
         fclose(f);
     }
+    if (started) set_rt(RT_GCONF >= 0 ? RT_GCONF : RT_PRIO, "veradroid-input");   /* gconf RT= switches it live */
     if (EDGE_BASE > 0) {   /* low: narrower strip, longer swipe; high: wider strip, shorter swipe */
         static const int strip_pct[3] = { 67, 100, 140 }, swipe_pct[3] = { 150, 100, 60 };
         EDGE = EDGE_BASE * strip_pct[G_EDGE_SENS] / 100;
         EDGE_TOP = EDGE_TOP_BASE * strip_pct[G_EDGE_SENS] / 100;
         EDGE_SWIPE = EDGE_SWIPE_BASE * swipe_pct[G_EDGE_SENS] / 100;
     }
-    logf_("gconf: edge_sens=%d (strip %d/%d px, swipe %d px)", G_EDGE_SENS, EDGE, EDGE_TOP, EDGE_SWIPE);
+    logf_("gconf: edge_sens=%d (strip %d/%d px, swipe %d px) boost=%dms/%dkHz scroll_px=%d pass_px=%d", G_EDGE_SENS, EDGE, EDGE_TOP, EDGE_SWIPE, BOOST_MS, BOOST_KHZ, SCROLL_PX, PASS_PX);
     logf_("gconf: edge_back=%d edge_panel=%d two_tap=%d two_long=%d two_back=%d two_slide=%d exclude=%s",
           G_EDGE_BACK, G_EDGE_PANEL, G_TWO_TAP, G_TWO_LONG, G_TWO_BACK, G_TWO_SLIDE, G_BACK_EXCLUDE[0] ? G_BACK_EXCLUDE : "-");
+    if (G_EDGE_THIRDS) logf_("gconf: bottom edge thirds: left=%s middle=%s right=%s hold=%s (%d ms)", G_EB[0], G_EB[1], G_EB[2], G_EB[3], G_EB_HOLD_MS);
 }
 /* is the foreground app (VeraHome writes it to --fg) in G_BACK_EXCLUDE? */
 static int back_excluded(void)
@@ -207,6 +277,7 @@ static int two_any(void) { return G_TWO_TAP || G_TWO_LONG || G_TWO_BACK || G_TWO
    emulator, real goodix driver), so the first tap after waking reached Android as a hover and did nothing. */
 static int out_slot = 0, out_btn = 0;
 static unsigned char out_act[MAXSLOT];
+static int out_tid[MAXSLOT];
 static unsigned long btn_fixes = 0;
 /* ABS_MT_PRESSURE the same way: when the virtual device has a pressure axis (copied from panels that report one: PW4,
    Oasis 2/3, ...), Android also counts a contact whose pressure is 0 as hovering. Our own contacts (veradroid-input's
@@ -228,8 +299,22 @@ static void uraw(int type, int code, int value)
 }
 static void uout(const struct input_event *e)
 {
-    if (e->type == EV_ABS && e->code == ABS_MT_SLOT) out_slot = e->value;
-    else if (e->type == EV_ABS && e->code == ABS_MT_TRACKING_ID) { if (out_slot >= 0 && out_slot < MAXSLOT) { out_act[out_slot] = e->value >= 0; if (e->value >= 0) out_new[out_slot] = 1; } }
+    if (e->type == EV_ABS && e->code == ABS_MT_SLOT) {
+        if (e->value == out_slot) return;    /* the kernel drops it as well: Android's slot pointer is already there */
+        out_slot = e->value;
+    }
+    else if (e->type == EV_ABS && e->code == ABS_MT_TRACKING_ID) {
+        if (out_slot >= 0 && out_slot < MAXSLOT) {
+            if (e->value >= 0 && out_act[out_slot] && out_tid[out_slot] != e->value) {
+                /* a new tracking id in a slot Android still has down (the lift was lost or swallowed, or the panel
+                   reused the slot within one frame): Android gets the lift first, as a frame of its own */
+                struct input_event r = *e; r.value = -1; uout(&r);
+                r.type = EV_SYN; r.code = SYN_REPORT; r.value = 0; uout(&r);
+                if (++n_tidchg <= 10) logf_("slot %d: tracking id %d -> %d without a lift, lifted it in Android first", out_slot, out_tid[out_slot], e->value);
+            }
+            out_act[out_slot] = e->value >= 0; out_tid[out_slot] = e->value; if (e->value >= 0) out_new[out_slot] = 1;
+        }
+    }
     else if (e->type == EV_KEY && e->code == BTN_TOUCH) out_btn = e->value != 0;
     else if (e->type == EV_ABS && e->code == ABS_MT_PRESSURE) { if (out_slot >= 0 && out_slot < MAXSLOT) { out_pres[out_slot] = e->value; out_pset[out_slot] = 1; } }
     else if (e->type == EV_SYN && e->code == SYN_REPORT) {
@@ -249,7 +334,7 @@ static void uout(const struct input_event *e)
         }
         if (any != out_btn) {
             uraw(EV_KEY, BTN_TOUCH, any); out_btn = any;
-            if (++btn_fixes <= 20) logf_("btn_touch: panel %s, sent BTN_TOUCH %d with the frame", any ? "left it out on a new contact" : "kept it down with no contact", any);
+            if (++btn_fixes <= 20 && src_btn_touch) logf_("btn_touch: panel %s, sent BTN_TOUCH %d with the frame", any ? "left it out on a new contact" : "kept it down with no contact", any);
         }
     }
     if (write(ufd, e, sizeof(*e)) < 0) { /* device gone */ }
@@ -308,7 +393,28 @@ static int count_active(void) { int n = 0; for (int i = 0; i < MAXSLOT; i++) n +
 #endif
 static unsigned long resync_lifts = 0, drops = 0;
 #define STALE_MS 3000
+#ifndef SCHED_RESET_ON_FORK
+#define SCHED_RESET_ON_FORK 0x40000000
+#endif
+
+/* --rt <prio>: SCHED_FIFO at this priority (1..20), SCHED_RESET_ON_FORK so the programs we start do not inherit it.
+   On two cores the app drawing a scroll keeps both busy and this program waited 4-12 ms per frame in the run queue
+  . Failure (no CAP_SYS_NICE, RT budget 0) is only logged. 0 = back to normal scheduling. */
+static void set_rt(int prio, const char *who)
+{
+    static int cur = 0;           /* 0 = normal scheduling; a later call with 0 goes back to it */
+    if (prio < 0) prio = 0;
+    if (prio > 20) prio = 20;
+    if (prio == cur) return;
+    struct sched_param sp = { .sched_priority = prio };
+    if (sched_setscheduler(0, (prio ? SCHED_FIFO : SCHED_OTHER) | SCHED_RESET_ON_FORK, &sp) < 0) { fprintf(stderr, "%s: SCHED_FIFO %d: %s\n", who, prio, strerror(errno)); return; }
+    cur = prio;
+    fprintf(stderr, "%s: %s %d\n", who, prio ? "SCHED_FIFO" : "SCHED_OTHER", prio);
+}
+
 static void handle_frame(struct input_event *fr, int n);
+/* after_drop: 1 = after SYN_DROPPED, 0 = a new finger lands over one believed down, 2 = the watchdog (no events for
+   --stuck-ms): only what the kernel says counts, without kernel slot state nothing is lifted (a finger resting still) */
 static void resync_slots(int after_drop)
 {
     if (src_proto != PROTO_B || tfd < 0) return;
@@ -321,12 +427,13 @@ static void resync_slots(int after_drop)
            sent nothing for STALE_MS (a resting finger on these panels still reports small changes) */
         static int warned = 0;
         if (!warned) { warned = 1; logf_("resync: EVIOCGMTSLOTS failed (%s), using the fallback", strerror(errno)); }
+        if (after_drop == 2) return;
         long now = now_ms();
         for (int i = 0; i < MAXSLOT; i++) q.v[i] = (sl[i].active && !after_drop && now - sl[i].tl < STALE_MS) ? 1 : -1;
     }
-    if (after_drop) {                       /* the slot the driver's next events refer to (it only sends ABS_MT_SLOT on change) */
+    if (after_drop == 1) {                  /* the slot the driver's next events refer to (it only sends ABS_MT_SLOT on change) */
         struct input_absinfo ai;
-        if (ioctl(tfd, EVIOCGABS(ABS_MT_SLOT), &ai) == 0 && ai.value >= 0 && ai.value < MAXSLOT) cur_slot = ai.value;
+        if (ioctl(tfd, EVIOCGABS(ABS_MT_SLOT), &ai) == 0 && ai.value >= 0 && ai.value < MAXSLOT) cur_slot = hw_slot = ai.value;
     }
     struct input_event fr[2 * MAXSLOT + 4];
     int n = 0, lifted = 0, keep = cur_slot, left = 0;
@@ -344,7 +451,7 @@ static void resync_slots(int after_drop)
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     for (int i = 0; i < n; i++) { fr[i].time.tv_sec = ts.tv_sec; fr[i].time.tv_usec = ts.tv_nsec / 1000; }
     resync_lifts += lifted;
-    logf_("resync (%s): %d stuck finger(s) lifted, %d still down", after_drop ? "events dropped" : "new touch", lifted, left);
+    logf_("resync (%s): %d stuck finger(s) lifted, %d still down", after_drop == 1 ? "events dropped" : after_drop == 2 ? "watchdog" : "new touch", lifted, left);
     handle_frame(fr, n);
     cur_slot = keep;
 }
@@ -356,7 +463,7 @@ static int new_touch_over_active(const struct input_event *fr, int n)
     return 0;
 }
 
-enum mode { IDLE, PENDING, PASS, EDGE_B, EDGE_T, TWO, SWALLOW, EDGE_FWD };
+enum mode { IDLE, PENDING, PASS, EDGE_B, EDGE_T, TWO, SWALLOW, EDGE_FWD, EDGE_ARM };
 static enum mode md = IDLE;
 static enum mode edge_kind = IDLE;     /* which edge strip (EDGE_B / EDGE_T) an EDGE_FWD touch started in */
 static int EDGE_HOLD_MS = 60;          /* how long a touch in the edge strip is held before Android gets it (a back swipe fits inside) */
@@ -394,26 +501,118 @@ static void flush_held(void)
     for (int i = 0; i < nheld; i++) forward(&held[i]);
     nheld = 0;
 }
+/* one command line to the display bridge (never blocks: no reader = dropped) */
+static const char *EPDF = "/dev/shm/veradroid/kfb/epd.fifo";   /* --epd-fifo */
+static void epd_cmd(const char *line)
+{
+    int fd = open(EPDF, O_WRONLY | O_NONBLOCK);
+    if (fd < 0) return;
+    if (write(fd, line, strlen(line)) < 0) { /* bridge not running */ }
+    close(fd);
+}
 /* 给显示桥一个方向提示（下一次大面积变化用哪边滑入），不强制动画 */
 static void epd_dir(int dir)
 {
-    int fd = open("/dev/shm/veradroid/kfb/epd.fifo", O_WRONLY | O_NONBLOCK);
-    if (fd < 0) return;
     char b[32];
-    int n = snprintf(b, sizeof(b), "DIR %d\n", dir);
-    if (write(fd, b, n) < 0) { /* bridge not running */ }
-    close(fd);
+    snprintf(b, sizeof(b), "DIR %d\n", dir);
+    epd_cmd(b);
 }
-/* tell Android every finger is up (used when a gesture takes over after events were already forwarded) */
-static void cancel_to_android(void)
+
+/* ---- touch boost (see the header) ---- */
+static long boost_until = 0;          /* 0 = not boosted */
+static int boost_on = 0;
+static char boost_orig[24];
+static unsigned long n_boost = 0;
+static char CPUFREQ_MIN[160], CPUFREQ_MAX[160];   /* empty = no --cpufreq: boost off */
+static int sysfs_read(const char *path, char *buf, int len)
 {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    int n = read(fd, buf, len - 1);
+    close(fd);
+    if (n <= 0) return -1;
+    buf[n] = 0; buf[strcspn(buf, "\r\n")] = 0;
+    return n;
+}
+static int sysfs_write(const char *path, const char *v)
+{
+    int fd = open(path, O_WRONLY | O_TRUNC);   /* O_TRUNC: no effect on sysfs, needed for the plain files of the test */
+    if (fd < 0) return -1;
+    int r = write(fd, v, strlen(v));
+    close(fd);
+    return r < 0 ? -1 : 0;
+}
+static void boost_begin(void)
+{
+    if (BOOST_MS <= 0 || boost_on || !CPUFREQ_MIN[0]) return;
+    char mx[24];
+    if (sysfs_read(CPUFREQ_MIN, boost_orig, sizeof(boost_orig)) < 0) return;
+    if (BOOST_KHZ > 0) snprintf(mx, sizeof(mx), "%d", BOOST_KHZ);
+    else if (sysfs_read(CPUFREQ_MAX, mx, sizeof(mx)) < 0) return;
+    if (atol(mx) <= atol(boost_orig)) return;       /* already there (or capped below the minimum: powersave) */
+    if (sysfs_write(CPUFREQ_MIN, mx) == 0) { boost_on = 1; n_boost++; }
+}
+static void boost_end(void)
+{
+    if (boost_on && sysfs_write(CPUFREQ_MIN, boost_orig) < 0) logf_("boost: could not put scaling_min_freq back to %s", boost_orig);
+    boost_on = 0; boost_until = 0;
+}
+
+/* ---- idle freeze: thaw on touch (see the header) ---- */
+static const char *IDLE_MARK = NULL, *IDLE_FZ = NULL, *SLIRP_PID = NULL, *TOUCH_STAMP = NULL;
+static unsigned long n_thaw = 0;
+static void idle_thaw(void)
+{
+    if (TOUCH_STAMP) { int fd = open(TOUCH_STAMP, O_WRONLY | O_CREAT, 0644); if (fd >= 0) { futimens(fd, NULL); close(fd); } }
+    if (!IDLE_MARK || !IDLE_FZ || access(IDLE_MARK, F_OK) != 0) return;
+    struct timespec a, b;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    if (sysfs_write(IDLE_FZ, "THAWED") < 0) logf_("idle thaw: cannot write %s: %s", IDLE_FZ, strerror(errno));
+    if (SLIRP_PID) {
+        char pb[24];
+        if (sysfs_read(SLIRP_PID, pb, sizeof(pb)) > 0 && atoi(pb) > 1) kill(atoi(pb), SIGCONT);
+    }
+    unlink(IDLE_MARK);
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    n_thaw++;
+    logf_("idle thaw in %ld us", (b.tv_sec - a.tv_sec) * 1000000L + (b.tv_nsec - a.tv_nsec) / 1000);
+}
+
+/* ---- scroll hints (see the header) ---- */
+static int scroll_sent = 0;
+static unsigned long n_scroll = 0;
+static int out_any(void) { for (int i = 0; i < MAXSLOT; i++) if (out_act[i]) return 1; return 0; }
+/* lift contacts in Android: every slot Android was given (all = 1), or only those the panel no longer has (all = 0).
+   By what was written to the virtual touch screen (out_act), never by the panel's state (sl): those two differed when
+   a gesture had swallowed a slot change, and the cancel then lifted slots Android did not have while the ones it had
+   stayed down for good (seen on a KT5: two contacts stuck from an edge swipe that opened the panel). Afterwards
+   Android's slot pointer is put back where the panel's next events expect it. Returns how many were lifted. */
+static int release_android(int all, const char *why)
+{
+    int n = 0;
     for (int i = 0; i < MAXSLOT; i++)
-        if (sl[i].active) {
+        if (out_act[i] && (all || !sl[i].active)) {
             emit(ufd, EV_ABS, ABS_MT_SLOT, i);
             emit(ufd, EV_ABS, ABS_MT_TRACKING_ID, -1);
+            n++;
         }
-    emit(ufd, EV_KEY, BTN_TOUCH, 0);
+    if (!n && !(all && out_btn)) return 0;
+    if (src_proto == PROTO_B) emit(ufd, EV_ABS, ABS_MT_SLOT, hw_slot);
+    if (!out_any()) emit(ufd, EV_KEY, BTN_TOUCH, 0);
     emit(ufd, EV_SYN, SYN_REPORT, 0);
+    n_released += n;
+    if (n && why) logf_("release: %d contact(s) lifted in Android (%s)", n, why);
+    return n;
+}
+/* tell Android every finger is up (used when a gesture takes over after events were already forwarded) */
+static void cancel_to_android(void) { release_android(1, NULL); }
+/* after every frame: in the modes that hold or swallow a touch Android must have no contact at all; in the others (the
+   touch goes to Android) only contacts the panel still has */
+static void android_check(void)
+{
+    if (!out_any()) return;
+    if (md == IDLE || md == PASS || md == EDGE_FWD) release_android(0, "the panel has no such contact");
+    else release_android(1, "touch held or taken by a gesture");
 }
 
 static int in_corner(int x, int y, const char **name)
@@ -426,6 +625,42 @@ static int in_corner(int x, int y, const char **name)
     if (!(t || b) || !(l || r)) return 0;
     /* only corners that have an action (G_CORNERS from --gconf): a long press in any other corner stays Android's */
     return !strcmp(G_CORNERS, "all") || strstr(G_CORNERS, *name) != NULL;
+}
+
+/* ---- bottom edge in thirds (G_EDGE_THIRDS, see the header) ----
+   eb_third: which third this touch started in (0 left, 1 middle, 2 right; -1 = plain bottom-edge back for this touch).
+   EDGE_ARM: the swipe up was seen and the touch is ours; lifting fires the third's action, holding still for G_EB_HOLD_MS
+   fires G_EB_HOLD. Moving more than the slop restarts the hold clock (a slow drag is not a hold). */
+static int eb_third = -1, arm_x, arm_y;
+static long arm_t = 0;
+static int eb_none(int i) { return !strcmp(G_EB[i], "none"); }
+static int eb_slop(void) { int s = 30 * (PW ? PW : W) / 1272; return s < 8 ? 8 : s; }
+static void eb_fire(int i)
+{
+    static const char *const nm[4] = { "left", "middle", "right", "hold" };
+    if (eb_none(i)) { logf_("edge thirds: %s -> none", nm[i]); return; }
+    logf_("edge thirds: %s -> %s", nm[i], G_EB[i]);
+    if (!strcmp(G_EB[i], "back")) back_key();   /* the key straight away, as the plain bottom-edge back */
+    else action("eb", G_EB[i]);
+}
+/* the bottom-edge swipe was recognised (the touch is ours from now on): back as before, or the thirds */
+static void eb_swipe(int lifted)
+{
+    if (eb_third < 0) { logf_("edge swipe up -> back"); back_key(); return; }
+    if (lifted || eb_none(3)) { eb_fire(eb_third); return; }   /* no hold action: no reason to wait for the lift */
+    arm_x = sl[cur_slot].x; arm_y = sl[cur_slot].y; arm_t = now_ms();
+    md = EDGE_ARM;
+}
+/* a frame (or the idle tick, frame = 0) while armed */
+static void eb_armed(int active, int frame)
+{
+    if (frame && active == 0) { eb_fire(eb_third); md = IDLE; return; }
+    if (active == 0) return;
+    if (frame && (abs(sl[cur_slot].x - arm_x) > eb_slop() || abs(sl[cur_slot].y - arm_y) > eb_slop())) {
+        arm_x = sl[cur_slot].x; arm_y = sl[cur_slot].y; arm_t = now_ms();
+        return;
+    }
+    if (now_ms() - arm_t >= G_EB_HOLD_MS) { eb_fire(3); md = SWALLOW; }
 }
 
 static void two_finger_end(void)
@@ -500,6 +735,17 @@ static void rot_frame(struct input_event *fr, int n)
     for (int i = 0; i < n; i++) rot_event(&fr[i]);
 }
 
+/* PENDING (one finger, inside the two-finger window): did it move more than PASS_PX (scaled to the panel width) from
+   where it landed? Then it is a drag and is released to Android at once. 0 = always wait the whole window (old way). */
+static int pending_moved(void)
+{
+    if (PASS_PX <= 0 || count_active() != 1) return 0;
+    const struct slot *s = &sl[cur_slot];
+    if (s->sx < 0 || s->sy < 0) return 0;
+    int thr = PASS_PX * PW / 1272;
+    return abs(s->x - s->sx) > thr || abs(s->y - s->sy) > thr;
+}
+
 static void handle_frame(struct input_event *fr, int n)
 {
     /* update state from the frame's events */
@@ -518,16 +764,20 @@ static void handle_frame(struct input_event *fr, int n)
     }
     int active = count_active();
     (void)down_edge;
-    int has_btn = 0;
-    for (int i = 0; i < n; i++)
-        if (fr[i].type == EV_KEY && fr[i].code == BTN_TOUCH) has_btn = 1;
-    /* Some 5.19.5 panels report MT positions but never send BTN_TOUCH. Only
-       synthesize it when the source has no BTN_TOUCH capability; devices that
-       already send it (older PW6, PW5, KOReader) must not get duplicate downs. */
-    if (!src_btn_touch && !has_btn) {
-        if (active && !btn_down) { emit(ufd, EV_KEY, BTN_TOUCH, 1); btn_down = 1; }
-        else if (!active && btn_down) { emit(ufd, EV_KEY, BTN_TOUCH, 0); btn_down = 0; }
+    static int prev_any = 0;
+    if (active && !prev_any) {        /* first finger down: boost before anything else (the gconf may switch it off) */
+        idle_thaw();                  /* the container first: the frame below goes to its input reader */
+        gconf_load();
+        boost_begin();
+        boost_until = 0;              /* held while a finger is down */
+        scroll_sent = 0;
+    } else if (!active && prev_any) {
+        if (boost_on) boost_until = now_ms() + BOOST_MS;
+        epd_cmd("TOUCH\n");          /* an input event: the bridge counts only page turns that follow one (FLIPINPUT) */
     }
+    prev_any = active != 0;
+    /* Panels without BTN_TOUCH (some 5.19.5 PW6, KT5 / KT6 pt_mt): uout() sends it with the frames Android gets. It used
+       to be written here for every touch, also for touches a gesture held or swallowed (a BTN_TOUCH 1 with no contact). */
     if (TOUCH_DEBUG) {
         static int prev_active = 0;
         if (active != prev_active) {
@@ -552,6 +802,12 @@ static void handle_frame(struct input_event *fr, int n)
             { static long last_poke = 0; if (t_down - last_poke > 20000) { last_poke = t_down; action("poke", NULL); } }   /* keep the Kindle from sleeping while the screen is being used */
             corner_fired = 0;
             two_done = 0;
+            eb_third = -1;
+            if (eb && gest && G_EDGE_THIRDS) {
+                int t = sx < W / 3 ? 0 : sx >= W - W / 3 ? 2 : 1;
+                if (eb_none(t) && eb_none(3)) eb = 0;   /* nothing bound here: an ordinary touch for Android */
+                else eb_third = t;
+            }
             if (active >= 2 && !two_any()) {    /* every two-finger gesture off: Android gets them (pinch) */
                 flush_held(); md = PASS;
             } else if (active >= 2) {       /* both fingers landed in the same frame */
@@ -577,7 +833,9 @@ static void handle_frame(struct input_event *fr, int n)
         } else if (active == 0) {
             for (int i = 0; i < n && nheld < MAXEV; i++) held[nheld++] = fr[i];
             flush_held(); md = IDLE;
-        } else if (now_ms() - t_down >= WINDOW_MS) {
+        } else if (now_ms() - t_down >= WINDOW_MS || pending_moved()) {
+            /* the window ran out, or the finger already moved past the touch slop (a drag, not the first finger of a
+               two-finger gesture): Android gets it now instead of after the whole window */
             for (int i = 0; i < n && nheld < MAXEV; i++) held[nheld++] = fr[i];
             flush_held(); md = PASS;
         } else {
@@ -623,7 +881,7 @@ static void handle_frame(struct input_event *fr, int n)
         if (active == 0) {
             if (swipe) {                    /* a fast flick that ended before the swipe was seen while held */
                 corner_fired = 1;
-                if (md == EDGE_B) { logf_("edge swipe up -> back"); back_key(); } else action("panel", NULL);
+                if (md == EDGE_B) eb_swipe(1); else action("panel", NULL);
             } else if (!corner_fired) {     /* a tap: deliver the held press and this release to Android */
                 for (int i = 0; i < n && nheld < MAXEV; i++) held[nheld++] = fr[i];
                 flush_held();
@@ -632,7 +890,7 @@ static void handle_frame(struct input_event *fr, int n)
         } else if (swipe) {
             corner_fired = 1;               /* fire as soon as the swipe is long enough; the held press never reaches Android */
             nheld = 0;
-            if (md == EDGE_B) { logf_("edge swipe up -> back"); back_key(); }
+            if (md == EDGE_B) eb_swipe(0);  /* thirds with a hold action: armed (EDGE_ARM) until lift / hold */
             else action("panel", NULL);
         } else if (!corner_fired) {
             for (int i = 0; i < n && nheld < MAXEV; i++) held[nheld++] = fr[i];
@@ -654,9 +912,9 @@ static void handle_frame(struct input_event *fr, int n)
         if (!corner_fired && ((edge_kind == EDGE_B && dy < -EDGE_SWIPE) || (edge_kind == EDGE_T && dy > EDGE_SWIPE)) && abs(dy) > abs(dx)) {
             corner_fired = 1;               /* the swipe turned out to be a gesture after all: take the touch back from Android */
             cancel_to_android();
-            if (edge_kind == EDGE_B) { logf_("edge swipe up -> back"); back_key(); }
-            else action("panel", NULL);
             md = SWALLOW;
+            if (edge_kind == EDGE_B) eb_swipe(0);   /* may arm (md = EDGE_ARM) */
+            else action("panel", NULL);
         } else {
             /* corner long press also for touches that started inside the top/bottom edge strip (they are in EDGE_FWD,
                not PASS): same rule as below -- one finger, held >= CORNER_MS, moved < 40 px */
@@ -680,7 +938,22 @@ static void handle_frame(struct input_event *fr, int n)
     case SWALLOW:
         if (active == 0) md = IDLE;
         break;
+    case EDGE_ARM:
+        eb_armed(active, 1);
+        break;
     }
+    /* scroll hint: one finger that Android is getting moved past the slop */
+    if (!scroll_sent && SCROLL_PX > 0 && active == 1 && (md == PASS || md == EDGE_FWD || md == IDLE)) {
+        int sx = sl[cur_slot].sx, sy = sl[cur_slot].sy;
+        int thr = SCROLL_PX * PW / 1272;
+        if (thr < 4) thr = 4;
+        if (sx >= 0 && sy >= 0 && (abs(sl[cur_slot].x - sx) > thr || abs(sl[cur_slot].y - sy) > thr)) {
+            epd_cmd("SCROLL 1\n"); scroll_sent = 1; n_scroll++;
+            if (TOUCH_DEBUG) logf_("scroll begin (%d,%d -> %d,%d)", sx, sy, sl[cur_slot].x, sl[cur_slot].y);
+        }
+    }
+    if (scroll_sent && (active == 0 || active >= 2 || md == SWALLOW || md == TWO || md == EDGE_ARM)) { epd_cmd("SCROLL 0\n"); scroll_sent = active ? 2 : 0; }
+    android_check();
 }
 
 /* ---- protocol A / single touch -> slots (see the header). Only used when the source is not protocol B. ---- */
@@ -768,8 +1041,8 @@ static int normalize_frame(const struct input_event *in, int n, struct input_eve
     for (int i = 0; i < nc; i++) {
         int s = cslot[i], fresh = 0;
         if (s < 0) {                                   /* a new finger: the lowest free slot */
-            for (s = 0; s < MAXSLOT && (as_[s].used || taken[s]); s++) ;
-            if (s >= MAXSLOT) continue;
+            for (s = 0; s < ASLOTS && (as_[s].used || taken[s]); s++) ;
+            if (s >= ASLOTS) continue;
             if (c[i].x < 0 || c[i].y < 0) continue;    /* no position yet: wait for one */
             taken[s] = 1; fresh = 1;
             as_[s] = (struct aslot){ 1, c[i].tid, -1, -1, -1, -1, a_next_id };
@@ -831,7 +1104,7 @@ static int setup_uinput_touch(void)
         sx_min = ax.minimum; sx_max = ax.maximum; sy_min = ay.minimum; sy_max = ay.maximum;
         const int syn[4] = { ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_MT_POSITION_X, ABS_MT_POSITION_Y };
         const int smin[4] = { 0, 0, ROT_ON ? 0 : ax.minimum, ROT_ON ? 0 : ay.minimum };
-        const int smax[4] = { MAXSLOT - 1, 65535, ROT_ON ? W - 1 : ax.maximum, ROT_ON ? H - 1 : ay.maximum };
+        const int smax[4] = { ASLOTS - 1, 65535, ROT_ON ? W - 1 : ax.maximum, ROT_ON ? H - 1 : ay.maximum };
         for (int i = 0; i < 4; i++) {
             ioctl(ufd, UI_SET_ABSBIT, syn[i]);
             dev.absmin[syn[i]] = smin[i]; dev.absmax[syn[i]] = smax[i];
@@ -872,7 +1145,31 @@ static int setup_uinput_keys(void)
 }
 
 
-/* ---- test hook: "tap x y [hold_ms]" / "swipe x1 y1 x2 y2 ms" written to the --inject FIFO is fed through exactly the same
+/* "reset [why]" (--inject FIFO, the host around freezing / thawing the container) and SIGUSR1 / SIGUSR2: Android gets
+   every contact lifted; a touch still on the panel is swallowed to its end (Android never saw it go down) */
+static void touch_reset(const char *why)
+{
+    n_reset++;
+    int n = release_android(1, why);
+    nheld = 0;
+    md = count_active() ? SWALLOW : IDLE;
+    logf_("reset (%s): %d contact(s) lifted in Android, %d finger(s) on the panel%s", why, n, count_active(), md == SWALLOW ? " (swallowed to the lift)" : "");
+}
+/* watchdog (see the header): runs on the poll tick */
+static long wd_last = 0;
+static void stuck_watchdog(void)
+{
+    if (STUCK_MS <= 0 || paused) return;
+    if (!out_any() && !count_active()) return;
+    long now = now_ms();
+    if (now - last_hw_ms < STUCK_MS || now - wd_last < STUCK_MS) return;
+    wd_last = now;
+    n_wd++;
+    resync_slots(2);            /* fingers the kernel no longer has: lifted here (and in Android when it had them) */
+    android_check();            /* Android's contacts: none while a gesture holds the touch, else only the panel's */
+}
+
+/* ---- test hook: "tap x y [hold_ms]" / "swipe x1 y1 x2 y2 ms" / "down x y" "move x y" "up" written to the --inject FIFO is fed through exactly the same
    code path as a real touch (gesture window, held events, forwarding to Android), so latency and behaviour can be tested
    without a finger ---- */
 static void mkev(struct input_event *e, int type, int code, int value)
@@ -912,9 +1209,13 @@ static void inject_cmd(int fd)
     char *save = NULL;
     for (char *line = strtok_r(buf, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
         int x1, y1, x2, y2, ms;
-        if (sscanf(line, "down %d %d", &x1, &y1) == 2) {
+        if (!strncmp(line, "reset", 5) && (line[5] == 0 || line[5] == ' ')) {
+            touch_reset(line[5] ? line + 6 : "host");
+        } else if (sscanf(line, "down %d %d", &x1, &y1) == 2) {
             logf_("inject down %d,%d", x1, y1);
             inj_frame(77, x1, y1);          /* returns at once: the poll tick decides when the press is handed to Android */
+        } else if (sscanf(line, "move %d %d", &x1, &y1) == 2) {
+            inj_move(x1, y1);               /* down / move ... / up: a drag that can stop and hold (swipe-up-and-hold) */
         } else if (!strcmp(line, "up")) {
             logf_("inject up");
             inj_frame(-1, 0, 0);
@@ -925,8 +1226,9 @@ static void inject_cmd(int fd)
             usleep((useconds_t)ms * 1000);
             inj_frame(-1, 0, 0);
         } else if (sscanf(line, "swipe %d %d %d %d %d", &x1, &y1, &x2, &y2, &ms) == 5) {
+            int steps = 12;      /* optional 6th number: steps (a real panel reports every ~8-16 ms; 12 steps is a coarse 24 Hz) */
+            if (sscanf(line, "swipe %*d %*d %*d %*d %*d %d", &steps) != 1 || steps < 1 || steps > 500) steps = 12;
             logf_("inject swipe %d,%d -> %d,%d", x1, y1, x2, y2);
-            int steps = 12;
             for (int i = 0; i <= steps; i++) {
                 int x = x1 + (x2 - x1) * i / steps, y = y1 + (y2 - y1) * i / steps;
                 if (i == 0) inj_frame(78, x, y);            /* the tracking id is sent once, at touch-down, like the real panel */
@@ -949,6 +1251,8 @@ static void tap_read(void)
             gconf_load();
             if (paused || !G_TAP || (FLAGF && access(FLAGF, F_OK) == 0)) { logf_("tap key %d ignored", ev.code); continue; }
             logf_("bezel tap (key %d) -> key %d", ev.code, G_TAP_KEY);
+            idle_thaw();
+            epd_cmd("TOUCH\n");
             key_tap(G_TAP_KEY);
             continue;
         }
@@ -983,6 +1287,18 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--rotate") && i + 1 < argc) { ROT = atoi(argv[++i]); ROT_ON = 1; }
         else if (!strcmp(argv[i], "--vw") && i + 1 < argc) VW = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--tapdev") && i + 1 < argc) TAPDEV = argv[++i];
+        else if (!strcmp(argv[i], "--epd-fifo") && i + 1 < argc) EPDF = argv[++i];
+        else if (!strcmp(argv[i], "--rt") && i + 1 < argc) RT_PRIO = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--stuck-ms") && i + 1 < argc) STUCK_MS = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--idle-mark") && i + 1 < argc) IDLE_MARK = argv[++i];
+        else if (!strcmp(argv[i], "--idle-freezer") && i + 1 < argc) IDLE_FZ = argv[++i];
+        else if (!strcmp(argv[i], "--slirp-pid") && i + 1 < argc) SLIRP_PID = argv[++i];
+        else if (!strcmp(argv[i], "--touch-stamp") && i + 1 < argc) TOUCH_STAMP = argv[++i];
+        else if (!strcmp(argv[i], "--cpufreq") && i + 1 < argc) {   /* cpufreq dir of the CPU(s) to boost, e.g. /sys/devices/system/cpu/cpu0/cpufreq */
+            const char *d = argv[++i];
+            snprintf(CPUFREQ_MIN, sizeof(CPUFREQ_MIN), "%s/scaling_min_freq", d);
+            snprintf(CPUFREQ_MAX, sizeof(CPUFREQ_MAX), "%s/scaling_max_freq", d);
+        }
         else if (!strcmp(argv[i], "--proto") && i + 1 < argc) {
             const char *v = argv[++i];
             proto_forced = !strcmp(v, "a") || !strcmp(v, "A") ? PROTO_A : !strcmp(v, "st") || !strcmp(v, "ST") ? PROTO_ST : PROTO_B;
@@ -1019,11 +1335,16 @@ int main(int argc, char **argv)
     }
     if (setup_uinput_touch() < 0) return 1;
     if (setup_uinput_keys() < 0) fprintf(stderr, "warning: no keys device\n");
+    set_rt(RT_GCONF >= 0 ? RT_GCONF : RT_PRIO, "veradroid-input"); started = 1;
     if (ioctl(tfd, EVIOCGRAB, 1) < 0) perror("EVIOCGRAB");     /* from now on only we see the touches */
     if (TAPDEV && TAPDEV[0]) {
         tapfd = open(TAPDEV, O_RDONLY | O_NONBLOCK);
         if (tapfd < 0) fprintf(stderr, "tapdev %s: %s\n", TAPDEV, strerror(errno));
         else if (ioctl(tapfd, EVIOCGRAB, 1) < 0) perror("EVIOCGRAB tapdev");
+    }
+    {
+        struct input_absinfo ai;
+        if (src_proto == PROTO_B && ioctl(tfd, EVIOCGABS(ABS_MT_SLOT), &ai) == 0 && ai.value >= 0 && ai.value < MAXSLOT) hw_slot = cur_slot = ai.value;
     }
     if (EDGE_TOP < 0) EDGE_TOP = EDGE;
     EDGE_BASE = EDGE; EDGE_TOP_BASE = EDGE_TOP; EDGE_SWIPE_BASE = EDGE_SWIPE;
@@ -1039,14 +1360,25 @@ int main(int argc, char **argv)
     while (!quit) {
         if (want_release) {
             want_release = 0;
-            if (!paused) { cancel_to_android(); ioctl(tfd, EVIOCGRAB, 0); if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 0); paused = 1; md = IDLE; nheld = 0; nf = 0; memset(sl, 0, sizeof(sl)); memset(as_, 0, sizeof(as_)); st_btn = 0; logf_("released"); }
+            boost_end();
+            if (!paused) { release_android(1, "released to the Kindle"); ioctl(tfd, EVIOCGRAB, 0); if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 0); paused = 1; md = IDLE; nheld = 0; nf = 0; memset(sl, 0, sizeof(sl)); memset(as_, 0, sizeof(as_)); st_btn = 0; logf_("released"); }
         }
         if (want_grab) {
             want_grab = 0;
-            if (paused) { ioctl(tfd, EVIOCGRAB, 1); if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 1); paused = 0; md = IDLE; nheld = 0; nf = 0; memset(sl, 0, sizeof(sl)); memset(as_, 0, sizeof(as_)); st_btn = 0; logf_("grabbed again"); }
+            if (paused) {
+                ioctl(tfd, EVIOCGRAB, 1); if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 1); paused = 0; md = IDLE; nheld = 0; nf = 0; memset(sl, 0, sizeof(sl)); memset(as_, 0, sizeof(as_)); st_btn = 0;
+                struct input_absinfo ai;
+                if (src_proto == PROTO_B && ioctl(tfd, EVIOCGABS(ABS_MT_SLOT), &ai) == 0 && ai.value >= 0 && ai.value < MAXSLOT) hw_slot = cur_slot = ai.value;
+                release_android(1, "grabbed again");
+                logf_("grabbed again");
+            }
         }
+        if (boost_until && now_ms() >= boost_until) boost_end();
         struct pollfd pf[3] = { { tfd, POLLIN, 0 }, { ifd, POLLIN, 0 }, { tapfd, POLLIN, 0 } };
-        int pr = poll(pf, 3, md == IDLE ? -1 : 10);   /* a negative fd is skipped by poll */
+        int pto = md == IDLE ? -1 : 10;
+        if (STUCK_MS > 0 && (out_any() || count_active())) { int w = STUCK_MS / 4 > 10 ? STUCK_MS / 4 : 10; if (pto < 0 || w < pto) pto = w; }
+        if (boost_until) { long left = boost_until - now_ms(); if (left < 1) left = 1; if (pto < 0 || left < pto) pto = (int)left; }
+        int pr = poll(pf, 3, pto);   /* a negative fd is skipped by poll */
         if (pr > 0 && tapfd >= 0 && (pf[2].revents & (POLLIN | POLLERR | POLLHUP))) {
             tap_read();
             if (!(pf[0].revents & POLLIN) && !(ifd >= 0 && (pf[1].revents & POLLIN))) continue;
@@ -1065,6 +1397,7 @@ int main(int argc, char **argv)
                 edge_kind = md;
                 md = EDGE_FWD;
             }
+            if (md == EDGE_ARM) eb_armed(count_active(), 0);   /* swipe up and hold: a still finger sends nothing */
             if (md == TWO && !two_done && G_TWO_LONG && now_ms() - two_t0 >= 2000 && abs(sl[two_i[0]].x - two_sx[0]) < 60 && abs(sl[two_i[0]].y - two_sy[0]) < 60) {
                 action("invert", NULL); two_done = 1;
             }
@@ -1082,6 +1415,7 @@ int main(int argc, char **argv)
                     corner_fired = 1; cancel_to_android(); action(cn, NULL); md = SWALLOW;
                 }
             }
+            stuck_watchdog();
             continue;
         }
         if (pr < 0) { if (errno == EINTR) continue; break; }
@@ -1090,6 +1424,7 @@ int main(int argc, char **argv)
         static struct input_event rb[64];
         ssize_t n = read(tfd, rb, sizeof(rb));
         if (n < (ssize_t)sizeof(rb[0])) { if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue; break; }
+        last_hw_ms = now_ms();
         if (paused) { nf = 0; dropping = 0; continue; }
         for (int k = 0; k < (int)(n / (ssize_t)sizeof(rb[0])); k++) {
             struct input_event e = rb[k];
@@ -1103,6 +1438,20 @@ int main(int argc, char **argv)
                 if (dropping) { dropping = 0; nf = 0; resync_slots(1); continue; }
                 if (nf < MAXEV) frame[nf++] = e;
                 if (src_proto == PROTO_B) {
+                    /* name the slot: the panel only sends ABS_MT_SLOT when it changes, so a frame without one belongs to
+                       the slot of the last one it sent. When a gesture swallowed that frame, Android's slot pointer stayed
+                       elsewhere and this frame's contact landed in the wrong slot there (see the header) */
+                    for (int k = 0; k < nf; k++) {
+                        if (frame[k].type != EV_ABS) continue;
+                        if (frame[k].code == ABS_MT_SLOT) break;
+                        if (frame[k].code >= ABS_MT_TOUCH_MAJOR && frame[k].code <= ABS_MT_TOOL_Y && nf < MAXEV) {
+                            memmove(&frame[1], &frame[0], nf * sizeof(frame[0]));
+                            frame[0] = frame[1]; frame[0].type = EV_ABS; frame[0].code = ABS_MT_SLOT; frame[0].value = hw_slot; nf++;
+                            break;
+                        }
+                    }
+                    for (int k = 0; k < nf; k++)
+                        if (frame[k].type == EV_ABS && frame[k].code == ABS_MT_SLOT && frame[k].value >= 0 && frame[k].value < MAXSLOT) hw_slot = frame[k].value;
                     if (new_touch_over_active(frame, nf)) resync_slots(0);
                     rot_frame(frame, nf);
                     handle_frame(frame, nf);
@@ -1115,10 +1464,13 @@ int main(int argc, char **argv)
             } else if (!dropping && nf < MAXEV - 1) frame[nf++] = e;
         }
     }
+    boost_end();
     ioctl(tfd, EVIOCGRAB, 0);
     if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 0);
     ioctl(ufd, UI_DEV_DESTROY);
     if (kfd >= 0) ioctl(kfd, UI_DEV_DESTROY);
+    logf_("boost: %lu times, scroll hints: %lu, idle thaws: %lu", n_boost, n_scroll, n_thaw);
+    logf_("stuck contacts: %lu lifted in Android, %lu tracking id changes, %lu watchdog checks, %lu resets", n_released, n_tidchg, n_wd, n_reset);
     logf_("stopped, forwarded %lu events, %lu drops, %lu stuck fingers lifted, %lu BTN_TOUCH fixed, %lu pressure fixed", fwd_count, drops, resync_lifts, btn_fixes, pres_fixes);
     return 0;
 }

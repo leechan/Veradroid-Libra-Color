@@ -22,7 +22,7 @@ final class Icons {
         HOME, GRID, BACK, CHEV_R, CHEV_U, CHEV_D, GEAR, POWER, SUN_S, SUN_L, WARM, WIFI, INVERT, REFRESH, SWITCH, EYE,
         SLIDERS, INFO, CLOSE, PLUS, MINUS, BELL, MOON, FONT, SWIPE, BOOK, UPLOAD, CLOUD, SEARCH, STORE, CHART, BLUETOOTH, CAMERA,
         EXIT, MORE, LIST, PLANE, BOOKMARK, TOC,
-        FOLDER, USER, DEVICE, IMAGE, NOTE, LAYOUT, CLOCK, CALENDAR, WIDGET, CLEAN
+        FOLDER, USER, DEVICE, IMAGE, NOTE, LAYOUT, CLOCK, CALENDAR, WIDGET, CLEAN, LOCK, UNLOCK
     }
 
     static void draw(Canvas c, Kind k, float size, int color) {
@@ -124,6 +124,18 @@ final class Icons {
             c.drawLine(7, 11.5f, 12.5f, 17, p); c.drawLine(12.5f, 11.5f, 7, 17, p);
             break;
         case PLUS: c.drawLine(12, 5, 12, 19, p); c.drawLine(5, 12, 19, 12, p); break;
+        case LOCK:     // 锁：锁身 + 合上的锁梁（切换应用里“全部关闭”不关它）
+            c.drawRoundRect(new RectF(5, 10.5f, 19, 20.5f), 2, 2, p);
+            c.drawArc(new RectF(8, 3.5f, 16, 11.5f), 180, 180, false, p);
+            c.drawLine(8, 7.5f, 8, 10.5f, p); c.drawLine(16, 7.5f, 16, 10.5f, p);
+            c.drawLine(12, 14, 12, 17, p);
+            break;
+        case UNLOCK:   // 开着的锁：锁梁右边抬起来
+            c.drawRoundRect(new RectF(5, 10.5f, 19, 20.5f), 2, 2, p);
+            c.drawArc(new RectF(8, 2.5f, 16, 10.5f), 180, 180, false, p);
+            c.drawLine(8, 6.5f, 8, 10.5f, p);
+            c.drawLine(12, 14, 12, 17, p);
+            break;
         case MINUS: c.drawLine(5, 12, 19, 12, p); break;
         case BELL: {
             c.drawArc(new RectF(6, 4.5f, 18, 16.5f), 180, 180, false, p);

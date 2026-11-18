@@ -108,13 +108,16 @@ final class BlocksCards {
                 int step = Math.max(2, w / 260);
                 sampleW = w / step; sampleH = h / step;
                 byte[][] out = new byte[2][sampleW * sampleH];
+                // 一行一次整块拷出来再取点：以前每个点三次 get()（两页共五十多万次），单核的 PW4 上离开 / 回到主页各卡一两秒
+                byte[] line = new byte[(sampleW - 1) * step * 4 + 3];
                 for (int pg = 0; pg < pages; pg++) {
                     for (int y = 0; y < sampleH; y++) {
-                        long row = pg * page + (long) (y * step) * w * 4;
-                        for (int x = 0; x < sampleW; x++) {
-                            int o = (int) (row + (long) x * step * 4);
-                            int r = mb.get(o) & 255, g = mb.get(o + 1) & 255, b = mb.get(o + 2) & 255;
-                            out[pg][y * sampleW + x] = (byte) ((r * 77 + g * 150 + b * 29) >> 8);
+                        mb.position((int) (pg * page + (long) (y * step) * w * 4));
+                        mb.get(line, 0, line.length);
+                        int base = y * sampleW;
+                        for (int x = 0, o = 0; x < sampleW; x++, o += step * 4) {
+                            int r = line[o] & 255, g = line[o + 1] & 255, b = line[o + 2] & 255;
+                            out[pg][base + x] = (byte) ((r * 77 + g * 150 + b * 29) >> 8);
                         }
                     }
                 }
@@ -143,6 +146,12 @@ final class BlocksCards {
         return l;
     }
 
+    /** 首页上没有“继续阅读”卡片时连最近任务都不查（那是一次跨进程调用，单核机型上回到主页时要等它）。 */
+    static void captureLastApp(HomeActivity a) {
+        if (!wantsLastApp(a)) return;
+        captureLastApp(a, lastForeground(a));
+    }
+
     static void captureLastApp(HomeActivity a, String pkg) {
         if (pkg == null || !wantsLastApp(a) || a.findApp(pkg) == null || !readers(a).contains(pkg)) return;
         byte[][] now = sampleFb(a);
@@ -162,6 +171,7 @@ final class BlocksCards {
         Store.prefs(a, "home").edit().putString("la_pkg", pkg).putLong("la_time", System.currentTimeMillis()).apply();
         final File out = new File(Store.cache("lastapp"), "thumb.png");
         new Thread(new Runnable() { @Override public void run() {
+            Ui.lowPriority();
             try { FileOutputStream o = new FileOutputStream(out); bm.compress(Bitmap.CompressFormat.PNG, 100, o); o.close(); } catch (Throwable ignored) { }
         } }, "lastapp-thumb").start();
     }

@@ -2,7 +2,17 @@
 # 设置：默认值 + 用户的 $SYS/settings.conf（shell 变量赋值，一行一个）
 settings_defaults() {
     RETURN_MODE=freeze     # 返回 Kindle 时：freeze = 冻结留在内存（再打开几秒），off = 关掉
-    ZRAM_MB=512            # 运行期间的压缩内存（MB），0 = 不开
+    ZRAM_MB=512            # 运行期间的压缩内存（MB），0 = 不开。>= 700 MB 的机型默认 768（settings_load；zram0 被占着时 memkeep.sh 再加一块补足）
+    ZRAM_EXTRA=auto        # zram0 已在用、比 ZRAM_MB 小时再加一块 zram：auto（>= 700 MB 机型）| on | off
+    LMK_MINFREE=auto       # lmkd 杀进程门槛：auto（按内存，见 memkeep.sh）| stock（原厂大屏表）| "页数:adj ..."（最多 6 对）
+    MEM_KEEP=auto          # 桌面 / 输入法不换出（memory cgroup swappiness 0）：auto（>= 700 MB 机型）| on | off
+    MEM_KEEP_APPS=         # 另外也不换出的应用（逗号分隔的包名）
+    BG_STOP_MIN=0          # 后台应用定时停止：BG_STOP_APPS 里的应用离开前台超过这么多分钟就 force-stop，0 = 关
+    BG_STOP_APPS=          # 逗号分隔的包名（桌面 / 输入法 / 前台应用永远不停）
+    BOOT_BLOCK=1           # 1 = 第三方应用不许开机自启（pm disable 它们的开机广播接收器，闹钟 / 日历 / 待办类除外）；0 = 恢复（memkeep.sh）
+    BOOT_ALLOW=            # 允许开机自启的第三方应用（逗号分隔的包名）
+    WIFI_IDLE_OFF_MIN=0    # Android 在前台时 Wi-Fi 空闲（收发 < WIFI_IDLE_BPS 字节/秒）超过这么多分钟就关，换应用时再开；0 = 不关
+    WIFI_IDLE_BPS=512
     SLIM=1                 # 系统瘦身（lib/slim.sh）：1 = 停掉用不上的系统服务，0 = 原样
     LOWMEM=auto            # 低内存模式：auto = 内存不到约 700 MB 的机型自动开，on / off = 强制开 / 关（见下面 lowmem 的说明）
     KINDLE_UI=auto         # Android 在前台时 Kindle 自己的界面怎么处置（lib/framework.sh）：keep 只暂停 | freeze 再把后台进程冻住 |
@@ -29,6 +39,25 @@ settings_defaults() {
     KFB_SETTLE2=40         # 显示：自适应合并。一次刷新之后紧跟着的那一帧只等这么多毫秒（按钮按下后的变化、连续打字），
                            # 只有画面一直在变（滚动 / 动画）才等满 KFB_SETTLE。0 = 一律等 KFB_SETTLE（以前的做法）
     KFB_SCROLLDU=0         # 显示：滚动快刷。大面积画面接连变化（滚动、拖动）时先用 DU 快刷，停下这么多毫秒后再用 16 级灰度补刷一遍。0 = 关
+    KFB_SCROLLDELAY=500    # 显示：触摸滚动。手指拖动（veradroid-input 看到单指移动超过 SCROLL_PX）时立刻用 DU 快刷、不合并、不等，
+                           # 抬手后画面停下这么多毫秒，把快刷过的区域用 REAGL（16 级灰、不闪）整块补刷一次。0 = 关（以前的做法）
+    KFB_SCROLLSTYLE=1      # 显示：触摸滚动方式 1 = 拖动时 DU 跟手；2 = 拖动时屏幕不动，停下后一次刷出（按应用单独设）
+    KFB_GCN=0              # 显示：非翻页的刷新（菜单、列表、对话框，超过屏幕 3%）累计这么多次后，画面静止时整屏闪刷一次清残影。0 = 不按这个数
+    KFB_NEWWIN=0           # 显示：1 = 换了前台应用后，新应用的第一屏整屏闪刷一次（GC16）
+    KFB_MONO=0             # 显示：DU 快刷时按这个灰度阈值（1-254，常用 128）直接切成黑白、不抖动；0 = 关
+    KFB_FLIPINPUT=1000     # 显示：按页数全刷（KFB_FLASH）只数手指 / 翻页键之后这么多毫秒内来的整页变化（应用自己动的画面、广告不算）。0 = 都算
+    KFB_MAXDEFER=1200      # 显示：一帧最多被压住（等后续帧、等面板）这么多毫秒就必须刷出去；0 = 不限
+    BOOST_MS=150           # 触摸加速：手指按下时把 CPU 最低频率提到最高，最后一根手指离开后这么多毫秒再放回。0 = 关
+    BOOST_KHZ=0            # 触摸加速提到的频率（kHz）；0 = 当前允许的最高频率
+    IDLE_FREEZE=0          # 空闲冻结：没人碰屏幕、画面也不变超过这么多秒，就把 Android 冻住省电（一碰屏幕立刻解冻，lib/idle.sh）。0 = 关
+    IDLE_WAKE=60           # 空闲冻结时每隔这么多秒解冻一次（闹钟、时钟、推送）
+    IDLE_FREEZE_EXCLUDE=   # 这些应用在前台时不做空闲冻结（逗号分隔的包名，比如放音乐 / 朗读的应用）
+    SCROLL_PX=20           # 触摸滚动：单指移动超过这么多像素（按 1272 宽的屏幕算，其他屏幕按宽度换算）算拖动。0 = 不发拖动信号
+    PASS_PX=12             # 触摸：单指按下后还在双指判断窗口（40 ms）里、但已经移动超过这么多像素（按 1272 宽换算），立刻交给 Android，
+                           # 不再等满窗口（拖动早 20–30 ms 开始）。0 = 一律等满窗口（以前的做法）
+    KFB_SCROLLWFM=0        # 显示：触摸滚动时的波形 0 = DU；1 = A2（PW6 上 100 ms 对 DU 135 ms，第一帧要等驱动换波形组，画面更糙）
+    EPD_RT=2               # 显示桥用实时调度 SCHED_FIFO 这个优先级（1–20），0 = 普通调度。重启 Android 生效
+    INPUT_RT=3             # 触摸前端用实时调度 SCHED_FIFO 这个优先级（1–20），0 = 普通调度。重启 Android 生效
     KFB_IMG=0              # 显示（均衡）：小区域变化里中间灰超过这个百分比（图片）就用 GL16（16 级灰，不闪）而不是 DU 黑白点阵。0 = 关
     KFB_HWC=1              # 系统合成：1 = 用 hwcomposer.kindle（bin/ 里带着，开机时装进系统），每帧省 30–60 ms；0 = 原来的软件 GLES 合成。重启 Android 生效
                            # 0.93 / 1.01 起所有机型默认 1（docs/framework-project.md §9.9）
@@ -58,6 +87,15 @@ settings_defaults() {
     G_TWO_SLIDE=1          # 双指上下滑：亮度 / 色温
     G_EDGE_SENS=1          # 边缘滑动灵敏度：0 低（条窄、要滑得长）1 标准 2 高（条宽、滑一点就算）
     G_BACK_EXCLUDE=com.tencent.weread.eink   # 这些 App 在前台时不做底边上滑返回（逗号分隔；none = 不排除）。微信读书上滑 = 阅读工具栏
+    UPDATE_BACKUP=full     # 更新前备份（安装器读，backup.sh）：full 设置、阅读进度和书 | light 只备份设置和阅读进度 | off 不备份。
+                           # 只能经管理请求 updatebackup 改（不在下面 settings_apply 的键里：别的应用不能悄悄把备份关掉）
+    G_EDGE_THIRDS=0        # 底边分三段：1 = 从左 / 中 / 右三分之一往上划分别做 G_EB_L / G_EB_M / G_EB_R，
+                           # 上划后停住不动约 G_EB_HOLD_MS 毫秒做 G_EB_HOLD；0 = 整条底边都是返回（原来的做法）。要 G_EDGE_BACK=1 且手势总开关开着
+    G_EB_L=appopt          # 左段上划：当前应用的显示设置（应用优化；在桌面上 = 下拉面板）。动作名同四角长按（action.sh），none = 这段不做手势
+    G_EB_M=home            # 中段上划：回到桌面
+    G_EB_R=back            # 右段上划：返回
+    G_EB_HOLD=switch       # 上划后停住：切换应用（最近任务）；none = 不等停住，划到就做
+    G_EB_HOLD_MS=500       # 停住多久算（毫秒，200..3000）
     DNS_MODE=auto          # DNS：auto（Wi-Fi 自动）| aliyun | tencent | google
     G_WINDOW=40            # 双指判定窗口（毫秒）。越小单指触摸越跟手（每次触摸都要先等这么久才放给 Android）
     G_TWO_TAP_ACT=clear    # 双指轻点做什么（动作名同四角长按，见 action.sh / docs/host-settings.md）
@@ -106,6 +144,7 @@ settings_load() {
     # 512 MB 机型（实际内存 < 700 MB，和 lowmem_ram 一样，不看 LOWMEM 开关）：一页共享缓冲 + RGB565 窗口缓冲默认开（省 ~8 + ~8 MB）。
     # 只是默认值：机型文件和 settings.conf 照样能改（docs/framework-project.md §9.9）。
     if lowmem_ram; then KFB_ONEPAGE=1; KFB_RGB565=1; fi
+    lowmem_ram || ZRAM_MB=768      # 1 GB：512 MB 的 zram 被冻结的 Kindle 界面占满（测试机实测 100%），lmkd 就只能杀应用
     # Optional per-model overlay (models/<id>.conf). User settings.conf still wins.
     m=$(cat "$SYS/model" 2>/dev/null)
     if [ -n "$m" ] && [ -f "$VD/models/$m.conf" ]; then
@@ -118,7 +157,7 @@ settings_load() {
     if lowmem && ! grep -qs '^KFB_ANIM_MODE=' "$SYS/settings.conf"; then KFB_ANIM_MODE=0; fi
     # 记下全局值：面板 / 设置页显示和修改的是全局设置，不能把“当前应用的单独设置”当成全局值发布出去
     # （否则在某个应用里打开面板会看到“翻页动画关 / 刷新合并关”，再点一下别的就把它存成全局了）。
-    for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SETTLE2 KFB_SCROLLDU KFB_IMG KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN; do eval "GLOB_$k=\$$k"; done
+    for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SETTLE2 KFB_SCROLLDU KFB_IMG KFB_SCROLLDELAY KFB_SCROLLSTYLE KFB_GCN KFB_NEWWIN KFB_MONO KFB_MAXDEFER KFB_FLIPINPUT KFB_SCROLLWFM KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN; do eval "GLOB_$k=\$$k"; done
     [ -f "$SYS/settings.app" ] && . "$SYS/settings.app"       # 当前前台应用的显示参数（cmd.sh appdisp 写，已校验）
     smooth_apply
     # 应用单独选了刷新方式：档位（KFB_SMOOTH）不能把它盖掉
@@ -148,22 +187,25 @@ smooth_apply() {
         *) KFB_SMOOTH=0 ;;
     esac
 }
-epd_send_smooth() { epd_send PACE ${KFB_PACE:-0}; epd_send CLEAN ${KFB_CLEAN:-0}; epd_send REAGL ${KFB_REAGL_MIN:-35}; epd_send SETTLE2 ${KFB_SETTLE2:-40}; epd_send SCROLLDU ${KFB_SCROLLDU:-0}; epd_send IMG ${KFB_IMG:-0}; }
+epd_send_smooth() { epd_send PACE ${KFB_PACE:-0}; epd_send CLEAN ${KFB_CLEAN:-0}; epd_send REAGL ${KFB_REAGL_MIN:-35}; epd_send SETTLE2 ${KFB_SETTLE2:-40}; epd_send SCROLLDU ${KFB_SCROLLDU:-0}; epd_send IMG ${KFB_IMG:-0}
+    epd_send SCROLLDELAY ${KFB_SCROLLDELAY:-500}; epd_send SCROLLSTYLE ${KFB_SCROLLSTYLE:-1}; epd_send GCN ${KFB_GCN:-0}; epd_send MONO ${KFB_MONO:-0}; epd_send MAXDEFER ${KFB_MAXDEFER:-1200}; epd_send FLIPINPUT ${KFB_FLIPINPUT:-1000}; epd_send SCROLLWFM ${KFB_SCROLLWFM:-0}; }
 
 # 把当前设置写给桌面看（/dev/kfb/settings）
 settings_publish() {
-    { for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SETTLE2 KFB_SCROLLDU KFB_IMG KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN KFB_PWRDOWN KFB_HWC KFB_HZ KFB_DIM KFB_GESTURES KFB_ROTATE RETURN_MODE LOWMEM KINDLE_UI DNS_MODE G_TL G_TR G_BL G_BR G_EDGE_BACK G_EDGE_PANEL G_TWO_TAP G_TWO_LONG G_TWO_BACK G_TWO_SLIDE G_EDGE_SENS G_BACK_EXCLUDE G_TWO_TAP_ACT G_TWO_LONG_ACT G_TAP G_TAP_KEY WIFI_PS APP_COMPILE STORAGE_AUTO TIME_12_24 GESTURE_HINT; do eval "echo $k=\${GLOB_$k:-\$$k}"; done; } > $X/settings.tmp \
+    { for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SETTLE2 KFB_SCROLLDU KFB_IMG KFB_SCROLLDELAY KFB_SCROLLSTYLE KFB_GCN KFB_NEWWIN KFB_MONO KFB_MAXDEFER KFB_FLIPINPUT KFB_SCROLLWFM KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN KFB_PWRDOWN KFB_HWC KFB_HZ KFB_DIM KFB_GESTURES KFB_ROTATE RETURN_MODE LOWMEM KINDLE_UI DNS_MODE G_TL G_TR G_BL G_BR G_EDGE_BACK G_EDGE_PANEL G_TWO_TAP G_TWO_LONG G_TWO_BACK G_TWO_SLIDE G_EDGE_SENS G_BACK_EXCLUDE G_EDGE_THIRDS G_EB_L G_EB_M G_EB_R G_EB_HOLD G_EB_HOLD_MS G_TWO_TAP_ACT G_TWO_LONG_ACT G_TAP G_TAP_KEY WIFI_PS APP_COMPILE STORAGE_AUTO TIME_12_24 GESTURE_HINT BOOST_MS BOOST_KHZ SCROLL_PX PASS_PX IDLE_FREEZE IDLE_WAKE IDLE_FREEZE_EXCLUDE UPDATE_BACKUP; do eval "echo $k=\${GLOB_$k:-\$$k}"; done; } > $X/settings.tmp \
         && printf 'SYSTEM_FONT=%s\nSYSTEM_FONT_LIVE=%s\n' "$SYSTEM_FONT" "$(cat $W/sysfont/android 2>/dev/null)" >> $X/settings.tmp \
         && mv -f $X/settings.tmp $X/settings
+    type ub_mirror >/dev/null 2>&1 && ub_mirror      # 安装器读的副本（backup.sh）
+    return 0
 }
 # 桌面写了 ctl/settings.new（KEY=value 行）：只接受已知的键和简单的值，合并进 settings.conf，立即生效的推给显示桥
 settings_apply() {
     # 先把文件挪走再读：看门狗和命令监听会同时调到这里（桌面发 apply 的同时看门狗看到 settings.new），
-    # 以前两个一起读同一个文件，一个读完删掉，另一个满屏 "sed: settings.new: No such file"，那次设置可能没存上（用户诊断 632015）
+    # 以前两个一起读同一个文件，一个读完删掉，另一个满屏 "sed: settings.new: No such file"，那次设置可能没存上（用户诊断）
     sfile=$W/settings.apply.$$.$(cut -d' ' -f1 /proc/uptime | tr -d .)
     mv -f $X/ctl/settings.new "$sfile" 2>/dev/null || return 0
     touch $SYS/settings.conf
-    for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SETTLE2 KFB_SCROLLDU KFB_IMG KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN KFB_PWRDOWN KFB_HWC KFB_HZ KFB_DIM KFB_GESTURES KFB_ROTATE RETURN_MODE LOWMEM KINDLE_UI DNS_MODE G_TL G_TR G_BL G_BR G_EDGE_BACK G_EDGE_PANEL G_TWO_TAP G_TWO_LONG G_TWO_BACK G_TWO_SLIDE G_EDGE_SENS G_BACK_EXCLUDE G_TWO_TAP_ACT G_TWO_LONG_ACT G_TAP G_TAP_KEY WIFI_PS APP_COMPILE STORAGE_AUTO TIME_12_24 GESTURE_HINT; do
+    for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SETTLE2 KFB_SCROLLDU KFB_IMG KFB_SCROLLDELAY KFB_SCROLLSTYLE KFB_GCN KFB_NEWWIN KFB_MONO KFB_MAXDEFER KFB_FLIPINPUT KFB_SCROLLWFM KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN KFB_PWRDOWN KFB_HWC KFB_HZ KFB_DIM KFB_GESTURES KFB_ROTATE RETURN_MODE LOWMEM KINDLE_UI DNS_MODE G_TL G_TR G_BL G_BR G_EDGE_BACK G_EDGE_PANEL G_TWO_TAP G_TWO_LONG G_TWO_BACK G_TWO_SLIDE G_EDGE_SENS G_BACK_EXCLUDE G_EDGE_THIRDS G_EB_L G_EB_M G_EB_R G_EB_HOLD G_EB_HOLD_MS G_TWO_TAP_ACT G_TWO_LONG_ACT G_TAP G_TAP_KEY WIFI_PS APP_COMPILE STORAGE_AUTO TIME_12_24 GESTURE_HINT BOOST_MS BOOST_KHZ SCROLL_PX PASS_PX IDLE_FREEZE IDLE_WAKE IDLE_FREEZE_EXCLUDE; do
         v=$(sed -n "s/^$k=\([0-9A-Za-z._,]*\)\$/\1/p" "$sfile" | tail -1)
         [ -n "$v" ] || continue
         case "$k=$v" in LOWMEM=auto|LOWMEM=on|LOWMEM=off|KINDLE_UI=auto|KINDLE_UI=keep|KINDLE_UI=freeze|KINDLE_UI=stop|GESTURE_HINT=all|GESTURE_HINT=stuck|GESTURE_HINT=off|GESTURE_HINT=default) ;; LOWMEM=*|KINDLE_UI=*|GESTURE_HINT=*) continue ;; esac
@@ -241,6 +283,9 @@ gestures_write() {
     { echo "G_EDGE_BACK=$eb"; echo "G_EDGE_PANEL=${G_EDGE_PANEL:-1}"; echo "G_TWO_TAP=${G_TWO_TAP:-1}"; echo "G_TWO_LONG=${G_TWO_LONG:-1}"
       echo "G_TWO_BACK=${G_TWO_BACK:-1}"; echo "G_TWO_SLIDE=${G_TWO_SLIDE:-1}"; echo "G_EDGE_SENS=${G_EDGE_SENS:-1}"; echo "G_BACK_EXCLUDE=${G_BACK_EXCLUDE:-none}"
       echo "G_TAP=${G_TAP:-1}"; echo "G_TAP_KEY=${G_TAP_KEY:-voldown}"
+      echo "G_EDGE_THIRDS=${G_EDGE_THIRDS:-0}"; echo "G_EB_L=${G_EB_L:-appopt}"; echo "G_EB_M=${G_EB_M:-home}"; echo "G_EB_R=${G_EB_R:-back}"
+      echo "G_EB_HOLD=${G_EB_HOLD:-switch}"; echo "G_EB_HOLD_MS=${G_EB_HOLD_MS:-500}"
+      echo "BOOST_MS=${BOOST_MS:-150}"; echo "BOOST_KHZ=${BOOST_KHZ:-0}"; echo "SCROLL_PX=${SCROLL_PX:-20}"; echo "PASS_PX=${PASS_PX:-12}"
       cs=; for c in TL:tl TR:tr BL:bl BR:br; do eval "a=\${G_${c%%:*}:-none}"; [ "$a" = none ] || cs="$cs${cs:+,}${c#*:}"; done
       echo "G_CORNERS=${cs:-none}"   # 只有配了动作的角才算手势，别的角的长按照样给 Android
       echo "ROTATE=$(rot_deg)"; } > $W/gestures.tmp \

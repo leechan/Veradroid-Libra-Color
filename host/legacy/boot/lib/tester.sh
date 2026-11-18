@@ -233,7 +233,8 @@ test_report() {
     fw=$(sed -n 's/.*Kindle[[:space:]]*\([0-9][0-9.]*\).*/\1/p' /etc/prettyversion.txt 2>/dev/null | head -n 1)
     sp=$( { tr -cd '0-9A-Za-z' </proc/usid; } 2>/dev/null | cut -c1-4)
     # 安装前的书库清单（安装器写的）：只数文件个数，不列名字
-    man=/mnt/base-us/veradroid-docs-manifest; [ -f $man ] || man=$man.checked
+    man=/mnt/base-us/veradroid/state/docs-manifest; [ -f $man ] || man=$man.checked
+    [ -f $man ] || man=/mnt/base-us/veradroid-docs-manifest; [ -f $man ] || man=$man.checked   # root-legacy
     dn=; dm=
     if [ -f $man ]; then dn=$(wc -l < $man | tr -d ' '); dm=0
         while IFS= read -r f; do [ -e "/mnt/base-us/$f" ] || dm=$((dm + 1)); done < $man; fi
@@ -267,7 +268,7 @@ test_report() {
         tline "用户存储释放（USB）" ret.userstore "还没返回过"
         if [ -n "$dn" ]; then
             if [ "$dm" = 0 ]; then echo "[PASS] 书库文件：安装前 $dn 个，现在都在"
-            else echo "[FAIL] 书库文件：安装前 $dn 个，现在少了 $dm 个（安装前的备份在 veradroid-user-backup-*.tgz）"; fi
+            else echo "[FAIL] 书库文件：安装前 $dn 个，现在少了 $dm 个（安装前的备份在 veradroid/backup/ 里）"; fi
         fi
         [ -f $VD/DOCUMENTS-LOSS.log ] && echo "[FAIL] 有书库丢失记录（veradroid/DOCUMENTS-LOSS.log）"
         c0=$(tget crash0); c1=$(kindle_crashes)
@@ -292,7 +293,7 @@ test_bundle() {
     for f in $TDIR/logcat-*.txt $TDIR/getprop-*.txt $TDIR/tombstones-*.txt $TDIR/dmesg-*.txt; do [ -f "$f" ] && redact < "$f" > "$o/${f##*/}"; done
     [ -f $LOG ] && tail -c 400000 $LOG | redact > "$o/veradroid.log"
     for f in $TDIR/veradroid-*.log; do [ -f "$f" ] && redact < "$f" > "$o/${f##*/}"; done
-    for f in /mnt/base-us/veradroid-install-detail.log /mnt/us/veradroid-install.log /tmp/veradroid-stop.log $TLOG $VD/last-stop.log; do
+    for f in /mnt/base-us/veradroid/logs/install-detail.log /mnt/us/veradroid/logs/install.log /mnt/base-us/veradroid-install-detail.log /mnt/us/veradroid-install.log /tmp/veradroid-stop.log $TLOG $VD/last-stop.log; do   # root-legacy: 老版本安装器的日志也带上
         [ -f "$f" ] && tail -c 131072 "$f" | tr '\r' '\n' | grep -av '下载中' | redact > "$o/$(basename "$f")"
     done
     # 书库丢失记录：只要带时间的那几行（数量），不要后面列出的文件名

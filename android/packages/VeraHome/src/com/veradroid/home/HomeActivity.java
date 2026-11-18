@@ -132,6 +132,23 @@ public class HomeActivity extends Activity {
      * 现在 manifest 里声明自己处理 density：换过去又换回来什么都不做；回到桌面后密度真的和建界面时不一样（用户改了系统密度之类）才重建。
      */
     private int builtDpi;
+
+    /**
+     * 桌面固定按设备本来的密度（ro.sf.lcd_density）排版，不跟着宿主临时换给多看的密度走（0.98 用户反馈：从多看划回来，桌面图标先大一号）。
+     * 以前桌面在 onResume 时看到密度不一样，1.5 秒后自己重建一次——宿主换回默认往往更晚（诊断：1.7–6.5 秒，有一次 30 秒没换回），
+     * 于是先按 376 重建出一个大一号的桌面，宿主换回来后再重建一次。现在 Activity 的资源一直是默认密度：密度换来换去都不重建、不变样。
+     * 用户真的改了设备密度（memory.sh 的 ro.sf.lcd_density）要重启安卓，那时 DENSITY_DEVICE 跟着变。
+     */
+    @Override protected void attachBaseContext(Context base) {
+        super.attachBaseContext(base);
+        int dev = android.util.DisplayMetrics.DENSITY_DEVICE;
+        if (dev > 0) {
+            android.content.res.Configuration o = new android.content.res.Configuration();
+            o.fontScale = 0;   // new Configuration() 的 fontScale 是 1：不清掉会盖住系统的字体缩放
+            o.densityDpi = dev;
+            try { applyOverrideConfiguration(o); } catch (Throwable t) { android.util.Log.w("VeraHome", "pin density: " + t); }
+        }
+    }
     private final Runnable densityCheck = new Runnable() { @Override public void run() {
         if (resumed && getResources().getConfiguration().densityDpi != builtDpi) recreate();
     } };
@@ -266,6 +283,8 @@ public class HomeActivity extends Activity {
         // 方块风格的“继续阅读”：刚离开的第三方应用最后的画面，趁主页还没画先从显示缓冲里取一张缩略图
         if (Blocks.on(this) && leftForApp && !standalone) { leftForApp = false; try { BlocksCards.captureLastApp(this, BlocksCards.lastForeground(this)); } catch (Throwable t) { android.util.Log.w("VeraHome", "lastapp: " + t); } }
         resumed = true;
+        // 桌面到了前台：马上告诉宿主（换回默认密度、桌面的显示参数），不等任务栈通知——那个通知有时晚好几秒，偶尔整个漏掉
+        if (!standalone && AppProf.host()) HostService.foregroundHome();
         // 离开时密度被换过（多看），回来时宿主马上会换回默认（fg home）：等一会儿还不一样才重建（densityCheck）
         handler.removeCallbacks(densityCheck);
         if (getResources().getConfiguration().densityDpi != builtDpi) handler.postDelayed(densityCheck, 1500);
@@ -276,6 +295,7 @@ public class HomeActivity extends Activity {
         HostLink.cmd("status");
         long tv = Theme.version();
         if (tv != themeVer) { themeVer = tv; wallApplied = ""; }   // 在传书网页换了壁纸 / 图标
+        if (!standalone && shownStyle != null && !shownStyle.equals(styleName(Blocks.on(this)))) applyStyle(styleName(Blocks.on(this)));
         if (standalone) { if (appsLoadedAt == 0) reload(); refreshStatus(); }
         else if (!inSettings) {
             // Returning from an app does not change the launcher list; keep the existing e-ink grid.
@@ -327,7 +347,30 @@ public class HomeActivity extends Activity {
         else if (libPage != null && libPage.searching()) libPage.endSearch();
     }
 
-    @Override public boolean dispatchTouchEvent(android.view.MotionEvent e) { Perf.touch(e); return super.dispatchTouchEvent(e); }
+    /**
+     * 手指正按在桌面上：这时不换整页（BlocksHome.dataChanged 等到抬手）。从阅读器 / 应用回来后书库进度、封面、统计会在后台陆续更新，
+     * 首页整页重搭——按下落在旧的那一页上、抬手时它已经被换掉，这一下点按就丢了（用户：“继续阅读”“最近阅读”要点两次）。
+     */
+    private boolean touching;
+    private final List<Runnable> afterTouch = new ArrayList<Runnable>();
+    boolean touching() { return touching; }
+    void afterTouch(Runnable r) { if (!afterTouch.contains(r)) afterTouch.add(r); }
+    @Override public boolean dispatchTouchEvent(android.view.MotionEvent e) {
+        Perf.touch(e);
+        int act = e.getActionMasked();
+        if (act == android.view.MotionEvent.ACTION_DOWN) touching = true;
+        boolean r = super.dispatchTouchEvent(e);
+        if (act == android.view.MotionEvent.ACTION_UP || act == android.view.MotionEvent.ACTION_CANCEL) {
+            touching = false;
+            if (!afterTouch.isEmpty()) {
+                final List<Runnable> l = new ArrayList<Runnable>(afterTouch);
+                afterTouch.clear();
+                // 抬手的点按（performClick）是 post 出去的：排在它后面再重搭，点到的还是原来那一页
+                handler.post(new Runnable() { @Override public void run() { for (Runnable x : l) x.run(); } });
+            }
+        }
+        return r;
+    }
 
     private float scale() { return SIZE_SCALE[Math.min(SIZES.length - 1, Math.max(0, prefs.getInt("size", 1)))]; }
     private int dp(int v) { return Ui.dp(this, v); }
@@ -385,6 +428,17 @@ public class HomeActivity extends Activity {
     /** 换界面风格（经典 / 方块）：存下来，马上按新风格显示主页（一次刷新）。 */
     void setStyle(String style) {
         prefs.edit().putString(Blocks.STYLE_KEY, style).commit();
+        applyStyle(style);
+    }
+
+    /**
+     * 现在显示的是哪种风格（showMain 记下）。在别处换了风格（盖在应用上面的设置页 SettingsActivity，或者传书网页）时，
+     * 这个桌面还是老样子，要等进程重启才换（测试机实测：从面板“全部设置”换成方块，回到桌面还是经典）。回到前台时对一下，不一样就按新风格重搭。
+     */
+    private String shownStyle;
+    private static String styleName(boolean blocksOn) { return blocksOn ? "blocks" : "classic"; }
+
+    private void applyStyle(String style) {
         settingsViews[0] = null;   // 设置页上的“界面风格”要跟着变
         java.util.Arrays.fill(settingsSigs, null);
         if (!"blocks".equals(style) && blocks != null) {
@@ -597,6 +651,7 @@ public class HomeActivity extends Activity {
      */
     private void showMain(int which) {
         if (standalone) { openSettingsEntry(); return; }   // 单独的设置页里换了界面风格：按新风格再开设置
+        shownStyle = styleName(Blocks.on(this));
         if (Blocks.on(this)) { showBlocks(-1); return; }
         if (which == TAB_LIB && !libOn()) which = TAB_HOME;
         Perf.measure(page, which == TAB_LIB ? "library" : "home");
@@ -1957,7 +2012,9 @@ public class HomeActivity extends Activity {
                 localChoice(list, "壁纸深浅", "20% 最淡，文字最清楚；原图最深。", "wallpaperdim", DIM_L, 0, 2);
                 localChoice(list, "卡片遮盖（方块风格）", "方块风格的首页上，卡片怎么盖住壁纸。实心白卡片：卡片里是白纸，文字最清楚，壁纸只在卡片之间露出来；半透明、通透：卡片里也透出一点壁纸。", Blocks.WALLCARD_KEY, Blocks.WALLCARD_L, 0, 0);
                 action(list, "不用壁纸", "回到白底。图片文件不会被删掉。", "去掉", new View.OnClickListener() {
-                    @Override public void onClick(View v) { Theme.clearWallpaper(); themeVer = Theme.version(); wallApplied = ""; showSettings(); }
+                    // 先问一句：这个按钮在设置页中间，翻页 / 点下一行时一下误触就把壁纸去掉了（测试机实测）
+                    @Override public void onClick(View v) { confirm("不用壁纸？", "主页回到白底。图片文件不会被删掉，之后可以在“桌面壁纸”里重新选。", new Runnable() {
+                        @Override public void run() { Theme.clearWallpaper(); themeVer = Theme.version(); wallApplied = ""; showSettings(); } }); }
                 });
             }
             localChoice(list, "图标样式", "原样：应用自己的图标；黑白描框：转成灰度，外面加一圈黑色圆角框，桌面更整齐。单个应用的图标可以长按它换。", "iconstyle", ICONSTYLE_L, 0, 0);

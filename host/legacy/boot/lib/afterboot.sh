@@ -122,12 +122,13 @@ notice() {
 }
 
 # 开机完成后的数据自检（2026-11-13 事故后加）：
-#  1. Kindle 书库：开机前的清单（container_start 的 docs_snapshot）和安装器留下的安装前清单（veradroid-docs-manifest）里的文件
+#  1. Kindle 书库：开机前的清单（container_start 的 docs_snapshot）和安装器留下的安装前清单（veradroid/state/docs-manifest）里的文件
 #     必须都还在；少了就大声记下来（veradroid.log、内核日志、veradroid/DOCUMENTS-LOSS.log）并从安装前备份补回。
 #  2. PackageManager 删过用户 0 的数据（uiderrors.txt 里新出现 "Destroying user"）：同样大声记下来。
 boot_data_check() {
     docs_verify $W/docs.before "after boot, list taken before the container started"
-    bm=/mnt/base-us/veradroid-docs-manifest
+    bm=/mnt/base-us/veradroid/state/docs-manifest
+    [ -f $bm ] || [ ! -f /mnt/base-us/veradroid-docs-manifest ] || bm=/mnt/base-us/veradroid-docs-manifest   # root-legacy: 老版本安装器写在根目录
     if [ -f $bm ]; then
         docs_verify $bm "after the first boot of a new install, list taken by the installer" && t "documents: all $(wc -l < $bm | tr -d ' ') files of the pre-install list are present"
         mv -f $bm $bm.checked 2>/dev/null

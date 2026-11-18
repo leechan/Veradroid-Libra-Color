@@ -13,14 +13,15 @@ PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH   # 系统自带的 curl/t
 BASE=${VD_BASE:-https://veradroid.wenjin.jp}
 export VD_EXPERIMENTAL=1   # 实验机型：bootstrap 自动识别 PW5/KT5/KT6，选对应的安装包
 # 安装和更新是同一个脚本：已经装过时再点一次，就是更新到最新版（书、应用和账号保留）。
-LOG=/mnt/us/veradroid-install.log
+LOG=/mnt/us/veradroid/logs/install.log
+mkdir -p /mnt/us/veradroid/logs 2>/dev/null
 if : >>"$LOG" 2>/dev/null; then exec >>"$LOG" 2>&1; fi   # 写不了日志也继续
 echo "==== $(date) online install: uid=$(id -u 2>/dev/null) fw=$(head -1 /etc/prettyversion.txt 2>/dev/null) exp=${VD_EXPERIMENTAL:-0}"
 rm -f /tmp/vd-progress.on
 # say / fail：整屏写（screen 在下面定义，调用时才找；中文写不出来时 eips 写第二个参数里的英文）。安装器画了整屏进度画面
 # （/tmp/vd-progress.on）时不再往上写：出错原因和代码已经在画面上
 say() { echo "$1"; [ -f /tmp/vd-progress.on ] && return 0; if type screen >/dev/null 2>&1; then EN=${2:-VeraDroid}; screen "$1"; EN=; else eips 1 2 "${2:-VeraDroid}" >/dev/null 2>&1 || true; fi; }
-fail() { echo "$1"; if [ ! -f /tmp/vd-progress.on ] && type screen >/dev/null 2>&1; then EN="${2:-VeraDroid: install failed}|Log: veradroid-install.log"; screen "$1" "日志：veradroid-install.log"; EN=; fi; sleep 10; exit 1; }
+fail() { echo "$1"; if [ ! -f /tmp/vd-progress.on ] && type screen >/dev/null 2>&1; then EN="${2:-VeraDroid: install failed}|Log: veradroid/logs/install.log"; screen "$1" "日志：veradroid/logs/install.log"; EN=; fi; sleep 10; exit 1; }
 [ "$(id -u 2>/dev/null)" = 0 ] || fail "VeraDroid：需要 root 权限，请确认越狱已生效" "VeraDroid: needs root (is the jailbreak active?)"
 command -v curl >/dev/null 2>&1 || fail "VeraDroid：找不到 curl，无法联网安装；请改用离线整包" "VeraDroid: no curl; use the offline package"
 # ---- 只在模拟器上验证过的机型（3.0 内核 PW2 / PW3 / Voyage，4.1 内核 PW4 / 入门款 2019 / Oasis 2 / Oasis 3）----
@@ -52,7 +53,8 @@ if [ -z "$EMU" ]; then
     sleep 15; exit 0
 fi
 if [ -n "$EMU" ]; then
-    CF=/mnt/base-us/veradroid-confirm
+    CF=/mnt/base-us/veradroid/state/confirm
+    mkdir -p /mnt/base-us/veradroid/state 2>/dev/null
     bid=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); now=$(cut -d. -f1 /proc/uptime)
     set -- $(cat "$CF" 2>/dev/null); cw=${1:-}; cb=${2:-}; cu=${3:-0}
     rm -f "$CF"

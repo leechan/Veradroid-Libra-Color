@@ -91,6 +91,7 @@ int ioctl(int fd, unsigned long req, ...)
     const char *caps = getenv("VT_CAPS"); if (!caps) caps = "B";
     int st = !strcmp(caps, "ST"), b = !strcmp(caps, "B"), aid = !strcmp(caps, "AID");
     int maxx = getenv("VT_MAXX") ? atoi(getenv("VT_MAXX")) : 1272, maxy = getenv("VT_MAXY") ? atoi(getenv("VT_MAXY")) : 1696;
+    int pres = getenv("VT_PRES") ? atoi(getenv("VT_PRES")) : 0;   /* > 0: the panel has ABS_MT_PRESSURE 0..VT_PRES */
     if (_IOC_TYPE(req) == 'E' && _IOC_NR(req) == 0x90) return 0;                 /* EVIOCGRAB */
     if (_IOC_TYPE(req) == 'E' && _IOC_NR(req) >= 0x20 && _IOC_NR(req) < 0x40) {  /* EVIOCGBIT(ev, len) */
         int ev = _IOC_NR(req) - 0x20, len = _IOC_SIZE(req);
@@ -102,6 +103,7 @@ int ioctl(int fd, unsigned long req, ...)
                 setbit(arg, len, ABS_MT_POSITION_X); setbit(arg, len, ABS_MT_POSITION_Y); setbit(arg, len, ABS_MT_TOUCH_MAJOR);
                 if (b) { setbit(arg, len, ABS_MT_SLOT); setbit(arg, len, ABS_X); setbit(arg, len, ABS_Y); }
                 if (b || aid) setbit(arg, len, ABS_MT_TRACKING_ID);
+                if (pres) setbit(arg, len, ABS_MT_PRESSURE);
             }
         }
         return len;
@@ -120,6 +122,7 @@ int ioctl(int fd, unsigned long req, ...)
             if (c == ABS_MT_TOUCH_MAJOR) { ai->maximum = 255; ok = 1; }
             if (b && c == ABS_MT_SLOT) { ai->maximum = 9; ok = 1; }
             if ((b || aid) && c == ABS_MT_TRACKING_ID) { ai->maximum = 65535; ok = 1; }
+            if (pres && c == ABS_MT_PRESSURE) { ai->maximum = pres; ok = 1; }
         }
         if (!ok) { errno = EINVAL; return -1; }
         return 0;

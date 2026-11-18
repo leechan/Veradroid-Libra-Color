@@ -208,6 +208,17 @@ static int two_any(void) { return G_TWO_TAP || G_TWO_LONG || G_TWO_BACK || G_TWO
 static int out_slot = 0, out_btn = 0;
 static unsigned char out_act[MAXSLOT];
 static unsigned long btn_fixes = 0;
+/* ABS_MT_PRESSURE the same way: when the virtual device has a pressure axis (copied from panels that report one: PW4,
+   Oasis 2/3, ...), Android also counts a contact whose pressure is 0 as hovering. Our own contacts (veradroid-input's
+   test / inject path, contacts converted from drivers that leave pressure out of the first frame) carried none, so on the
+   legacy emulators every injected tap reached Android as HOVER_MOVE / HOVER_EXIT. Every new contact whose frame has no
+   pressure of its own gets one. It alternates between two values: the kernel drops an ABS value equal to the one it
+   already has, and Android clears its slots whenever it (re)opens the device (Android restart), so a repeated value
+   would never reach it. */
+static int out_pres_max = 0;          /* > 0: the virtual device has ABS_MT_PRESSURE (0..out_pres_max) */
+static int out_pres[MAXSLOT];
+static unsigned char out_new[MAXSLOT], out_pset[MAXSLOT];   /* this frame: slot got a new tracking id / its own pressure */
+static unsigned long pres_fixes = 0;
 static void uraw(int type, int code, int value)
 {
     struct input_event e;
@@ -218,11 +229,24 @@ static void uraw(int type, int code, int value)
 static void uout(const struct input_event *e)
 {
     if (e->type == EV_ABS && e->code == ABS_MT_SLOT) out_slot = e->value;
-    else if (e->type == EV_ABS && e->code == ABS_MT_TRACKING_ID) { if (out_slot >= 0 && out_slot < MAXSLOT) out_act[out_slot] = e->value >= 0; }
+    else if (e->type == EV_ABS && e->code == ABS_MT_TRACKING_ID) { if (out_slot >= 0 && out_slot < MAXSLOT) { out_act[out_slot] = e->value >= 0; if (e->value >= 0) out_new[out_slot] = 1; } }
     else if (e->type == EV_KEY && e->code == BTN_TOUCH) out_btn = e->value != 0;
+    else if (e->type == EV_ABS && e->code == ABS_MT_PRESSURE) { if (out_slot >= 0 && out_slot < MAXSLOT) { out_pres[out_slot] = e->value; out_pset[out_slot] = 1; } }
     else if (e->type == EV_SYN && e->code == SYN_REPORT) {
-        int any = 0;
+        int any = 0, fixed = 0;
         for (int i = 0; i < MAXSLOT; i++) any |= out_act[i];
+        if (out_pres_max > 0) {
+            for (int i = 0; i < MAXSLOT; i++) {
+                if (out_act[i] && !out_pset[i] && (out_new[i] || out_pres[i] <= 0)) {
+                    int a = out_pres_max > 1 ? out_pres_max / 2 : 1, b = a > 1 ? a - 1 : a + 1;
+                    int v = out_pres[i] == a ? b : a;
+                    uraw(EV_ABS, ABS_MT_SLOT, i); uraw(EV_ABS, ABS_MT_PRESSURE, v); out_pres[i] = v; fixed = 1;
+                    if (++pres_fixes <= 5) logf_("pressure: new contact in slot %d came without pressure, sent %d with the frame", i, v);
+                }
+                out_new[i] = 0; out_pset[i] = 0;
+            }
+            if (fixed) uraw(EV_ABS, ABS_MT_SLOT, out_slot);
+        }
         if (any != out_btn) {
             uraw(EV_KEY, BTN_TOUCH, any); out_btn = any;
             if (++btn_fixes <= 20) logf_("btn_touch: panel %s, sent BTN_TOUCH %d with the frame", any ? "left it out on a new contact" : "kept it down with no contact", any);
@@ -789,6 +813,7 @@ static int setup_uinput_touch(void)
         if (ioctl(tfd, EVIOCGABS(codes[i]), &ai) < 0) continue;       /* the source device does not have it */
         if (codes[i] == ABS_MT_POSITION_X) { sx_min = ai.minimum; sx_max = ai.maximum; }
         if (codes[i] == ABS_MT_POSITION_Y) { sy_min = ai.minimum; sy_max = ai.maximum; }
+        if (codes[i] == ABS_MT_PRESSURE && ai.maximum > ai.minimum && ai.maximum > 0) out_pres_max = ai.maximum;
         ioctl(ufd, UI_SET_ABSBIT, codes[i]);
         dev.absmin[codes[i]] = ai.minimum; dev.absmax[codes[i]] = ai.maximum;
         if (ROT_ON && codes[i] == ABS_MT_POSITION_X) { dev.absmin[codes[i]] = 0; dev.absmax[codes[i]] = W - 1; }   /* logical pixels */
@@ -1094,6 +1119,6 @@ int main(int argc, char **argv)
     if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 0);
     ioctl(ufd, UI_DEV_DESTROY);
     if (kfd >= 0) ioctl(kfd, UI_DEV_DESTROY);
-    logf_("stopped, forwarded %lu events, %lu drops, %lu stuck fingers lifted, %lu BTN_TOUCH fixed", fwd_count, drops, resync_lifts, btn_fixes);
+    logf_("stopped, forwarded %lu events, %lu drops, %lu stuck fingers lifted, %lu BTN_TOUCH fixed, %lu pressure fixed", fwd_count, drops, resync_lifts, btn_fixes, pres_fixes);
     return 0;
 }

@@ -10,9 +10,10 @@ CURL_OPTS=
 [ -n "${VD_IP:-}" ] && CURL_OPTS="$CURL_OPTS --resolve veradroid.wenjin.jp:443:$VD_IP --resolve veradroid.wenjin.jp:80:$VD_IP"
 [ -n "${VD_DNS:-}" ] && CURL_OPTS="$CURL_OPTS --dns-servers $VD_DNS"
 curl_do() { curl $CURL_OPTS "$@"; }
-LOG=/mnt/base-us/veradroid-autoupdate.log
+LOG=/mnt/base-us/veradroid/logs/autoupdate.log
 PID=/dev/shm/veradroid/autoupdate.pid
-LOCK=/mnt/base-us/veradroid-autoupdate.lock
+LOCK=/mnt/base-us/veradroid/state/autoupdate.lock
+mkdir -p /mnt/base-us/veradroid/logs /mnt/base-us/veradroid/state 2>/dev/null
 [ -f "$VD/autoupdate" ] && [ "$(cat "$VD/autoupdate")" = "0" ] && exit 0
 # 只留一个实例。以前只看锁目录：锁目录没了（或者锁里的 pid 已经不是自动更新）以后，每次启动 Android 都会再起一个，
 # 旧的那些照样每 6 小时醒来一次，谁也不退出（两台 PW6 测试机上各堆了 6-7 个 sh auto-update.sh，最老的 3 天）。
@@ -48,7 +49,7 @@ ver_gt() {
 }
 # 当前装的版本：bootstrap 写 $VD/version 和 system/veradroid/version（很早以前写 /mnt/base-us/veradroid-version）
 cur_version() {
-    cat "$VD/version" 2>/dev/null || cat /mnt/base-us/system/veradroid/version 2>/dev/null || cat /mnt/base-us/veradroid-version 2>/dev/null || echo 0
+    cat "$VD/version" 2>/dev/null || cat /mnt/base-us/system/veradroid/version 2>/dev/null || cat /mnt/base-us/veradroid-version 2>/dev/null || echo 0   # root-legacy
 }
 sleep 120
 while :; do
@@ -113,7 +114,7 @@ while :; do
     # 日志只留最近 256 KB（下载进度行很多）。
     [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 262144 ] && { tail -c 131072 "$LOG" > "$LOG.tmp" && mv -f "$LOG.tmp" "$LOG"; }
     # BH081-7：不要 `curl | sh`——下载中途断网/超时，sh 会执行半截脚本。先完整下载到文件，curl 成功且语法检查通过才执行。
-    BS=/mnt/base-us/veradroid-autoupdate-bootstrap.sh
+    BS=/mnt/base-us/veradroid/state/autoupdate-bootstrap.sh
     rm -f "$BS.part"
     if curl_do -fsSL --max-time 120 -o "$BS.part" "$BASE/static/bootstrap-legacy.sh" && [ -s "$BS.part" ] && sh -n "$BS.part" 2>>"$LOG"; then
         mv -f "$BS.part" "$BS"

@@ -2,7 +2,8 @@
 # Early-boot diagnostics. Keep this light: the previous version ran logcat/dumpsys
 # every 2 seconds for two minutes, which made a slow PW6 feel frozen right after boot.
 diagboot() {
-    LOG=/mnt/base-us/veradroid-boot.log
+    LOG=/mnt/base-us/veradroid/logs/boot.log
+    mkdir -p /mnt/base-us/veradroid/logs 2>/dev/null
     : > "$LOG" 2>/dev/null || return 0
     {
         echo "== VeraDroid boot diagnostics $(date) =="

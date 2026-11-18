@@ -7,14 +7,15 @@
 {
 VD=/mnt/base-us/veradroid
 . $VD/boot/lib/common.sh
-ULOG=/mnt/base-us/veradroid-uninstall.log
+ULOG=/mnt/base-us/veradroid/logs/uninstall.log
+mkdir -p /mnt/base-us/veradroid/logs 2>/dev/null
 exec >>$ULOG 2>&1
 echo "== $(date) uninstall"
 say() { command -v eips >/dev/null 2>&1 && eips 1 ${2:-4} "$1" >/dev/null 2>&1; t "uninstall: $1"; }
 # 卸载停止时：本次从 loop 系统盘拷出来的书（KEEP）只是副本，原件还在镜像里 → 删掉副本，否则下次重试会因为 KEEP 已存在而永远停住
 MADEKEEP=0
-fail() { if [ "$MADEKEEP" = 1 ] && [ -d "$SYS/data/media" ] && [ -d "$KEEP" ]; then rm -rf /mnt/base-us/veradroid-media-keep; t "uninstall: 已删掉本次的书副本 $KEEP（原件仍在系统盘里）"; fi; say "卸载停止：$1（什么都没删）" 5; exit 1; }
-KEEP=/mnt/base-us/veradroid-media-keep
+fail() { if [ "$MADEKEEP" = 1 ] && [ -d "$SYS/data/media" ] && [ -d "$KEEP" ]; then rm -rf /mnt/base-us/veradroid/backup/media-keep; t "uninstall: 已删掉本次的书副本 $KEEP（原件仍在系统盘里）"; fi; say "卸载停止：$1（什么都没删）" 5; exit 1; }
+KEEP=/mnt/base-us/veradroid/backup/media-keep
 sleep 1
 cd /                                   # 自己的工作目录也不能在 $SYS 里
 # 2026-11-12（kt6-517104 模拟器复现）：卸载以前不管自动更新。auto-update.sh 跑的是 /dev/shm 里的副本，卸载后还活着；
@@ -22,16 +23,27 @@ cd /                                   # 自己的工作目录也不能在 $SYS 
 # 之后点安装只得到“另一个安装/更新正在进行”），卸载完成以后它也会在下一次检查时把刚卸掉的 VeraDroid 又装回来。
 # 所以：先停自动更新，再停正在跑的安装器（连同它的 curl / tar），清掉它们的锁和临时目录，然后才开始卸载。
 kill_tree() { for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done; kill "$1" 2>/dev/null; }
-ap=$(cat $W/autoupdate.pid 2>/dev/null); [ -n "$ap" ] || ap=$(cat /mnt/base-us/veradroid-autoupdate.lock/pid 2>/dev/null)
+ap=$(cat $W/autoupdate.pid 2>/dev/null); [ -n "$ap" ] || ap=$(cat /mnt/base-us/veradroid/state/autoupdate.lock/pid 2>/dev/null); [ -n "$ap" ] || ap=$(cat /mnt/base-us/veradroid-autoupdate.lock/pid 2>/dev/null)   # root-legacy: 更新前起的老自动更新
 if [ -n "$ap" ] && [ "$ap" != "$$" ] && kill -0 "$ap" 2>/dev/null; then kill_tree "$ap"; t "uninstall: 已停止自动更新（pid $ap）"; fi
-ip=$(cat /mnt/base-us/veradroid-install.lock/pid 2>/dev/null)
+ip=$(cat /mnt/base-us/veradroid/state/install.lock/pid 2>/dev/null); [ -n "$ip" ] && kill -0 "$ip" 2>/dev/null || ip=$(cat /mnt/base-us/veradroid-install.lock/pid 2>/dev/null)   # root-legacy: 老版本的安装器
 if [ -n "$ip" ] && [ "$ip" != "$$" ] && kill -0 "$ip" 2>/dev/null; then
     kill_tree "$ip"; t "uninstall: 已停止正在运行的安装器（pid $ip）"
     i=0; while [ $i -lt 10 ] && kill -0 "$ip" 2>/dev/null; do sleep 1; i=$((i + 1)); done
     kill -9 "$ip" 2>/dev/null
 fi
-rm -rf /mnt/base-us/veradroid-autoupdate.lock /mnt/base-us/veradroid-install.lock 2>/dev/null
-rm -f $W/autoupdate.pid /mnt/base-us/veradroid-autoupdate-bootstrap.sh /mnt/base-us/veradroid-autoupdate-bootstrap.sh.part 2>/dev/null
+rm -rf /mnt/base-us/veradroid/state/autoupdate.lock /mnt/base-us/veradroid/state/install.lock 2>/dev/null
+rm -f $W/autoupdate.pid /mnt/base-us/veradroid/state/autoupdate-bootstrap.sh /mnt/base-us/veradroid/state/autoupdate-bootstrap.sh.part 2>/dev/null
+rm -rf /mnt/base-us/veradroid-autoupdate.lock /mnt/base-us/veradroid-install.lock /mnt/base-us/veradroid-autoupdate-bootstrap.sh /mnt/base-us/veradroid-autoupdate-bootstrap.sh.part 2>/dev/null   # root-legacy
+# 删程序时 logs / backup 留着（卸载日志、安装前备份、卸载时拷出来的书），state 里只留书库清单这类以后还有用的记录：
+# 锁、半截安装标记、安装器临时目录、系统盘调整记录删掉。以前这些都在根目录，那边的老文件一起删。
+un_clean() {
+    vd_prog_rm "$VD"
+    rm -rf "$VD_STATE"/install.lock "$VD_STATE"/autoupdate.lock "$VD_STATE"/install.[0-9]* 2>/dev/null
+    rm -f "$VD_STATE"/install.incomplete "$VD_STATE"/autoupdate-bootstrap.sh "$VD_STATE"/autoupdate-bootstrap.sh.part "$VD_STATE"/resize.state "$VD_STATE"/resize.pending "$VD_STATE"/resize.last "$VD_STATE"/resize.notify "$VD_LOGS"/resize.log 2>/dev/null
+    rm -rf /mnt/base-us/veradroid-install.[0-9]* 2>/dev/null   # root-legacy
+    rm -f /mnt/base-us/veradroid-install.incomplete /mnt/base-us/veradroid-resize.state /mnt/base-us/veradroid-resize.pending /mnt/base-us/veradroid-resize.last /mnt/base-us/veradroid-resize.notify /mnt/base-us/veradroid-resize.log 2>/dev/null   # root-legacy
+    return 0
+}
 sh $VD/boot/stop.sh >/dev/null 2>&1
 # 2026-11-10（pw5-5182 模拟器复现）：开机途中的 veradroid.sh 还开着 $SYS/veradroid.log（exec >>$LOG），
 # stop.sh 不杀它 → 系统盘卸不掉 → “卸载停止：还挂着”。卸载前先关掉所有还打开 $SYS 的进程（不含自己）。
@@ -50,6 +62,7 @@ while [ $i -lt 6 ]; do
 done
 say '正在卸载 VeraDroid，保留书和账号…'
 [ -e "$KEEP" ] && fail "$KEEP 已存在（上一次卸载留下的书还在那里）"
+[ -e /mnt/base-us/veradroid-media-keep ] && fail "/mnt/base-us/veradroid-media-keep 已存在（上一次卸载留下的书还在那里）"   # root-legacy
 LOOPIMG=0
 if [ -f "$SYSTEM_IMG" ]; then
     LOOPIMG=1
@@ -67,7 +80,7 @@ if [ -d "$SYS/data/media" ]; then
             rm -rf "$SYS/rootfs" "$SYS/data/dalvik-cache" 2>/dev/null
             storage_umount
             mounts_under "$VD" 1 && fail "$VD 下面有挂载"
-            rm -rf "$VD" 2>/dev/null
+            un_clean
             say "空间不够把书拷出来：系统已删除，书和账号还在 veradroid-sys.img 里（重新安装会接着用）" 5
             exit 0
         fi
@@ -90,22 +103,20 @@ fi
 storage_umount
 mounts_under "$SYS" 1 && fail "$SYS 还挂着（或下面有挂载）"
 mounts_under "$VD" 1 && fail "$VD 下面有挂载"
-rm -rf "$VD" 2>/dev/null
+un_clean
 [ "$LOOPIMG" = 1 ] && rm -f "$SYSTEM_IMG"
-rm -f /mnt/base-us/veradroid-resize.state /mnt/base-us/veradroid-resize.pending /mnt/base-us/veradroid-resize.last /mnt/base-us/veradroid-resize.notify /mnt/base-us/veradroid-resize.log 2>/dev/null   # 系统盘大小调整留下的记录（storage.sh）
 rm -rf "$SYS" 2>/dev/null
-rm -rf /mnt/base-us/veradroid-install.[0-9]* 2>/dev/null; rm -f /mnt/base-us/veradroid-install.incomplete 2>/dev/null   # 被上面停掉的安装器留下的临时目录 / 半截标记
-rm -rf /mnt/base-us/veradroid.bak.* 2>/dev/null       # 很早的版本留下的程序目录备份（没有用户数据）
+rm -rf /mnt/base-us/veradroid.bak.* 2>/dev/null       # 很早的版本留下的程序目录备份（没有用户数据）  root-legacy
 # $SYS.pre-ext4.* 可能是 loop 系统盘之前的书，不删（重新安装时会搬回去）
 if [ "$LOOPIMG" = 1 ]; then
     # KT5 / KT6 等：/mnt/base-us/system 是 fscrypt 加密目录，不加密的目录 mv 不进去（EPERM，模拟器实测）。
-    # 书就留在 veradroid-media-keep，重新安装时 bootstrap 会把它搬进新的系统盘。
+    # 书就留在 veradroid/backup/media-keep，重新安装时 bootstrap 会把它搬进新的系统盘。
     :
 else
     mkdir -p "$SYS/data"
     [ -d "$KEEP" ] && mv "$KEEP" "$SYS/data/media"
 fi
-rm -f /mnt/base-us/veradroid-version /mnt/base-us/veradroid-model /mnt/base-us/veradroid-device-id /mnt/base-us/veradroid-fullupdate.log /mnt/base-us/veradroid-fullupdate.rc
+rm -f /mnt/base-us/veradroid-version /mnt/base-us/veradroid-model /mnt/base-us/veradroid-device-id /mnt/base-us/veradroid-fullupdate.log /mnt/base-us/veradroid-fullupdate.rc   # root-legacy: 很早的版本放在根目录的元数据
 # 书库里我们自己建的启动入口和 KUAL 菜单也拿掉：程序没了以后入口还留着，点了只会说“未安装”（用户报告：只剩一个入口而且打不开）。
 # 只按固定名字删我们自己建的东西；KUAL 目录要确认里面是我们那几份文件才删。别的 .sh 入口、别的扩展一律不动。
 for uL in "/mnt/us/documents/VeraDroid 启动.sh" "/mnt/base-us/documents/VeraDroid 启动.sh"; do

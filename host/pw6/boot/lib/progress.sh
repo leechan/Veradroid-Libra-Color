@@ -185,7 +185,7 @@ vp_en_err() {
         14) echo "Network too slow, download timed out. Tap install again to resume, or use the offline package." ;;
         15) echo "Download corrupted twice (checksum). Try another network." ;;
         21) echo "Not enough storage. Free some space and tap install again." ;;
-        *) echo "Device-side error. Restart the Kindle and try again; log: veradroid-install.log" ;;
+        *) echo "Device-side error. Restart the Kindle and try again; log: veradroid/logs/install.log" ;;
     esac
 }
 # ---- 对外 ----

@@ -24,7 +24,8 @@ screen() { # 多行文字整屏显示：fbink + Kindle 自带中文字体，没�
 [ -f $VD/boot/lib/tester.sh ] || { screen "VeraDroid 没有安装（或已经卸载），没有测试结果可传。"; sleep 8; exit 0; }
 . $VD/boot/lib/tester.sh
 test_on || { screen "这台 Kindle 不是“只在模拟器上验证过”的机型，不需要上传测试结果。"; sleep 8; exit 0; }
-CF=/mnt/base-us/veradroid-confirm; OUT=/tmp/veradroid-report
+CF=/mnt/base-us/veradroid/state/confirm; OUT=/tmp/veradroid-report
+mkdir -p /mnt/base-us/veradroid/state 2>/dev/null
 bid=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); now=$(cut -d. -f1 /proc/uptime)
 set -- $(cat "$CF" 2>/dev/null); cw=${1:-}; cb=${2:-}; cu=${3:-0}
 rm -f "$CF"

@@ -111,6 +111,14 @@ public class HostService extends Service {
         } catch (Throwable ignored) { }
         return null;
     }
+    /** 桌面（HomeActivity）到了前台：和任务栈通知看到桌面时一样发 "fg home"，只是不用等通知（见 HomeActivity.onResume）。 */
+    static void foregroundHome() {
+        if ("home".equals(profPkg)) return;
+        launchedPkg = null;
+        profPkg = "home";
+        AppProf.fg("home");
+    }
+
     private void writeForeground() {
         String pkg = "", cls = "";
         try {

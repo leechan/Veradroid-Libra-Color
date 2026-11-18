@@ -27,11 +27,127 @@ VERSION_FILE=$SYS/version
 FULL_LOG=$SYS/fullupdate.log
 W=/dev/shm/veradroid
 SYSTEM_IMG=/mnt/base-us/veradroid-sys.img
-TMP=/mnt/base-us/veradroid-install.$$
+# BEGIN vd_root_tidy
+# 2026-11-18 起 VeraDroid 自己的日志、标记和备份都放在程序目录 veradroid/ 下面三个文件夹里，不再散在根目录：
+#   veradroid/logs    install.log、install-detail.log、uninstall.log、autoupdate.log、fsck.log、localupdate.log、boot.log、resize.log
+#   veradroid/state   install.lock、install.incomplete、install.<pid>（安装器临时目录）、autoupdate.lock、update.stage、
+#                     docs-manifest、confirm、launchers-restored、resize.*
+#   veradroid/backup  user-backup-<时间>.tgz（安装前备份）、cc.db.<时间>、documents-backup*.tgz、media-keep/（卸载时留下的书）
+# 这三个文件夹不是程序：安装器把程序目录挪成 host.bak、回退时挪回来、卸载删程序，都不带上它们（vd_prog_move / vd_is_data）。
+# 留在根目录的只有系统盘镜像 veradroid-sys.img 和老机型的交换文件 veradroid-swap：以前的安装器（用户手里的旧离线包）
+# 会把整个 veradroid/ 挪进系统盘镜像里，镜像和交换文件要是在 veradroid/ 里就是把镜像往它自己里面拷。
+# 读的地方都先看新位置、再看根目录（老版本的安装器 / 自动更新 / 离线更新还会往根目录写），vd_root_tidy 再把根目录的搬进来。
+VD_TOP=${VD_TOP:-/mnt/base-us}
+VD_LOGS=$VD_TOP/veradroid/logs
+VD_STATE=$VD_TOP/veradroid/state
+VD_BACKUP=$VD_TOP/veradroid/backup
+vd_is_data() { case "$1" in logs|state|backup) return 0 ;; esac; return 1; }
+# vd_prog_move 源 目标：把源目录里除 logs / state / backup 以外的东西逐个挪进目标（需要时才建目标）
+vd_prog_move() {
+    [ -d "$1" ] || return 0
+    for vpm_e in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        [ -e "$vpm_e" ] || [ -L "$vpm_e" ] || continue
+        vd_is_data "${vpm_e##*/}" && continue
+        mkdir -p "$2" && mv "$vpm_e" "$2/" || return 1
+    done
+    return 0
+}
+# vd_prog_rm 目录：删掉程序（logs / state / backup 留着）
+vd_prog_rm() {
+    [ -d "$1" ] || return 0
+    for vpr_e in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        [ -e "$vpr_e" ] || [ -L "$vpr_e" ] || continue
+        vd_is_data "${vpr_e##*/}" && continue
+        rm -rf "$vpr_e" || true
+    done
+    return 0
+}
+# vd_data_rescue 目录：旧安装器把整个程序目录（连同 logs / backup）挪成了 host.bak / host.failed，删它之前把这两个搬回来（同名的不覆盖）
+vd_data_rescue() {
+    for vdr_s in logs backup; do
+        [ -d "$1/$vdr_s" ] || continue
+        mkdir -p "$VD_TOP/veradroid/$vdr_s" 2>/dev/null || continue
+        for vdr_e in "$1/$vdr_s"/* "$1/$vdr_s"/.[!.]*; do
+            [ -e "$vdr_e" ] || continue
+            [ -e "$VD_TOP/veradroid/$vdr_s/${vdr_e##*/}" ] || mv "$vdr_e" "$VD_TOP/veradroid/$vdr_s/" 2>/dev/null || true
+        done
+    done
+    return 0
+}
+vd_pid_live() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
+# vd_old_installer：老版本的安装器正在跑（根目录的安装锁，持有者还活着）
+vd_old_installer() { vd_pid_live "$(cat "$VD_TOP/veradroid-install.lock/pid" 2>/dev/null)"; }
+# vd_root_tidy：把根目录里以前的文件搬进 veradroid/。安装器每次运行、veradroid.sh 每次启动都跑，重复跑没有副作用。
+# 只认我们自己按固定名字建的文件；用户改过名的（带 KEEP 的备份等）、别的文件夹（vd18-keep/ 等）一律不动。
+# 老版本的进程还在用的不动：老安装器在跑时整个跳过；老自动更新拿着锁时不动它的锁和下载的安装器；老的离线更新在跑时不动暂存目录。
+vd_root_tidy() {
+    vrt=$VD_TOP
+    [ -d "$vrt" ] || return 0
+    vd_old_installer && return 0
+    mkdir -p "$VD_LOGS" "$VD_STATE" "$VD_BACKUP" 2>/dev/null || return 0
+    # 日志：logs/ 里已经有同名的就先并进 .old（最多留 1 MB），再把根目录的改名过来（还开着它的老进程接着写进同一个文件）
+    for vrt_n in install install-detail fsck uninstall boot localupdate autoupdate resize; do
+        vrt_f=$vrt/veradroid-$vrt_n.log; [ -f "$vrt_f" ] || continue
+        vrt_d=$VD_LOGS/$vrt_n.log
+        if [ -f "$vrt_d" ]; then
+            { cat "$vrt_d.old" 2>/dev/null; cat "$vrt_d"; } | tail -c 1048576 > "$vrt_d.old.tmp" 2>/dev/null && mv -f "$vrt_d.old.tmp" "$vrt_d.old" && rm -f "$vrt_d" || true
+        fi
+        mv -f "$vrt_f" "$vrt_d" 2>/dev/null || true
+    done
+    # 标记：两边都有时留较新的那份
+    for vrt_n in install.incomplete docs-manifest docs-manifest.checked launchers-restored confirm resize.state resize.pending resize.notify resize.last; do
+        vrt_f=$vrt/veradroid-$vrt_n; [ -f "$vrt_f" ] || continue
+        if [ -e "$VD_STATE/$vrt_n" ] && [ "$(ls -t "$vrt_f" "$VD_STATE/$vrt_n" 2>/dev/null | head -1)" != "$vrt_f" ]; then rm -f "$vrt_f"
+        else mv -f "$vrt_f" "$VD_STATE/$vrt_n" 2>/dev/null || true; fi
+    done
+    # 锁和临时文件：持有者已经不在的删掉（安装锁的持有者上面已经确认不在了）
+    rm -f "$vrt/veradroid-install.lock/pid" "$vrt/veradroid-install.lock/boot" "$vrt/veradroid-install.lock/phase" 2>/dev/null || true
+    rmdir "$vrt/veradroid-install.lock" 2>/dev/null || true
+    # 老版本的自动更新（更新前起的，锁在根目录）在睡觉：没有安装在进行时（两个安装锁都没人拿）把它停掉，
+    # 新版的 veradroid.sh 接着起新的（否则它一直占着根目录的锁，新的那个起不来，直到 Kindle 重启）。
+    # 安装器里跑到这里时自己拿着新的安装锁，不会停它的父进程。
+    # set -eu 下（安装器）赋值的退出码就是 $(...) 的：锁不在时 cat 失败会让整个安装器静默退出，所以每个 $(...) 和 rm 都要 || true
+    vrt_p=$(cat "$vrt/veradroid-autoupdate.lock/pid" 2>/dev/null || true)
+    if vd_pid_live "$vrt_p" && ! vd_pid_live "$(cat "$VD_STATE/install.lock/pid" 2>/dev/null)"; then
+        case "$( { tr '\000' ' ' < /proc/$vrt_p/cmdline; } 2>/dev/null || true)" in "sh "*"/auto-update.sh"*) kill -9 "$vrt_p" 2>/dev/null && sleep 1 ;; esac
+    fi
+    if ! vd_pid_live "$(cat "$vrt/veradroid-autoupdate.lock/pid" 2>/dev/null)"; then
+        rm -rf "$vrt/veradroid-autoupdate.lock" "$vrt/veradroid-autoupdate-bootstrap.sh" "$vrt/veradroid-autoupdate-bootstrap.sh.part" 2>/dev/null || true
+    fi
+    for vrt_f in "$vrt"/veradroid-install.[0-9]*; do
+        [ -d "$vrt_f" ] || continue
+        case "${vrt_f##*.}" in *[!0-9]*) continue ;; esac
+        vd_pid_live "${vrt_f##*.}" && [ -n "$(find "$vrt_f" -mmin -2 2>/dev/null | head -1)" ] && continue   # 不拿锁的老安装器还在往里写
+        rm -rf "$vrt_f" 2>/dev/null || true
+    done
+    rm -f "$vrt/veradroid-user-backup.partial" 2>/dev/null || true
+    if [ -d "$vrt/veradroid-update.stage" ] && [ ! -e "$VD_STATE/update.stage" ] && ! vd_pid_live "$(cat /dev/shm/veradroid/localupdate.lock/pid 2>/dev/null)"; then
+        mv "$vrt/veradroid-update.stage" "$VD_STATE/update.stage" 2>/dev/null || true
+    fi
+    # 备份：只搬安装器按时间起名的那几种；同名的已经在 backup/ 里就不动
+    for vrt_f in "$vrt"/veradroid-user-backup-*.tgz "$vrt"/veradroid-documents-backup.tgz "$vrt"/veradroid-documents-backup.restored-*.tgz "$vrt"/veradroid-cc.db.*; do
+        [ -f "$vrt_f" ] || continue
+        vrt_n=${vrt_f##*/}; vrt_n=${vrt_n#veradroid-}
+        case "$vrt_n" in
+            user-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].tgz) ;;
+            documents-backup.tgz|documents-backup.restored-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].tgz) ;;
+            cc.db.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+            *) continue ;;
+        esac
+        [ -e "$VD_BACKUP/$vrt_n" ] || mv "$vrt_f" "$VD_BACKUP/$vrt_n" 2>/dev/null || true
+    done
+    if [ -d "$vrt/veradroid-media-keep" ] && [ ! -e "$VD_BACKUP/media-keep" ]; then
+        mv "$vrt/veradroid-media-keep" "$VD_BACKUP/media-keep" 2>/dev/null || true
+    fi
+    return 0
+}
+# END vd_root_tidy
+mkdir -p "$VD_LOGS" "$VD_STATE" "$VD_BACKUP" 2>/dev/null || true
+TMP=/mnt/base-us/veradroid/state/install.$$
 trap 'rm -rf "$TMP"' EXIT
 # BH081-3：同一时间只允许一个安装器（书库脚本连点两次 / KUAL + 自动更新同时跑，会互相 mv 程序目录）。
 # 被 kill / 断电的上一次安装留下的 veradroid-install.<pid>（整包 + 解压，约 300 MB）和还在往里写的 curl/tar 子进程，在这里清掉。
-INSTALL_LOCK=/mnt/base-us/veradroid-install.lock
+INSTALL_LOCK=/mnt/base-us/veradroid/state/install.lock
 BOOT_ID=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo noboot)
 # 结束所有命令行里引用目录 $1 的进程（curl -o $1/bundle.tar.gz、tar -C $1 …），不碰自己
 vd_kill_users() {
@@ -63,9 +179,13 @@ vd_phase() { echo "$1" > "$INSTALL_LOCK/phase" 2>/dev/null || true; }
 vd_phase check
 trap 'vd_cleanup' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+# 老版本的安装器（用户手里的旧离线包）锁在根目录：它在跑时不同时装，也不搬它正在用的文件
+if vd_old_installer; then printf '%s\n' "另一个 VeraDroid 安装/更新正在进行（pid $(cat /mnt/base-us/veradroid-install.lock/pid 2>/dev/null)），这次不重复安装，请等它完成"; exit 0; fi   # root-legacy
+# 根目录里老版本留下的日志 / 标记 / 备份搬进 veradroid/（tidy 块的说明）
+vd_root_tidy
 # 拿到锁以后，别的 veradroid-install.<pid> 都是残留：持有锁的只有我们。
 # 唯一例外：旧版（无锁）安装器还活着——它的 pid 在本次开机里存在且目录 2 分钟内还在变。
-for old_tmp in /mnt/base-us/veradroid-install.[0-9]*; do
+for old_tmp in /mnt/base-us/veradroid/state/install.[0-9]*; do
     [ -d "$old_tmp" ] || continue
     [ "$old_tmp" = "$TMP" ] && continue
     op=${old_tmp##*.}
@@ -77,7 +197,7 @@ for old_tmp in /mnt/base-us/veradroid-install.[0-9]*; do
     vd_kill_users "$old_tmp"
     show_mb=$(du -sm "$old_tmp" 2>/dev/null | cut -f1)
     printf '%s\n' "清理上次中断留下的临时目录 $old_tmp（${show_mb:-?} MB）"
-    rm -rf "/mnt/base-us/veradroid-install.$op" 2>/dev/null || true
+    rm -rf "/mnt/base-us/veradroid/state/install.$op" 2>/dev/null || true
 done
 
 show() {
@@ -189,7 +309,7 @@ restore_missing() { # backup.tgz destdir
     tar -xzkf "$1" -C "$2" -T "$rl" 2>/dev/null || true
 }
 # 2026-11-10 数据安全（在 eink-emulator 里复现 / 排除过）
-vlog() { echo "[$(date '+%F %T')] $*" >> /mnt/base-us/veradroid-install-detail.log 2>/dev/null || true; }
+vlog() { echo "[$(date '+%F %T')] $*" >> /mnt/base-us/veradroid/logs/install-detail.log 2>/dev/null || true; }
 fsize() { { wc -c < "$1"; } 2>/dev/null | tr -d ' ' || true; }
 vp_now() { date +%s; }
 # ---- 分段并行下载 + 镜像（docs/download-speed.md）----
@@ -692,7 +812,7 @@ if [ "$LOOP" = 1 ]; then
     # 卸载（或更早的非 loop 安装）留下的书 / 微信读书下载 / token 在 $SYS.pre-ext4.*/data/media：搬进系统盘（不覆盖、原目录保留）
     if [ ! -d "$SYS/data/media/0" ]; then
         pre=
-        [ -d /mnt/base-us/veradroid-media-keep/0 ] && pre=/mnt/base-us/veradroid-media-keep   # 卸载时留下的
+        [ -d /mnt/base-us/veradroid/backup/media-keep/0 ] && pre=/mnt/base-us/veradroid/backup/media-keep   # 卸载时留下的
         [ -n "$pre" ] || pre=$(ls -dt "$SYS".pre-ext4.*/data/media 2>/dev/null | head -1)
         if [ -n "$pre" ]; then
             need=$(du -sk "$pre" 2>/dev/null | awk '{print $1}')
@@ -702,7 +822,7 @@ if [ "$LOOP" = 1 ]; then
                 if mkdir -p "$SYS/data" && cp -a "$pre" "$SYS/data/media"; then
                     vlog "restored data/media from $pre"
                     # 卸载留下的那份：核对数量一致后删掉（已经在系统盘里了）；pre-ext4 的旧目录不动
-                    if [ "$pre" = /mnt/base-us/veradroid-media-keep ] && [ "$(find "$pre" | wc -l)" = "$(find "$SYS/data/media" | wc -l)" ]; then
+                    if [ "$pre" = /mnt/base-us/veradroid/backup/media-keep ] && [ "$(find "$pre" | wc -l)" = "$(find "$SYS/data/media" | wc -l)" ]; then
                         rm -rf "$pre" && vlog "removed $pre after verified copy"
                     fi
                 else
@@ -816,27 +936,29 @@ latest_version() {
     LATEST_PATCH_FROM=$(printf '%s' "$j" | sed -n 's/.*"patch_from": *"\([^"]*\)".*/\1/p')
     printf '%s' "$LATEST_VER"
 }
-# 上一次安装在“替换文件”阶段被打断（断电、死机、被杀）时，/mnt/base-us/veradroid-install.incomplete 还在：
+# 上一次安装在“替换文件”阶段被打断（断电、死机、被杀）时，/mnt/base-us/veradroid/state/install.incomplete 还在：
 # 程序目录是半新的，rootfs 可能只解压了一半。以前这种状态没人管，点“启动”就是起不来。
 # 能回退就回退到安装前的那一版（host.bak / rootfs.bak 还在）；回退不了（loop 机型旧系统已删）就把版本号清掉，让接下来走完整重装。
-INCOMPLETE=/mnt/base-us/veradroid-install.incomplete
+INCOMPLETE=/mnt/base-us/veradroid/state/install.incomplete
 install_recover() {
     [ -f "$INCOMPLETE" ] || return 0
     st=$(cat "$INCOMPLETE" 2>/dev/null); [ -n "$st" ] || { rm -f "$INCOMPLETE"; return 0; }
     if [ -d "$SYS/host.bak.$st" ]; then
-        [ -e "$VD" ] && mv "$VD" "$SYS/host.failed.$st"
-        mv "$SYS/host.bak.$st" "$VD"
+        # 程序目录里的 logs / state / backup 不跟着挪；host.bak 若是老安装器整个挪过去的，里面的日志和备份搬回来
+        vd_prog_move "$VD" "$SYS/host.failed.$st"
+        vd_prog_move "$SYS/host.bak.$st" "$VD"
+        vd_data_rescue "$SYS/host.bak.$st"; rm -rf "$SYS/host.bak.$st"
         if [ -d "$SYS/rootfs.bak.$st" ]; then
             [ -e "$SYS/rootfs" ] && mv "$SYS/rootfs" "$SYS/rootfs.failed.$st"
             mv "$SYS/rootfs.bak.$st" "$SYS/rootfs"
-            echo "[$(date '+%F %T')] interrupted install $st: rolled back to the previous version" >> /mnt/base-us/veradroid-install-detail.log
+            echo "[$(date '+%F %T')] interrupted install $st: rolled back to the previous version" >> /mnt/base-us/veradroid/logs/install-detail.log
         else
             rm -f "$VD/version" "$SYS/version"
-            echo "[$(date '+%F %T')] interrupted install $st: program dir restored, system image incomplete -> needs reinstall" >> /mnt/base-us/veradroid-install-detail.log
+            echo "[$(date '+%F %T')] interrupted install $st: program dir restored, system image incomplete -> needs reinstall" >> /mnt/base-us/veradroid/logs/install-detail.log
         fi
     else
         rm -f "$VD/version" "$SYS/version" 2>/dev/null
-        echo "[$(date '+%F %T')] interrupted install $st: nothing to roll back to -> needs reinstall" >> /mnt/base-us/veradroid-install-detail.log
+        echo "[$(date '+%F %T')] interrupted install $st: nothing to roll back to -> needs reinstall" >> /mnt/base-us/veradroid/logs/install-detail.log
     fi
     rm -f "$INCOMPLETE"
 }
@@ -885,12 +1007,12 @@ else
 fi
 # Consolidate old install metadata and backups under system/veradroid.
 mkdir -p "$SYS/tmp" 2>/dev/null || true
-for f in veradroid-device-id veradroid-model veradroid-version veradroid-fullupdate.log veradroid-fullupdate.rc; do
+for f in veradroid-device-id veradroid-model veradroid-version veradroid-fullupdate.log veradroid-fullupdate.rc; do   # root-legacy
     if [ -e "/mnt/base-us/$f" ]; then
         mv "/mnt/base-us/$f" "$SYS/${f#veradroid-}" 2>/dev/null || true
     fi
 done
-for d in /mnt/base-us/veradroid.bak.*; do
+for d in /mnt/base-us/veradroid.bak.*; do   # root-legacy
     [ -d "$d" ] || continue
     mv "$d" "$SYS/$(basename "$d")" 2>/dev/null || true
 done
@@ -1023,7 +1145,7 @@ BAK="$SYS/host.bak.$stamp"
 # ---- 安装前备份（2026-11-10 改）----
 # 旧版每次都新建一份 documents+koreader+extensions+thumbnails 的 tgz、从来不删，还每次覆盖唯一的那份
 # veradroid-documents-backup.tgz，错误全部吞掉 —— 一天几十次自动更新就能把用户存储写满。现在：
-#  - 先估空间，不够就跳过备份（安装本身不删除任何用户文件），写进 veradroid-install-detail.log；
+#  - 先估空间，不够就跳过备份（安装本身不删除任何用户文件），写进 veradroid/logs/install-detail.log；
 #  - 写到 .partial，成功了才改名；只保留最新一份。旧备份只有在“里面的每个文件现在都还在”时才删除，
 #    否则留着（它可能是用户丢书之前唯一的一份）；
 #  - veradroid-documents-backup.tgz 不再写入（user backup 已经包含 documents），已有的那份原样保留。
@@ -1038,7 +1160,7 @@ if [ -d /mnt/us ]; then
             show "空间不够做安装前备份（需要约 $((need / 1024)) MB），跳过备份；安装不会删除任何书或设置"
             vlog "user backup skipped: need ${need}K + 500M, free ${freek}K"
         else
-            part=/mnt/base-us/veradroid-user-backup.partial
+            part=/mnt/base-us/veradroid/backup/user-backup.partial
             rm -f "$part"
             # 真机 PW4（第一份真机报告）：书库 260 MB 时这一步要好几分钟，以前屏幕上一直停在“解压 100%”，用户以为卡住又点了一次。
             # 现在先说在做什么，每 15 秒按已经写出的大小画一次进度（书多半已经是压缩格式，备份大小接近原大小）
@@ -1047,20 +1169,20 @@ if [ -d /mnt/us ]; then
                   bp=$(( bk * 100 / (need + 1) )); [ "$bp" -gt 99 ] && bp=99; progress_line "$bp" "Backup / 备份 $((bk / 1024)) MB"; done ) </dev/null &
             BKW=$!
             vlog "user backup: ${need}K to back up"
-            if tar -czf "$part" -C /mnt/us "$@" 2>>/mnt/base-us/veradroid-install-detail.log; then
+            if tar -czf "$part" -C /mnt/us "$@" 2>>/mnt/base-us/veradroid/logs/install-detail.log; then
                 kill "$BKW" 2>/dev/null || true
-                USER_SAFE=/mnt/base-us/veradroid-user-backup-$stamp.tgz
+                USER_SAFE=/mnt/base-us/veradroid/backup/user-backup-$stamp.tgz
                 mv "$part" "$USER_SAFE"
                 vlog "user backup ok: $USER_SAFE ($(wc -c < "$USER_SAFE") bytes)"
                 # BH081-6：以前“旧备份里有设备上已经没有的文件就永远保留”——用户每两次更新之间删过一本读完的书，
                 # 就多留一整份备份（documents+koreader 全量），几次自动更新就把用户存储吃满。
                 # 现在：最新这份 + 最多再留一份“含已删除文件”的旧备份（最近的那份），更早的删掉。
                 kept_old=
-                for old in $(ls -t /mnt/base-us/veradroid-user-backup-*.tgz 2>/dev/null); do
+                for old in $(ls -t /mnt/base-us/veradroid/backup/user-backup-*.tgz 2>/dev/null); do
                     [ "$old" = "$USER_SAFE" ] && continue
                     # 只管安装器自己按时间戳起名的备份（veradroid-user-backup-YYYYMMDD-HHMMSS.tgz）；
                     # 用户自己改过名、拷过来的（如 …-KEEP-….tgz）一律不动（真机实测：KEEP 备份曾被当成旧备份删掉）
-                    case "${old##*/}" in veradroid-user-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].tgz) ;; *) continue ;; esac
+                    case "${old##*/}" in user-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].tgz) ;; *) continue ;; esac
                     if [ -n "$kept_old" ]; then rm -f "$old"; vlog "pruned $old (already keeping $kept_old as the one older backup)"; continue; fi
                     tar -tzf "$old" >/dev/null 2>&1 || { vlog "keep $old (cannot read it)"; continue; }
                     miss=$(tar -tzf "$old" 2>/dev/null | while IFS= read -r f; do
@@ -1074,7 +1196,7 @@ if [ -d /mnt/us ]; then
             else
                 kill "$BKW" 2>/dev/null || true
                 rm -f "$part"
-                show "安装前备份失败（见 veradroid-install-detail.log），继续安装；安装不会删除任何书或设置"
+                show "安装前备份失败（见 veradroid/logs/install-detail.log），继续安装；安装不会删除任何书或设置"
                 vlog "user backup FAILED"
             fi
         fi
@@ -1088,21 +1210,21 @@ if [ "$TESTED" = emulator-only ] && [ -z "$USER_SAFE" ] && [ -d /mnt/base-us/doc
     ( cd /mnt/base-us && find documents -type f -size -20480k 2>/dev/null ) | while IFS= read -r f; do is_installer_path "$f" || printf '%s\n' "$f"; done > "$bl"
     freek=$(df -k /mnt/base-us | awk 'NR==2{print $4}')
     [ $(( EMU_BAKK + 102400 )) -le "${freek:-0}" ] || die "空间不够做书库备份（需要约 $(( EMU_BAKK / 1024 + 100 )) MB）。什么都没有改动；请先把一些书拷到电脑上再装"
-    part=/mnt/base-us/veradroid-user-backup.partial; rm -f "$part"
+    part=/mnt/base-us/veradroid/backup/user-backup.partial; rm -f "$part"
     show "正在备份书库里的小文件…"
-    if [ -s "$bl" ]; then tar -czf "$part" -C /mnt/base-us -T "$bl" 2>>/mnt/base-us/veradroid-install-detail.log || { rm -f "$part"; die "书库备份失败。什么都没有改动"; }
+    if [ -s "$bl" ]; then tar -czf "$part" -C /mnt/base-us -T "$bl" 2>>/mnt/base-us/veradroid/logs/install-detail.log || { rm -f "$part"; die "书库备份失败。什么都没有改动"; }
     else tar -czf "$part" -C /mnt/base-us documents 2>/dev/null || { rm -f "$part"; die "书库备份失败。什么都没有改动"; }; fi
-    USER_SAFE=/mnt/base-us/veradroid-user-backup-$stamp.tgz; mv "$part" "$USER_SAFE"
+    USER_SAFE=/mnt/base-us/veradroid/backup/user-backup-$stamp.tgz; mv "$part" "$USER_SAFE"
     vlog "emulator-only: small-file documents backup $USER_SAFE ($(wc -l < "$bl" | tr -d ' ') files, $(wc -c < "$USER_SAFE") bytes)"
 fi
-DOCS_MANIFEST=/mnt/base-us/veradroid-docs-manifest
+DOCS_MANIFEST=/mnt/base-us/veradroid/state/docs-manifest
 if [ -d /mnt/base-us/documents ]; then
     ( cd /mnt/base-us && find documents -type f 2>/dev/null ) | while IFS= read -r f; do is_installer_path "$f" || offline_readme_doc "$f" || printf '%s\n' "$f"; done \
         | grep -v -e '\.partial$' -e '\.tmp$' -e '^documents/veradroid-.*\.tar\.gz' | sort > "$DOCS_MANIFEST.tmp" 2>/dev/null \
         && mv -f "$DOCS_MANIFEST.tmp" "$DOCS_MANIFEST" && vlog "documents manifest: $(wc -l < "$DOCS_MANIFEST" | tr -d ' ') files"
 fi
-if [ -f /var/local/cc.db ] && cp -a /var/local/cc.db /mnt/base-us/veradroid-cc.db.$stamp 2>/dev/null; then
-    for old in $(ls -t /mnt/base-us/veradroid-cc.db.* 2>/dev/null | tail -n +2); do rm -f "$old"; done
+if [ -f /var/local/cc.db ] && cp -a /var/local/cc.db /mnt/base-us/veradroid/backup/cc.db.$stamp 2>/dev/null; then
+    for old in $(ls -t /mnt/base-us/veradroid/backup/cc.db.* 2>/dev/null | tail -n +2); do rm -f "$old"; done
 fi
 # ---- 空间预检：在动任何东西之前（旧系统要留作回退）----
 rootfs_gz=$(wc -c < "$TMP/veradroid-pw6/rootfs.tar.gz" 2>/dev/null | tr -d ' ')
@@ -1123,11 +1245,12 @@ guard_rm "$SYS/rootfs"
 for pat in rootfs.bak host.bak rootfs.failed host.failed; do
     for old in $(ls -dt "$SYS"/$pat.* 2>/dev/null); do
         guard_rm "$old"
+        vd_data_rescue "$old"     # 老安装器整个挪过去的程序目录：里面的日志和安装前备份先搬回 veradroid/
         rm -rf "$old" 2>/dev/null || true
     done
 done
 echo "$stamp" > "$INCOMPLETE"; sync      # 从这里到写完版本号之间被打断，下次安装 / 启动会按这个标记回退
-[ -d "$VD" ] && mv "$VD" "$BAK"
+vd_prog_move "$VD" "$BAK"      # 程序挪成备份；veradroid/logs、state（安装锁、本次的临时目录、标记）、backup 留在原处
 if [ "$LOOP" = 1 ]; then
     # loop 镜像只有 3 GB，放不下新旧两份 rootfs：旧的不是用户数据，先删
     guard_rm "$SYS/rootfs"
@@ -1357,14 +1480,14 @@ DOCS=/mnt/base-us/documents
 # Restore only missing documents from the pre-install backup.
 # BH081-4：旧版留下的 veradroid-documents-backup.tgz 只恢复一次。以前每次安装 / 自动更新都从这份旧备份
 # “补回缺失的书”，用户后来自己删掉的书每次更新都会复活。恢复过一次就改名保留（不删除，用户还能手动找回）。
-if [ -f /mnt/base-us/veradroid-documents-backup.tgz ]; then
-    restore_missing /mnt/base-us/veradroid-documents-backup.tgz "$DOCS"
-    mv /mnt/base-us/veradroid-documents-backup.tgz /mnt/base-us/veradroid-documents-backup.restored-$stamp.tgz 2>/dev/null || true
-    vlog "legacy documents backup restored once, renamed to veradroid-documents-backup.restored-$stamp.tgz"
+if [ -f /mnt/base-us/veradroid/backup/documents-backup.tgz ]; then
+    restore_missing /mnt/base-us/veradroid/backup/documents-backup.tgz "$DOCS"
+    mv /mnt/base-us/veradroid/backup/documents-backup.tgz /mnt/base-us/veradroid/backup/documents-backup.restored-$stamp.tgz 2>/dev/null || true
+    vlog "legacy documents backup restored once, renamed to documents-backup.restored-$stamp.tgz"
 fi
 restore_missing "$USER_SAFE" /mnt/us
-if [ -f /mnt/base-us/veradroid-cc.db.$stamp ] && [ ! -f /var/local/cc.db ]; then
-    cp -a /mnt/base-us/veradroid-cc.db.$stamp /var/local/cc.db 2>/dev/null || true
+if [ -f /mnt/base-us/veradroid/backup/cc.db.$stamp ] && [ ! -f /var/local/cc.db ]; then
+    cp -a /mnt/base-us/veradroid/backup/cc.db.$stamp /var/local/cc.db 2>/dev/null || true
 fi
 if [ -f "$TMP/veradroid-pw6/VeraDroid-Launch.sh" ]; then
     # Kindle's home library may use either mount; put the launcher in both so
@@ -1420,6 +1543,7 @@ if [ "$LOOP" = 1 ]; then
         for old in $(ls -dt "$SYS"/$pat 2>/dev/null | tail -n +2); do
             # Android 已经启动：下面有挂载就跳过（不 die，安装已经完成），绝不穿过挂载删
             if mounts_under "$old" 1; then vlog "skip rm -rf $old: mounts under it"; continue; fi
+            vd_data_rescue "$old"
             rm -rf "$old" 2>/dev/null || true
         done
     done

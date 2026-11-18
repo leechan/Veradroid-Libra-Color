@@ -197,9 +197,9 @@ wa_logtail() { # 行数 [main|update|ssh|fsck]
     [ "$nl" -ge 1 ] && [ "$nl" -le 2000 ] || nl=200
     case "$w" in
         main) lf=$LOG ;;
-        update) lf=/mnt/base-us/veradroid-autoupdate.log ;;
+        update) lf=/mnt/base-us/veradroid/logs/autoupdate.log; [ -f "$lf" ] || lf=/mnt/base-us/veradroid-autoupdate.log ;;   # root-legacy: 老的自动更新进程（更新前起的）还写在根目录
         ssh) lf=$WA_SSHB/ssh.log ;;
-        fsck) lf=/mnt/base-us/veradroid-fsck.log ;;
+        fsck) lf=/mnt/base-us/veradroid/logs/fsck.log; [ -f "$lf" ] || lf=/mnt/base-us/veradroid-fsck.log ;;   # root-legacy
         *) echo "error=unknown log"; return ;;
     esac
     [ -f "$lf" ] && [ ! -L "$lf" ] || { echo "(还没有这个日志)"; return; }

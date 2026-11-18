@@ -97,7 +97,7 @@ public class ReaderActivity extends Activity {
         List<Link> links = java.util.Collections.emptyList();
     }
     /** 正文里的一个书内链接：text[start, end) 是链接文字，target = “章节文件#id” 或 “章节文件”。 */
-    private static final class Link { int start, end; String target; boolean noteref; }   // entry = EPUB 里这一章的文件名（续读时先只读这一章）
+    private static final class Link { int start, end; String target; boolean noteref, back; }   // entry = EPUB 里这一章的文件名（续读时先只读这一章）
     private static class Page { int chapter; int start; String text; }   // start = 这一页在章节文字里的起始字符位置
 
     @Override protected void onCreate(Bundle b) {
@@ -743,7 +743,11 @@ public class ReaderActivity extends Activity {
         int off = info == null ? 0 : info[0];
         String label = shownChap == null ? "" : shownChap.text.substring(Math.max(0, k.start), Math.min(shownChap.text.length(), k.end)).trim();
         // 注释：链接标了 noteref、目标是 aside / 注释类元素，或者链接只是一个短短的注释号而目标是一整段（p / li / div……）
-        boolean note = k.noteref || info != null && (info[2] == 1 || info[3] == 1 && label.length() <= 6);
+        // 或者目标是段落里的一个锚点（<p><a id="n1">1</a> 注释文字</p>）而链接的字像个注释号（[1]、注1、①、*）。
+        // 回链（注释里“返回正文”的 ↩ / [1]，epub:type="backlink"、class="footnote-back"……）一律跳回去，不弹注释。
+        // 段落里的锚点只在它是一行的开头时才算注释（注释条目 “[1] 注释文字”）；在一段正文中间的锚点是正文里的注释号，指向它的是回链，跳回去。
+        boolean note = !k.back && (k.noteref || info != null && (info[2] == 1 || info[3] == 1 && label.length() <= 6
+            || noteMark(label) && lineStart(ch.text, info[0])));
         if (note) {
             String t = noteText(ch, info);
             if (t.length() > 0) { showNote(t, ci, off); return; }
@@ -751,13 +755,30 @@ public class ReaderActivity extends Activity {
         jumpTo(ci, off);
     }
 
-    /** 注释的文字：块级元素到它结束为止；不知道结束在哪就到这一段结束。最多 1500 字。 */
+    /** 像注释号的链接文字：[1]、(2)、〔3〕、注1、①、*、†、a…… */
+    private static final Pattern NOTE_MARK = Pattern.compile("^[\\[(（〔【<［]?\\s*(注|註|note|Note|NOTE)?\\s*([0-9０-９]{1,3}|[a-zA-Z]|[*＊†‡§]{1,3}|[①-⑳]|[ⅰ-ⅹⅠ-Ⅹ]|[一二三四五六七八九十]{1,3})\\s*[\\])）〕】>］]?$");
+    /** 这个位置前面（同一行里）只有空白或 li 的“· ”：是一行的开头 */
+    private static boolean lineStart(String t, int pos) {
+        for (int i = Math.min(pos, t.length()) - 1; i >= 0; i--) {
+            char ch = t.charAt(i);
+            if (ch == '\n') return true;
+            if (ch != ' ' && ch != '\u3000' && ch != '\t' && ch != '·') return false;
+        }
+        return true;
+    }
+    static boolean noteMark(String label) { return label != null && label.length() > 0 && label.length() <= 8 && NOTE_MARK.matcher(label).matches(); }
+
+    /**
+     * 注释的文字：块级元素到它结束为止；不知道结束在哪（目标是段落里的锚点）就到这一行结束——以前到空一行为止，
+     * 注释是一串 div / 只隔一个换行时一下子把后面几十条注释都带上了。开头 li 的“· ”去掉。最多 1500 字。
+     */
     private static String noteText(Chapter c, int[] info) {
         if (c == null || info == null) return "";
         int st = Math.max(0, Math.min(c.text.length(), info[0]));
         int en = info[1] > st ? info[1] : -1;
-        if (en < 0) { en = c.text.indexOf("\n\n", st + 1); if (en < 0) en = c.text.length(); }
+        if (en < 0) { en = c.text.indexOf('\n', st + 1); if (en < 0) en = c.text.length(); }
         String t = c.text.substring(st, Math.min(en, st + 1500)).trim();
+        if (t.startsWith("· ")) t = t.substring(2).trim();
         if (en > st + 1500) t += "…";
         return t;
     }
@@ -1087,8 +1108,10 @@ public class ReaderActivity extends Activity {
             long total = 0;
             for (String href : order) {
                 if (out.size() >= 120) break;
-                String name = resolve(base, href);
+                // 章的文件名一律存解码后的（OPF 里常写成 %E7%AC%AC1.xhtml）：书内链接的目标也是解码后的，两边对得上才能跳过去
+                String name = resolve(base, pctDecode(href));
                 String html = readEntry(z, name);
+                if (html == null) { String raw = resolve(base, href); html = readEntry(z, raw); if (html != null) name = raw; }
                 if (html == null) { html = readEntry(z, href); name = href; }
                 if (html == null) continue;
                 Chapter c = parseChapter(html, name);
@@ -1137,6 +1160,22 @@ public class ReaderActivity extends Activity {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /** 百分号解码（UTF-8），+ 不动；解不了就原样返回。 */
+    static String pctDecode(String s) {
+        if (s == null || s.indexOf('%') < 0) return s;
+        try {
+            ByteArrayOutputStream b = new ByteArrayOutputStream();
+            for (int i = 0; i < s.length(); ) {
+                char ch = s.charAt(i);
+                if (ch == '%' && i + 3 <= s.length()) {
+                    int v = Integer.parseInt(s.substring(i + 1, i + 3), 16);
+                    b.write(v); i += 3;
+                } else { b.write(String.valueOf(ch).getBytes("UTF-8")); i++; }
+            }
+            return new String(b.toByteArray(), "UTF-8");
+        } catch (Throwable t) { return s; }
     }
 
     private static String resolve(String base, String href) {
@@ -1227,7 +1266,11 @@ public class ReaderActivity extends Activity {
                 if (id != null && id.length() > 0) {
                     int n = idNames.size();
                     String type = (String.valueOf(attr(at, "epub:type")) + " " + String.valueOf(attr(at, "class")) + " " + String.valueOf(attr(at, "role"))).toLowerCase(Locale.US);
-                    boolean note = "aside".equals(name) || type.contains("note");
+                    // 注释元素：aside，或 epub:type / class / role 带 note（footnote、endnote、rearnote……）。
+                    // 但注释号本身（noteref、带 href 的 <a>）和回链（backlink、footnote-back）不是：从注释“返回正文”时要跳回去，
+                    // 以前 pandoc 一类的书（<a id="fnref1" class="footnote-ref">）回链也弹出一个注释框
+                    boolean note = "aside".equals(name) || type.contains("note") && !type.contains("noteref") && !type.contains("back")
+                        && !type.contains("-ref") && !("a".equals(name) && attr(at, "href") != null);
                     boolean block = BLOCKS.contains(name);
                     idNames.add(id); idInfo.add(new int[] { note ? 1 : 0, block ? 1 : 0 });
                     out.append(MK).append('I').append(n).append(MK_END);
@@ -1251,11 +1294,12 @@ public class ReaderActivity extends Activity {
                     Link k = new Link();
                     int hash = href.indexOf('#');
                     String file = hash >= 0 ? href.substring(0, hash) : href, frag = hash >= 0 ? href.substring(hash + 1) : "";
-                    try { file = java.net.URLDecoder.decode(file, "UTF-8"); frag = java.net.URLDecoder.decode(frag, "UTF-8"); } catch (Throwable ignored) { }
+                    file = pctDecode(file); frag = pctDecode(frag);   // 不用 URLDecoder：它把 + 当空格（文件名里的 + 就对不上了）
                     String target = file.length() == 0 ? entry : resolve(dir, file);
                     k.target = frag.length() > 0 ? target + "#" + frag : target;
                     String type = (String.valueOf(attr(at, "epub:type")) + " " + String.valueOf(attr(at, "class")) + " " + String.valueOf(attr(at, "role"))).toLowerCase(Locale.US);
-                    k.noteref = type.contains("noteref") || type.contains("footnote") || type.contains("endnote");
+                    k.back = type.contains("back") || type.contains("return");   // backlink、footnote-back、doc-backlink、returnlink……
+                    k.noteref = !k.back && (type.contains("noteref") || type.contains("footnote") || type.contains("endnote") || type.contains("-ref"));
                     open = links.size();
                     links.add(k);
                     out.append(MK).append('L').append(open).append(MK_END);
@@ -1323,7 +1367,16 @@ public class ReaderActivity extends Activity {
             if (k.start < 0) continue;
             while (k.start < k.end && Character.isWhitespace(c.text.charAt(k.start))) k.start++;
             while (k.end > k.start && Character.isWhitespace(c.text.charAt(k.end - 1))) k.end--;
-            if (k.end > k.start) kept.add(k);   // 图片链接之类没有字的不要
+            if (k.end <= k.start && !k.back && k.target.indexOf('#') > 0) {
+                // 没有字的链接：注释号是一张小图（多看格式 <a class="duokan-footnote"><img/></a> 很常见）。以前整个丢掉，这种注释根本点不开。
+                // 正文不能多出字（续读位置、书签都按字符位置记）：链接挂在它前面那个字上（行首就挂后面那个字），那个字画虚下划线、点了弹注释
+                int p = Math.min(k.start, n);
+                while (p > 0 && Character.isWhitespace(c.text.charAt(p - 1))) p--;
+                if (p > 0) { k.start = p - 1; k.end = p; }
+                else { p = Math.min(k.start, n); while (p < n && Character.isWhitespace(c.text.charAt(p))) p++; if (p < n) { k.start = p; k.end = p + 1; } }
+                k.noteref = true;
+            }
+            if (k.end > k.start) kept.add(k);
         }
         c.links = kept;
         return c;

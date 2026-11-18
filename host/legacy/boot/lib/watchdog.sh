@@ -24,8 +24,10 @@ diag_save() {
     # 停止 / 安装的记录不在 veradroid.log 里：用户诊断 632015 里更新后有一次“启动后 10 秒被停掉、再点启动 20 分钟没反应”，
     # 当时 stop.sh 和安装器写了什么没有带上来
     tail -c 65536 /tmp/veradroid-stop.log > $d/stop.log 2>/dev/null
-    for f in /mnt/us/veradroid-install.log /mnt/base-us/veradroid-install-detail.log /mnt/base-us/veradroid-uninstall.log; do
-        [ -f "$f" ] && tail -c 65536 "$f" | tr '\r' '\n' | grep -av '下载中' > "$d/$(basename "$f")" 2>/dev/null
+    # 诊断包里的文件名照旧（veradroid-install.log 等）：新位置 veradroid/logs/ 没有就取根目录老版本写的那份   (root-legacy: 只是诊断包里的名字)
+    for f in install install-detail uninstall autoupdate fsck localupdate; do
+        dsl=/mnt/base-us/veradroid/logs/$f.log; [ -f "$dsl" ] || dsl=/mnt/base-us/veradroid-$f.log   # root-legacy
+        [ -f "$dsl" ] && tail -c 65536 "$dsl" | tr '\r' '\n' | grep -av '下载中' > "$d/veradroid-$f.log" 2>/dev/null
     done
     ls -la $VD/apps $VD/update 2>/dev/null > $d/kindle-apps-folder.txt
     # Full host-side picture, not a 300-line tail.

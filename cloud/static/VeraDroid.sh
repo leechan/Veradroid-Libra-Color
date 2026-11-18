@@ -11,7 +11,8 @@ trap '' PIPE   # 书库启动器把输出管道给 fbink；fbink 缺失/崩溃�
 PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH   # 系统自带的 curl/tar 优先：越狱工具或插件装的 curl 可能没有根证书（HTTPS 全部失败）
 BASE=https://veradroid.wenjin.jp
 # 安装和更新是同一个脚本：已经装过时再点一次，就是更新到最新版（书、应用和账号保留）。
-LOG=/mnt/us/veradroid-install.log
+LOG=/mnt/us/veradroid/logs/install.log
+mkdir -p /mnt/us/veradroid/logs 2>/dev/null
 if : >>"$LOG" 2>/dev/null; then exec >>"$LOG" 2>&1; fi   # 写不了日志也继续
 echo "==== $(date) online install: uid=$(id -u 2>/dev/null) fw=$(head -1 /etc/prettyversion.txt 2>/dev/null) exp=${VD_EXPERIMENTAL:-0}"
 rm -f /tmp/vd-progress.on
@@ -57,7 +58,7 @@ fail() {
     echo "$1"
     if [ ! -f /tmp/vd-progress.on ]; then
         i=0; while [ $i -lt 3 ]; do
-            screen "VeraDroid：没有安装" "" "$1" "" "日志：veradroid-install.log" -- "VeraDroid: NOT installed" "" "${2:-Error, see veradroid-install.log}"
+            screen "VeraDroid：没有安装" "" "$1" "" "日志：veradroid/logs/install.log" -- "VeraDroid: NOT installed" "" "${2:-Error, see veradroid/logs/install.log}"
             sleep 10; i=$((i + 1))
         done
     fi
@@ -102,7 +103,7 @@ echo "bootstrap rc=$rc"
 # 安装器在进度画面出现之前就停下（机型 / 分辨率 / 固件检查）时，原因只在日志里：把它的最后一句话也写到屏幕上
 why=; whyen=; [ -f "$LOG" ] && why=$(tail -n 20 "$LOG" 2>/dev/null | grep -v -e '^bootstrap rc=' -e '^EN: ' -e '^[[:space:]]*$' | tail -1 | cut -c1-120)
 [ -f "$LOG" ] && whyen=$(tail -n 20 "$LOG" 2>/dev/null | sed -n 's/^EN: //p' | tail -1 | cut -c1-120)   # 安装器给 eips 留的英文原因
-[ "$rc" = 0 ] || fail "VeraDroid：安装失败（代码 $rc）${why:+：$why}" "${whyen:-Install failed (code $rc). See veradroid-install.log}"
+[ "$rc" = 0 ] || fail "VeraDroid：安装失败（代码 $rc）${why:+：$why}" "${whyen:-Install failed (code $rc). See veradroid/logs/install.log}"
 say "VeraDroid：完成，正在启动" "VeraDroid: done, starting"
 exit 0
 }

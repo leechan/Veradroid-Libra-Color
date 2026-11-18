@@ -4,6 +4,8 @@ PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH   # 系统自带的 curl/t
 VD=${VD:-/mnt/base-us/veradroid}          # 程序目录（一律走 ext4 的 /mnt/base-us，不走 /mnt/us 的 FUSE）
 SYS=/mnt/base-us/system/veradroid          # 数据：rootfs、data、日志、设置（书库不扫 system/）
 SYSTEM_IMG=/mnt/base-us/veradroid-sys.img   # vfat /mnt/base-us 上的 ext4 系统盘（PW5 等）
+# 日志 / 标记 / 备份的位置（veradroid/logs、state、backup）和根目录旧文件的搬迁：tidy.sh
+[ -f "$VD/boot/lib/tidy.sh" ] && . "$VD/boot/lib/tidy.sh"
 # 有的机型（KT6，eink-emulator 实测）loop 节点只有 /dev/loop/N，没有 /dev/loopN，`mount -o loop` 找不到空闲设备。
 # 先试 mount -o loop，不行就自己挑一个空闲节点用 busybox losetup 绑定。
 # 3.0 内核：ext3 的用户扩展属性（user.*）只有带 user_xattr 挂载才有；PW2 5.12 固件的 mkfs.ext3 不把它写进超级块的默认挂载选项
@@ -58,14 +60,15 @@ storage_mount() {
     # 系统盘是 vfat 上的一个镜像文件：没电关机、死机、强制重启都可能让它的 ext4/ext3 元数据不一致
     # （KT5 模拟器实测：“block bitmap corrupt … Data will be lost”，日志都写坏了）。挂载前先自动修：
     # -p 只修安全的问题；它说需要人工（退出码 ≥4）时用 -y 全部按默认修，总比带着坏的元数据继续写好。
-    # 结果记在 /mnt/base-us/veradroid-fsck.log（系统盘外面，盘坏了也看得到）。
+    # 结果记在 /mnt/base-us/veradroid/logs/fsck.log（系统盘外面，盘坏了也看得到）。
     if command -v e2fsck >/dev/null 2>&1; then
-        e2fsck -p "$SYSTEM_IMG" >/mnt/base-us/veradroid-fsck.log 2>&1; rc=$?
+        mkdir -p /mnt/base-us/veradroid/logs 2>/dev/null
+        e2fsck -p "$SYSTEM_IMG" >/mnt/base-us/veradroid/logs/fsck.log 2>&1; rc=$?
         if [ $rc -ge 4 ]; then
-            echo "-- e2fsck -p rc=$rc, retry with -y" >>/mnt/base-us/veradroid-fsck.log
-            e2fsck -y "$SYSTEM_IMG" >>/mnt/base-us/veradroid-fsck.log 2>&1; rc=$?
+            echo "-- e2fsck -p rc=$rc, retry with -y" >>/mnt/base-us/veradroid/logs/fsck.log
+            e2fsck -y "$SYSTEM_IMG" >>/mnt/base-us/veradroid/logs/fsck.log 2>&1; rc=$?
         fi
-        echo "-- $(date) e2fsck rc=$rc" >>/mnt/base-us/veradroid-fsck.log
+        echo "-- $(date) e2fsck rc=$rc" >>/mnt/base-us/veradroid/logs/fsck.log
     fi
     loop_mount "$SYSTEM_IMG" "$SYS" || return 1
 }
@@ -284,7 +287,7 @@ docs_verify() { # list [why]
     t "$dv_msg"; echo "veradroid: $dv_msg" > /dev/kmsg 2>/dev/null
     { echo "[$(date '+%F %T')] $dv_msg"; head -50 $dv_m; } >> $VD/DOCUMENTS-LOSS.log 2>/dev/null
     dv_r=0
-    for dv_b in $(ls -t /mnt/base-us/veradroid-user-backup-*.tgz 2>/dev/null); do
+    for dv_b in $(ls -t /mnt/base-us/veradroid/backup/user-backup-*.tgz 2>/dev/null) $(ls -t /mnt/base-us/veradroid-user-backup-*.tgz 2>/dev/null); do   # root-legacy: 根目录里老版本的 / 用户改过名的备份也用来补
         tar -xzkf "$dv_b" -C "$DOCS_DIR/.." -T $dv_m 2>/dev/null
         dv_left=0; while IFS= read -r f; do [ -e "$DOCS_DIR/../$f" ] || dv_left=$((dv_left + 1)); done < $dv_m
         t "!!! documents: restored $((dv_n - dv_left)) of $dv_n from ${dv_b##*/}"; echo "[$(date '+%F %T')] restored $((dv_n - dv_left)) of $dv_n from $dv_b" >> $VD/DOCUMENTS-LOSS.log 2>/dev/null

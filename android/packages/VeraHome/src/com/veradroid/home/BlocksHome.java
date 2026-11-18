@@ -143,9 +143,11 @@ final class BlocksHome {
     }
 
     /** 当前页的数据可能变了（书库扫完、封面做好、应用装卸）：签名变了就重搭当前页（一次刷新）；别的页等显示时再说。 */
+    private final Runnable dataChangedLater = new Runnable() { @Override public void run() { dataChanged(); } };
     void dataChanged() {
         // 不用 isShown()：从应用回来的 onResume 里窗口还没显示，那时正要在第一帧之前把页面换好
         if (cur < 0 || root.getParent() == null || root.getVisibility() != View.VISIBLE) return;
+        if (a.touching()) { a.afterTouch(dataChangedLater); return; }   // 手指还按着：抬手、点按处理完再换页（见 HomeActivity.touching）
         String s = sig(cur);
         if (!s.equals(sigs.get(cur))) show(cur);
     }

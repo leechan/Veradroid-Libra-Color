@@ -111,6 +111,9 @@ final class AppProf {
         if (!host()) return;
         HostLink.epd("LAUNCH " + LAUNCH_MS);
         fg(pkg);
+        // 记下宿主现在按哪个应用设置的：任务栈通知漏了（或应用秒退）时，回桌面照样会发 "fg home" 把密度换回来
+        // （以前这里不记，profPkg 还是 "home"，回来时以为没变，多看的密度留了 30 秒）
+        HostService.profPkg = pkg;
         if (wantsDensity(pkg)) awaitHost(pkg);
     }
 

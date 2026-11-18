@@ -5,9 +5,10 @@
 #   install.sh online | experimental | offline
 PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH
 trap '' PIPE
-LOG=/mnt/us/veradroid-install.log
+LOG=/mnt/us/veradroid/logs/install.log
+mkdir -p /mnt/us/veradroid/logs 2>/dev/null
 say() { echo "$1"; eips 1 2 "$1                              " >/dev/null 2>&1 || true; }
-fail() { say "$1"; eips 1 4 "日志：veradroid-install.log" >/dev/null 2>&1 || true; sleep 10; exit 1; }
+fail() { say "$1"; eips 1 4 "日志：veradroid/logs/install.log" >/dev/null 2>&1 || true; sleep 10; exit 1; }
 [ "$(id -u)" = 0 ] || fail "需要越狱后的 root 权限"
 mode=${1:-online}
 echo "[$(date)] KUAL install.sh $mode" >> $LOG

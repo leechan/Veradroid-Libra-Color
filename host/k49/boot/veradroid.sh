@@ -68,12 +68,16 @@ fi
 # 现在：屏幕上说明在等什么，等安装器结束（最多 30 分钟）再用装好的版本启动。还在下载（check / download），或者自动更新在等用户
 # 离开 Android（wait，它只在 Android 冻结 / 退出时才动手）时照常启动。
 installer_busy() {
-    IL=/mnt/base-us/veradroid-install.lock
-    ip=$(cat $IL/pid 2>/dev/null); [ -n "$ip" ] && kill -0 "$ip" 2>/dev/null || return 1
-    [ "$(cat $IL/boot 2>/dev/null)" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ] || return 1
-    IPHASE=$(cat $IL/phase 2>/dev/null)
-    case "$IPHASE" in check|download|wait|done) return 1 ;; replace) return 0 ;; esac
-    [ -f /mnt/base-us/veradroid-install.incomplete ]      # 不写阶段的老安装器：只认已经开始替换文件的
+    # 安装锁在 veradroid/state/；老版本的安装器（用户手里的旧离线包）还锁在根目录
+    for IL in /mnt/base-us/veradroid/state/install.lock /mnt/base-us/veradroid-install.lock; do   # root-legacy
+        ip=$(cat $IL/pid 2>/dev/null); [ -n "$ip" ] && kill -0 "$ip" 2>/dev/null || continue
+        [ "$(cat $IL/boot 2>/dev/null)" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ] || continue
+        IPHASE=$(cat $IL/phase 2>/dev/null)
+        case "$IPHASE" in check|download|wait|done) continue ;; replace) return 0 ;; esac
+        # 不写阶段的老安装器：只认已经开始替换文件的
+        { [ -f /mnt/base-us/veradroid/state/install.incomplete ] || [ -f /mnt/base-us/veradroid-install.incomplete ]; } && return 0   # root-legacy
+    done
+    return 1
 }
 if [ -z "$VD_INSTWAITED" ] && installer_busy; then
     t "installer pid $ip is ${IPHASE:-replacing files}: waiting for it before starting"
@@ -164,11 +168,14 @@ fi
 # 第二个实例会判定“没在跑”，用 stop.sh --stale 杀掉正在启动的第一个，两个 Android 抢同一个 binder，
 # servicemanager 注册失败、反复重启（PW3 模拟器实测）。mkdir 是原子的；持有者已经不在了就当残留接管。
 # 安装在替换文件时被打断（见 bootstrap.sh 的 install_recover）：能回退就回到安装前那一版，然后用那一版重新启动
-if [ -f /mnt/base-us/veradroid-install.incomplete ] && [ -z "$VD_RECOVERED" ]; then
-    st=$(cat /mnt/base-us/veradroid-install.incomplete 2>/dev/null)
+# 根目录里老版本留下的日志 / 标记 / 备份搬进 veradroid/（tidy.sh；很快，重复跑没有副作用）。要在下面看安装标记之前
+type vd_root_tidy >/dev/null 2>&1 && vd_root_tidy
+if [ -f /mnt/base-us/veradroid/state/install.incomplete ] && [ -z "$VD_RECOVERED" ]; then
+    st=$(cat /mnt/base-us/veradroid/state/install.incomplete 2>/dev/null)
     if [ -n "$st" ] && [ -d "$SYS/host.bak.$st" ] && [ -d "$SYS/rootfs.bak.$st" ] && ! grep -q " $SYS/rootfs" /proc/mounts; then
         t "interrupted install $st: rolling back to the previous version"
-        mv "$VD" "$SYS/host.failed.$st" && mv "$SYS/host.bak.$st" "$VD" && { [ ! -e "$SYS/rootfs" ] || mv "$SYS/rootfs" "$SYS/rootfs.failed.$st"; } && mv "$SYS/rootfs.bak.$st" "$SYS/rootfs" && rm -f /mnt/base-us/veradroid-install.incomplete
+        # 程序目录里的 logs / state / backup 不跟着挪（vd_prog_move）；host.bak 若是老安装器整个挪过去的，里面的日志和备份搬回来
+        vd_prog_move "$VD" "$SYS/host.failed.$st" && vd_prog_move "$SYS/host.bak.$st" "$VD" && { vd_data_rescue "$SYS/host.bak.$st"; rm -rf "$SYS/host.bak.$st"; } && { [ ! -e "$SYS/rootfs" ] || mv "$SYS/rootfs" "$SYS/rootfs.failed.$st"; } && mv "$SYS/rootfs.bak.$st" "$SYS/rootfs" && rm -f /mnt/base-us/veradroid/state/install.incomplete
         VD_RECOVERED=1 exec sh "$VD/boot/veradroid.sh" "$@"
     fi
     t "interrupted install ${st:-?}: cannot roll back, run the installer again"

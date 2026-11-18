@@ -7,16 +7,16 @@
 #   扩大：ext4 + 镜像正挂着 → 在线做（加长文件、losetup -c 让 loop 设备重新读大小、resize2fs 让内核在线扩，有日志保护，
 #         Android 不用停）。做不了在线（ext3、没有 losetup -c、在线失败）→ 离线。
 #   缩小：只能离线：停 Android → e2fsck -f → resize2fs 到目标 → 超级块确认文件系统已经不超过目标 → 才截短文件 → 再 e2fsck。
-#   任何一步失败都不截短文件：文件系统还是原来（或已缩好）的大小，重新挂上、照常开机，结果写进 veradroid-resize.last。
-#   断电 / 被杀：镜像外面有“进行中”标记（veradroid-resize.state）。下次 storage_mount 先完整 e2fsck，再看超级块：
+#   任何一步失败都不截短文件：文件系统还是原来（或已缩好）的大小，重新挂上、照常开机，结果写进 veradroid/state/resize.last。
+#   断电 / 被杀：镜像外面有“进行中”标记（veradroid/state/resize.state）。下次 storage_mount 先完整 e2fsck，再看超级块：
 #         缩小已经做完 → 把文件截短（完成）；没做完 → 文件系统仍是原大小，文件没动过（回退）。扩大 → 把文件系统补到文件大小。
 #   至少给 Kindle 留 ST_KEEP MB；用户分区是 FAT 时单个文件最大 4 GB - 1。
 #   自动扩容（STORAGE_AUTO=1，默认开）：镜像里剩余不到 ST_LOW MB、Kindle 还有地方，就扩 ST_STEP MB（看门狗每 20 秒看一次）。
-ST_STATE=/mnt/base-us/veradroid-resize.state       # 进行中标记：op= from= to= phase=
-ST_PENDING=/mnt/base-us/veradroid-resize.pending   # 下次启动时扩到多少 MB（在线扩不了时自动扩容留下的）
-ST_LAST=/mnt/base-us/veradroid-resize.last         # 上一次的结果（桌面 / 网页显示）
-ST_NOTIFY=/mnt/base-us/veradroid-resize.notify     # 还没告诉用户的一句话（开机后看门狗转给桌面）
-ST_LOG=/mnt/base-us/veradroid-resize.log
+ST_STATE=/mnt/base-us/veradroid/state/resize.state       # 进行中标记：op= from= to= phase=
+ST_PENDING=/mnt/base-us/veradroid/state/resize.pending   # 下次启动时扩到多少 MB（在线扩不了时自动扩容留下的）
+ST_LAST=/mnt/base-us/veradroid/state/resize.last         # 上一次的结果（桌面 / 网页显示）
+ST_NOTIFY=/mnt/base-us/veradroid/state/resize.notify     # 还没告诉用户的一句话（开机后看门狗转给桌面）
+ST_LOG=/mnt/base-us/veradroid/logs/resize.log
 ST_LOCK=/dev/shm/veradroid/resize.lock             # 正在调整（tmpfs：重启就没了，标记还在）
 ST_KEEP=256          # 至少给 Kindle 留这么多 MB
 ST_LOW=200           # 镜像里可用空间低于这么多 MB 就自动扩
@@ -198,6 +198,10 @@ st_fill() {   # 镜像没挂着、刚 e2fsck -f 过
 st_recover() {
     [ -f "$SYSTEM_IMG" ] || return 0
     st_locked_by_other && return 1
+    mkdir -p /mnt/base-us/veradroid/state /mnt/base-us/veradroid/logs 2>/dev/null
+    for st_f in resize.state resize.pending; do   # root-legacy: 老版本记在根目录的“进行中 / 待扩容”标记
+        [ -f /mnt/base-us/veradroid-$st_f ] && [ ! -e /mnt/base-us/veradroid/state/$st_f ] && mv -f /mnt/base-us/veradroid-$st_f /mnt/base-us/veradroid/state/$st_f   # root-legacy
+    done
     [ -f $ST_STATE ] || [ -f $ST_PENDING ] || return 0
     [ -n "$ST_OWNER" ] && return 0                     # 调整流程自己（resize.sh）：它知道自己在做什么
     if [ -f $ST_STATE ]; then

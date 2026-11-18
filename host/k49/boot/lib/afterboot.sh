@@ -28,7 +28,7 @@ home_aot() {
         # PW6 / k49 镜像：系统应用开机时根本不做 dexopt（dalvik-cache 里没有它们的 odex，内存里解压 dex 解释执行，0.98 真机实测），
         # 这时也编一次（f=none）；编完 odex 就在上面第一个路径
         f=none
-        [ -f "$o" ] && f=$(dd if="$o" bs=4096 count=4 2>/dev/null | tr '\0' '\n' | sed -n '/^compiler-filter$/{n;p;q;}')
+        [ -f "$o" ] && f=$(dd if="$o" bs=4096 count=4 2>/dev/null | tr '\0' '\n' 2>/dev/null | sed -n '/^compiler-filter$/{n;p;q;}')
         case "$f" in speed|everything) continue ;; esac
         # 一次只跑一个 dex2oat：应用的预编译（compile.sh）正在编、或者别的 dex2oat 在跑时等它们做完（PW4 模拟器：和微信读书的编译
         # 撞在一起、换页时，编桌面用了 1205 秒，单独编 9 秒；0.98 门禁 PW6 第一次开机两边也叠在一起）。只是排着队等前台应用的
@@ -123,7 +123,7 @@ apk_fail_reason() { # $1 = pm 输出  $2 = apk（可选，用来进一步判断�
     *INSTALL_PARSE_FAILED_*|*INSTALL_FAILED_INVALID_URI*)
         # 没下载完的 ZIP（结尾的中央目录没了，PackageManager 报 "zipro: Invalid file"）和拆分包（ZIP 里只有几个 .apk）分开说
         if [ -n "$2" ] && [ -f "$2" ]; then
-            if ! tail -c 65558 "$2" 2>/dev/null | od -An -tx1 -v | tr -d ' \n' | grep -q 504b0506; then
+            if ! tail -c 65558 "$2" 2>/dev/null | od -An -tx1 -v | tr -d ' \n' 2>/dev/null | grep -q 504b0506; then
                 echo "安装包不完整（文件结尾缺了一截，多半是下载或拷贝中断了）。请重新下载后再放进来。"; return 0
             fi
             if command -v unzip >/dev/null 2>&1; then
@@ -196,12 +196,13 @@ klib_rw() {
     t "!!! klib: Kindle library is still read-only in Android"; return 1
 }
 # 开机完成后的数据自检（2026-11-13 事故后加）：
-#  1. Kindle 书库：开机前的清单（container_start 的 docs_snapshot）和安装器留下的安装前清单（veradroid-docs-manifest）里的文件
+#  1. Kindle 书库：开机前的清单（container_start 的 docs_snapshot）和安装器留下的安装前清单（veradroid/state/docs-manifest）里的文件
 #     必须都还在；少了就大声记下来（veradroid.log、内核日志、veradroid/DOCUMENTS-LOSS.log）并从安装前备份补回。
 #  2. PackageManager 删过用户 0 的数据（uiderrors.txt 里新出现 "Destroying user"）：同样大声记下来。
 boot_data_check() {
     docs_verify $W/docs.before "after boot, list taken before the container started"
-    bm=/mnt/base-us/veradroid-docs-manifest
+    bm=/mnt/base-us/veradroid/state/docs-manifest
+    [ -f $bm ] || [ ! -f /mnt/base-us/veradroid-docs-manifest ] || bm=/mnt/base-us/veradroid-docs-manifest   # root-legacy: 老版本安装器写在根目录
     if [ -f $bm ]; then
         docs_verify $bm "after the first boot of a new install, list taken by the installer" && t "documents: all $(wc -l < $bm | tr -d ' ') files of the pre-install list are present"
         mv -f $bm $bm.checked 2>/dev/null

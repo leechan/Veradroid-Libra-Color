@@ -36,7 +36,7 @@ grep -q 'setsid unshare -m sh \$VD/boot/veradroid.sh --in-chroot' host/legacy/bo
 awk '/^mounts_under_ns\(\)/ {p=1} p && /mode/ && /chroot/ {bad=1} p && /^}/ {exit} END {exit !bad}' "$L" && f "legacy: mounts_under_ns skips the container namespace in chroot mode"
 grep -q '" \$R\$KLIB_MP " /proc/mounts' host/legacy/boot/stop.sh || f "legacy: stop.sh does not check for a leftover library bind"
 B=cloud/static/bootstrap.sh
-grep -q 'DOCS_MANIFEST=/mnt/base-us/veradroid-docs-manifest' "$B" || f "installer: no pre-install documents manifest"
+grep -q 'DOCS_MANIFEST=/mnt/base-us/veradroid/state/docs-manifest' "$B" || f "installer: no pre-install documents manifest"
 grep -q 'readlink /proc/\$mu_p/ns/mnt' "$B" || f "installer: mounts_under does not check the container namespace"
 P=android/small-patches.py
 grep -q 'VeraDroid: no fstab, nothing to trim' "$P" || f "vold TrimTask NULL fstab patch"

@@ -75,7 +75,7 @@ class PageScrollView extends ScrollView {
 
     @Override public void fling(int velocityY) { /* no inertia */ }
 
-    /** 方块风格：从第一页开始按 page() 的规则一页页往下算，得到每一页的顶边（页数、当前页都按它算，和真翻页一致）。 */
+    /** 从第一页开始按 page() 的规则一页页往下算，得到每一页的顶边（页数、当前页都按它算，和真翻页一致）。 */
     private java.util.List<Integer> stops() {
         java.util.List<Integer> out = new java.util.ArrayList<Integer>();
         out.add(0);
@@ -93,24 +93,17 @@ class PageScrollView extends ScrollView {
         return out;
     }
 
-    int pages() {
-        if (blocks) return stops().size();
-        int content = getChildCount() > 0 ? getChildAt(0).getHeight() : 0;
-        int h = Math.max(1, getHeight());
-        return Math.max(1, (content + h - 1) / h);
-    }
+    /**
+     * 页数和当前页：两种风格都按 stops()（和真翻页一样的规则）算。经典风格以前用“内容高 / 屏高”估页数，内容高里还算上了
+     * 最后一页垫的空白：在最后一页再点 ▼ 还能往下翻出空白页，页数也跟着涨（用户视频：设置“显示与刷新”2 / 4 之后一直是白页）。
+     */
+    int pages() { return stops().size(); }
 
     int currentPage() {
-        if (blocks) {
-            java.util.List<Integer> st = stops();
-            int y = getScrollY(), n = 1;
-            for (int i = 0; i < st.size(); i++) if (st.get(i) <= y + 2) n = i + 1;
-            return n;
-        }
-        int content = getChildCount() > 0 ? getChildAt(0).getHeight() : 0;
-        if (pages() > 1 && getScrollY() >= content - getHeight()) return pages();   // 到底了就是最后一页
-        int h = Math.max(1, getHeight() - getHeight() / 10);
-        return Math.max(1, Math.min(pages() - 1, (getScrollY() + h / 2) / h + 1));
+        java.util.List<Integer> st = stops();
+        int y = getScrollY(), n = 1;
+        for (int i = 0; i < st.size(); i++) if (st.get(i) <= y + 2) n = i + 1;
+        return n;
     }
 
     /**
@@ -122,10 +115,10 @@ class PageScrollView extends ScrollView {
         int h = getHeight();
         int max = Math.max(0, content - h);
         int y = getScrollY();
-        if (blocks && dir > 0 && y + h >= content - tailPad) return false;   // 已经是最后一页（下面只剩垫的空白）
+        if (dir > 0 && y + h >= content - tailPad) return false;   // 已经是最后一页（下面只剩垫的空白）：两种风格都停住，不再翻出空白页
         int target = y + dir * (h - h / 10);
-        if (blocks && getChildCount() > 0) {
-            // 方块风格：分组框里的每一行也算一个条目（设置页一个分组常常比一屏还高），翻页停在行的边上
+        if (getChildCount() > 0) {
+            // 分组框里的每一行也算一个条目（设置页一个分组常常比一屏还高），翻页停在行的边上（经典风格的列表也一样）
             java.util.List<int[]> items = leaves();
             if (dir > 0) {
                 for (int[] it : items) if (it[1] > y + h) { if (it[0] > y) target = it[0]; break; }
@@ -133,21 +126,6 @@ class PageScrollView extends ScrollView {
                 // 往回翻：回到上一个真正的页顶（和往下翻停过的位置一样；第一页是 0，不是第一个条目的顶边）
                 target = 0;
                 for (int st : stops()) if (st < y - 2) target = st;
-            }
-        } else if (getChildCount() > 0 && getChildAt(0) instanceof android.view.ViewGroup) {
-            android.view.ViewGroup g = (android.view.ViewGroup) getChildAt(0);
-            if (dir > 0) {
-                for (int i = 0; i < g.getChildCount(); i++) {
-                    android.view.View c = g.getChildAt(i);
-                    if (c.getVisibility() == GONE) continue;
-                    if (c.getBottom() > y + h) { if (c.getTop() > y) target = c.getTop(); break; }
-                }
-            } else {
-                for (int i = 0; i < g.getChildCount(); i++) {
-                    android.view.View c = g.getChildAt(i);
-                    if (c.getVisibility() == GONE) continue;
-                    if (c.getTop() >= y - h) { if (c.getTop() < y) target = c.getTop(); break; }
-                }
             }
         }
         // 最后一页：内容不够一整屏时，原来会被夹到“底部对齐”，于是最后一页顶上露出上一页条目的下半截。

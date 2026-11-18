@@ -12,7 +12,8 @@ PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH   # 系统自带的 curl/t
 BASE=${VD_BASE:-https://veradroid.wenjin.jp}
 export VD_EXPERIMENTAL=1   # 实验机型：bootstrap 自动识别 PW5/KT5/KT6，选对应的安装包
 # 安装和更新是同一个脚本：已经装过时再点一次，就是更新到最新版（书、应用和账号保留）。
-LOG=/mnt/us/veradroid-install.log
+LOG=/mnt/us/veradroid/logs/install.log
+mkdir -p /mnt/us/veradroid/logs 2>/dev/null
 if : >>"$LOG" 2>/dev/null; then exec >>"$LOG" 2>&1; fi   # 写不了日志也继续
 echo "==== $(date) online install: uid=$(id -u 2>/dev/null) fw=$(head -1 /etc/prettyversion.txt 2>/dev/null) exp=${VD_EXPERIMENTAL:-0}"
 rm -f /tmp/vd-progress.on
@@ -58,7 +59,7 @@ fail() {
     echo "$1"
     if [ ! -f /tmp/vd-progress.on ]; then
         i=0; while [ $i -lt 3 ]; do
-            screen "VeraDroid：没有安装" "" "$1" "" "日志：veradroid-install.log" -- "VeraDroid: NOT installed" "" "${2:-Error, see veradroid-install.log}"
+            screen "VeraDroid：没有安装" "" "$1" "" "日志：veradroid/logs/install.log" -- "VeraDroid: NOT installed" "" "${2:-Error, see veradroid/logs/install.log}"
             sleep 10; i=$((i + 1))
         done
     fi
@@ -99,7 +100,8 @@ command -v curl >/dev/null 2>&1 || fail "VeraDroid：找不到 curl，无法联�
 EMU=
 case "$(uname -r)" in 3.*) EMU="3.0 内核（PW2 / PW3 / Voyage 一代）"; EMU_EN="kernel 3.0 (PW2/PW3/Voyage)" ;; 4.1.*) EMU="4.1 内核（PW4 / 入门款 2019 / Oasis 2 / Oasis 3）"; EMU_EN="kernel 4.1 (PW4/KT4/Oasis 2/Oasis 3)" ;; esac
 if [ -n "$EMU" ]; then
-    CF=/mnt/base-us/veradroid-confirm
+    CF=/mnt/base-us/veradroid/state/confirm
+    mkdir -p /mnt/base-us/veradroid/state 2>/dev/null
     bid=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); now=$(cut -d. -f1 /proc/uptime)
     set -- $(cat "$CF" 2>/dev/null); cw=${1:-}; cb=${2:-}; cu=${3:-0}
     rm -f "$CF"
@@ -139,7 +141,7 @@ echo "bootstrap rc=$rc"
 # 安装器在进度画面出现之前就停下（机型 / 分辨率 / 固件检查）时，原因只在日志里：把它的最后一句话也写到屏幕上
 why=; whyen=; [ -f "$LOG" ] && why=$(tail -n 20 "$LOG" 2>/dev/null | grep -v -e '^bootstrap rc=' -e '^EN: ' -e '^[[:space:]]*$' | tail -1 | cut -c1-120)
 [ -f "$LOG" ] && whyen=$(tail -n 20 "$LOG" 2>/dev/null | sed -n 's/^EN: //p' | tail -1 | cut -c1-120)   # 安装器给 eips 留的英文原因
-[ "$rc" = 0 ] || fail "VeraDroid：安装失败（代码 $rc）${why:+：$why}" "${whyen:-Install failed (code $rc). See veradroid-install.log}"
+[ "$rc" = 0 ] || fail "VeraDroid：安装失败（代码 $rc）${why:+：$why}" "${whyen:-Install failed (code $rc). See veradroid/logs/install.log}"
 say "VeraDroid：完成，正在启动" "VeraDroid: done, starting"
 exit 0
 }

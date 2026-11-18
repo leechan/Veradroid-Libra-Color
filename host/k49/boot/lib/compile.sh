@@ -36,7 +36,7 @@ odex_filter() { # pkg
         for o in "$d"/oat/arm/base.odex "$d"/oat/arm64/base.odex; do
             [ -f "$o" ] || continue
             # OAT 头在 ELF 的 oatdata 段开头（PW6 / KT6 的 7.1 镜像实测在 0x1000），key-value 区是 \0 分隔的字符串对
-            dd if="$o" bs=4096 count=4 2>/dev/null | tr '\0' '\n' | sed -n '/^compiler-filter$/{n;p;q;}'
+            dd if="$o" bs=4096 count=4 2>/dev/null | tr '\0' '\n' 2>/dev/null | sed -n '/^compiler-filter$/{n;p;q;}'
             return 0
         done
     done

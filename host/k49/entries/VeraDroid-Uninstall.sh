@@ -23,7 +23,8 @@ screen() { # 多行文字整屏显示：fbink + Kindle 自带中文字体，没�
 if [ ! -f $VD/boot/uninstall.sh ]; then screen "VeraDroid 已经卸载了。"; sleep 6; exit 0; fi
 # 一点就卸太危险（Oasis 3 用户：装完回到书库，这个入口排在最前面，点了第一个就被卸掉了）。第一次点只说明；
 # 10 秒以后、2 分钟以内（同一次开机）再点一次才真的卸载，和“上传测试结果”一样。
-CF=/mnt/base-us/veradroid-confirm
+CF=/mnt/base-us/veradroid/state/confirm
+mkdir -p /mnt/base-us/veradroid/state 2>/dev/null
 bid=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); now=$(cut -d. -f1 /proc/uptime)
 set -- $(cat "$CF" 2>/dev/null); cw=${1:-}; cb=${2:-}; cu=${3:-0}
 rm -f "$CF"

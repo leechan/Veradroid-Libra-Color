@@ -8,7 +8,10 @@ Feeds synthetic touch streams in three source protocols into a natively built ve
   - normal one-finger taps / swipes reach the virtual touch screen with the same contacts as with a B panel, and the
     touch-down is forwarded no later than the existing two-finger decision window (+ one 10 ms poll tick + slack);
   - with --base OLD_BINARY: for protocol B the new binary's output (touch + key events + actions) is identical to the
-    old one's, event for event.
+    old one's, event for event;
+  - panels with ABS_MT_PRESSURE (VT_PRES): every new contact reaches Android with a pressure > 0 (Android counts a
+    contact with pressure 0 as hovering), also when the panel / the --inject path leaves pressure out, alternating
+    between two values so a repeat is not dropped as unchanged; a panel's own pressure is forwarded untouched.
 usage: run.py NEW_BINARY SHIM.so [--base OLD_BINARY]
 """
 import os, struct, subprocess, sys, tempfile, time
@@ -29,7 +32,8 @@ ARGS = ['--w', '1272', '--h', '1696', '--edge', '120', '--window', str(WINDOW), 
 
 class Encoder:
     """turns a list of fingers [(fid, x, y), ...] per frame into what a driver of that protocol sends"""
-    def __init__(self, proto):
+    def __init__(self, proto, pres=None):
+        self.pres = pres                        # not None: the panel sends this ABS_MT_PRESSURE with every new contact
         self.p = proto; self.prev = {}; self.btn = 0; self.slot = -1; self.stx = self.sty = None; self.n = 0
 
     def frame(self, fingers):
@@ -49,6 +53,7 @@ class Encoder:
                     if old is None or old[0] != cur[s][0]: vals.append((PX, cur[s][0]))
                     if old is None or old[1] != cur[s][1]: vals.append((PY, cur[s][1]))
                     if old is None: vals.append((MAJOR, 30))
+                    if old is None and self.pres is not None: vals.append((PRES, self.pres))
                     if vals and self.slot != s: ev.append((EV_ABS, SLOT, s)); self.slot = s
                     ev += [(EV_ABS, c, v) for c, v in vals]
         elif self.p in ('A', 'AID'):
@@ -82,6 +87,7 @@ def scenario(name):
     """-> list of (t_ms, fingers) frames; the last one is all-up"""
     S = {}
     S['tap'] = [(0, [(0, 500, 800)]), (60, [(0, 500, 800)]), (80, [])]
+    S['tap2'] = S['tap'] + [(400, [(0, 500, 800)]), (460, [(0, 500, 800)]), (480, [])]   # same slot, same place, twice
     S['swipe'] = [(t, [(0, x, y)]) for t, x, y in path(((900, 800), (200, 820)), 300)] + [(320, [])]
     S['vswipe'] = [(t, [(0, x, y)]) for t, x, y in path(((600, 1200), (610, 400)), 300)] + [(320, [])]
     S['edge_back'] = [(t, [(0, x, y)]) for t, x, y in path(((636, 1680), (636, 1450)), 80, 4)] + [(100, [])]
@@ -161,20 +167,25 @@ def decode_mt(evs):
     return frames
 
 
-def run(binary, shim, proto, name):
+def run(binary, shim, proto, name, env_extra=None, pres_send=None, inject=None):
     d = tempfile.mkdtemp(prefix='vt-')
     fifo = os.path.join(d, 'touch'); os.mkfifo(fifo)
     log = os.path.join(d, 'log')
     gconf = os.path.join(d, 'gestures')
     two = 0 if name in PINCH else 1
     open(gconf, 'w').write('G_EDGE_BACK=1\nG_EDGE_PANEL=1\n' + ''.join('%s=%d\n' % (k, two) for k in ('G_TWO_TAP', 'G_TWO_LONG', 'G_TWO_BACK', 'G_TWO_SLIDE')))
-    env = dict(os.environ, LD_PRELOAD=shim, VT_SRC=fifo, VT_CAPS=proto, VT_OUT=d)
-    p = subprocess.Popen([binary, fifo, log, '', '--gconf', gconf] + ARGS, env=env, stderr=subprocess.PIPE)
+    env = dict(os.environ, LD_PRELOAD=shim, VT_SRC=fifo, VT_CAPS=proto, VT_OUT=d, **(env_extra or {}))
+    ifile = os.path.join(d, 'inject')
+    p = subprocess.Popen([binary, fifo, log, '', '--gconf', gconf] + ARGS + (['--inject', ifile] if inject else []),
+                         env=env, stderr=subprocess.PIPE)
     w = open(fifo, 'wb', buffering=0)
     time.sleep(0.3)
-    enc = Encoder('ST' if proto == 'ST' else proto)
+    enc = Encoder('ST' if proto == 'ST' else proto, pres_send)
     t0 = time.monotonic(); sent = []
-    for t, fingers in scenario(name):
+    for line in inject or []:
+        with open(ifile, 'w') as f: f.write(line + '\n')
+        time.sleep(0.4)
+    for t, fingers in ([] if inject else scenario(name)):
         dt = t0 + t / 1000 - time.monotonic()
         if dt > 0: time.sleep(dt)
         now = time.monotonic()
@@ -187,6 +198,48 @@ def run(binary, shim, proto, name):
     keys = read_events(os.path.join(d, 'uinput1'), True)
     acts = [l.split('] action ', 1)[1].strip() for l in open(log) if '] action ' in l and 'poke' not in l]
     return dict(touch=touch, keys=[c for _, _, t, c, v in keys if t == EV_KEY and v == 1], acts=acts, sent=sent, dir=d)
+
+
+def new_contact_pressures(evs):
+    """virtual stream -> [(slot, pressure sent in the frame of its new tracking id, or None)], plus all pressures sent"""
+    cur, new, pres, out, every = 0, set(), {}, [], []
+    for _, _, t, c, v in evs:
+        if t == EV_ABS and c == SLOT: cur = v
+        elif t == EV_ABS and c == TID and v >= 0: new.add(cur)
+        elif t == EV_ABS and c == PRES: pres[cur] = v; every.append(v)
+        elif t == EV_SYN and c == SYN_REPORT:
+            out += [(s, pres.get(s)) for s in sorted(new)]
+            new, pres = set(), {}
+    return out, every
+
+
+def pressure_cases(new):
+    shim = sys.argv[2]
+    print('== panels with ABS_MT_PRESSURE')
+    for proto in ['B', 'A', 'AID']:
+        for name in ['tap', 'tap2', 'swipe', 'pinch']:
+            r = run(new, shim, proto, name, {'VT_PRES': '255'})
+            got, every = new_contact_pressures(r['touch'])
+            ok = len(got) >= (2 if name in ('tap2', 'pinch') else 1) and all(p is not None and p > 0 for _, p in got)
+            check(ok, f'{proto} {name}, panel sends no pressure: every new contact got one {got}')
+            if name == 'tap2':
+                check(len(got) == 2 and got[0][1] != got[1][1], f'{proto} tap2: the second contact in the same slot got a different value {got}')
+            if '-k' not in sys.argv: subprocess.call(['rm', '-rf', r['dir']])
+    for name in ['tap', 'tap2', 'pinch']:
+        r = run(new, shim, 'B', name, {'VT_PRES': '255'}, pres_send=40)
+        got, every = new_contact_pressures(r['touch'])
+        check(got and all(p == 40 for _, p in got) and all(v == 40 for v in every),
+              f'B {name}, panel sends pressure 40: forwarded untouched {got} (all pressures sent {sorted(set(every))})')
+        if '-k' not in sys.argv: subprocess.call(['rm', '-rf', r['dir']])
+    r = run(new, shim, 'B', 'tap', {'VT_PRES': '255'}, inject=['tap 500 800', 'tap 500 800', 'swipe 900 800 200 820 200'])
+    got, every = new_contact_pressures(r['touch'])
+    check(len(got) == 3 and all(p is not None and p > 0 for _, p in got) and got[0][1] != got[1][1],
+          f'--inject tap, tap, swipe: every contact got a pressure, the repeat a different one {got}')
+    if '-k' not in sys.argv: subprocess.call(['rm', '-rf', r['dir']])
+    r = run(new, shim, 'B', 'tap2')
+    got, every = new_contact_pressures(r['touch'])
+    check(not every, f'B tap2 without a pressure axis: no pressure sent ({every})')
+    if '-k' not in sys.argv: subprocess.call(['rm', '-rf', r['dir']])
 
 
 fails = 0
@@ -243,6 +296,7 @@ def main():
                 check(same, f'{name}: identical to the old binary ({len(r["touch"])} touch events)')
             if '-k' not in sys.argv:
                 subprocess.call(['rm', '-rf', r['dir']])
+    pressure_cases(new)
     print('FAILED: %d' % fails if fails else 'all passed')
     sys.exit(1 if fails else 0)
 

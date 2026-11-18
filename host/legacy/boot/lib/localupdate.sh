@@ -11,7 +11,7 @@
 #      gzip 全文件 CRC 校验（tar -tz 读一遍）。旁边有 <包>.sha256 时也核对整个文件。manifest.json 的 product / version
 #      必须和文件名一致。
 #   3. 用包里自带的 bootstrap.sh（新包都带；老包用 update/ 里或 zip 里的 bootstrap.sh）走原来的离线安装流程：
-#      安装前备份、veradroid-install.incomplete 标记、被打断后回退，和书库里的离线安装一模一样（VD_BUNDLE）。
+#      安装前备份、veradroid/state/install.incomplete 标记、被打断后回退，和书库里的离线安装一模一样（VD_BUNDLE）。
 #   4. 成功（版本号变成新版本、没有 incomplete 标记）：删掉安装包。失败：包改名 *.failed，留着给用户看。
 #   结果写 veradroid/update/result.txt（KEY=value：result=ok|failed|rejected、file、from、to、time、reason）。
 # 用法：sh localupdate.sh check            只按文件名列出候选（给桌面看），不读包内容
@@ -21,9 +21,10 @@ VD=/mnt/base-us/veradroid
 SYS=/mnt/base-us/system/veradroid
 W=/dev/shm/veradroid
 UPD=$VD/update
-STAGE=/mnt/base-us/veradroid-update.stage      # 安装期间暂放的地方：bootstrap 会把整个 $VD 挪成备份，update/ 不能留在里面
-LOG=/mnt/base-us/veradroid-localupdate.log
-INCOMPLETE=/mnt/base-us/veradroid-install.incomplete
+STAGE=/mnt/base-us/veradroid/state/update.stage      # 安装期间暂放的地方：bootstrap 把程序目录挪成备份时 update/ 跟着走、state/ 不动
+LOG=/mnt/base-us/veradroid/logs/localupdate.log
+INCOMPLETE=/mnt/base-us/veradroid/state/install.incomplete
+mkdir -p /mnt/base-us/veradroid/logs /mnt/base-us/veradroid/state 2>/dev/null
 MODE=${1:-check}
 lg() { echo "[$(date '+%F %T')] $*" >> $LOG; }
 # 桌面的更新进度卡片（$W/kfb/ctl/update.status，同安装器 / progress.sh 的格式）：校验这一段在这里写，后面安装器自己接着写
@@ -97,7 +98,7 @@ if ! mkdir $W/localupdate.lock 2>/dev/null; then
 fi
 read -r mypid _ < /proc/self/stat; echo "$mypid" > $W/localupdate.lock/pid
 trap 'rm -rf $W/localupdate.lock' EXIT
-[ -f "$INCOMPLETE" ] && { lg "previous install incomplete, not updating now"; exit 1; }
+{ [ -f "$INCOMPLETE" ] || [ -f /mnt/base-us/veradroid-install.incomplete ]; } && { lg "previous install incomplete, not updating now"; exit 1; }   # root-legacy: 老安装器的标记
 
 # 1. 只按名字挑：先把不合格的改名（不再重试），在合格的里挑最新的
 best=; bestver=
@@ -215,4 +216,4 @@ if [ $rc = 0 ] && [ "$after" = "$bestver" ] && [ ! -f "$INCOMPLETE" ]; then
     if [ -n "$START" ]; then ( cd / && setsid sh "$VD/boot/veradroid.sh" home ) </dev/null >/dev/null 2>&1 & fi
     exit 0
 fi
-fail "安装器返回 $rc，现在的版本是 $after（详见 veradroid-localupdate.log / veradroid-install-detail.log）"
+fail "安装器返回 $rc，现在的版本是 $after（详见 veradroid/logs/localupdate.log / install-detail.log）"

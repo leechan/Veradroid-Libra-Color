@@ -41,6 +41,8 @@ rm -rf /mnt/base-us/veradroid-autoupdate.lock /mnt/base-us/veradroid-install.loc
 # 删程序时 logs / backup 留着（卸载日志、安装前备份、卸载时拷出来的书），state 里只留书库清单这类以后还有用的记录：
 # 锁、半截安装标记、安装器临时目录、系统盘调整记录删掉。以前这些都在根目录，那边的老文件一起删。
 un_clean() {
+    # 用户自己放的字体（veradroid/fonts = Android 的 内部存储/Fonts）和屏保图片不删：挪进 backup/user-files，重新安装时放回去
+    if type vd_user_keep >/dev/null 2>&1; then t "uninstall: 用户的字体 / 屏保留在 veradroid/backup/user-files：$(vd_user_keep "$VD") 个文件"; fi
     vd_prog_rm "$VD"
     rm -rf "$VD_STATE"/install.lock "$VD_STATE"/autoupdate.lock "$VD_STATE"/install.[0-9]* 2>/dev/null
     rm -f "$VD_STATE"/install.incomplete "$VD_STATE"/autoupdate-bootstrap.sh "$VD_STATE"/autoupdate-bootstrap.sh.part "$VD_STATE"/resize.state "$VD_STATE"/resize.pending "$VD_STATE"/resize.last "$VD_STATE"/resize.notify "$VD_LOGS"/resize.log 2>/dev/null
@@ -94,7 +96,13 @@ if [ "$PURGE" != 1 ] && [ -d "$SYS/data/media" ]; then
             exit 0
         fi
         rm -rf "$KEEP.partial" 2>/dev/null
-        cp -a "$SYS/data/media" "$KEEP.partial" || { rm -rf "$KEEP.partial"; fail "拷贝书失败"; }
+        # vfat 用户存储（KT5、PW5 等，pw5b-5192 模拟器实测）不能 chown：busybox cp -a 照样把文件全拷过去，只是报
+        # "can't preserve ownership" 并返回 1，以前卸载因此总是停在“拷贝书失败”。只有这一种报错时不算失败（下面还要核对数量）。
+        if ! cp -a "$SYS/data/media" "$KEEP.partial" 2>/tmp/vd-uninstall-cp.err; then
+            if grep -v "preserve ownership" /tmp/vd-uninstall-cp.err | grep -q .; then rm -rf "$KEEP.partial"; fail "拷贝书失败"; fi
+            t "uninstall: 用户存储不能保留文件属主（vfat），书照样拷完了"
+        fi
+        rm -f /tmp/vd-uninstall-cp.err
         n1=$(find "$SYS/data/media" | wc -l); n2=$(find "$KEEP.partial" | wc -l)
         [ "$n1" = "$n2" ] || { rm -rf "$KEEP.partial"; fail "拷贝核对失败 ($n1/$n2)"; }
         mv "$KEEP.partial" "$KEEP" || fail "无法保存书"
@@ -129,6 +137,24 @@ for uL in "/mnt/us/documents/VeraDroid 启动.sh" "/mnt/base-us/documents/VeraDr
         t "uninstall: 已删除书库入口 $uL"
     fi
 done
+# 用户为了卸载拷进 documents 的 VeraDroid-Uninstall.sh（或旧版放进书库的那个）：卸完就没用了，一起拿掉（只认我们自己那份）
+# BEGIN vd_retire_uninstall_entry
+# 只认我们自己放的那一个：固定文件名 documents/VeraDroid-Uninstall.sh（历来只用过这一个名字），普通文件（不是链接），
+# 头里是我们的标题，内容指向我们的程序目录。用户别的文件、同名但内容不是我们的文件一律不动。
+vd_retire_uninstall_entry() {
+    for d in /mnt/us/documents /mnt/base-us/documents; do
+        f=$d/VeraDroid-Uninstall.sh
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        grep -q '^# Name: VeraDroid 卸载$' "$f" 2>/dev/null && grep -q '^VD=/mnt/base-us/veradroid$' "$f" 2>/dev/null || continue
+        rm -f "$f" 2>/dev/null || continue
+        for s in "$d/VeraDroid-Uninstall.sh.sdr" "$d/VeraDroid-Uninstall.sdr"; do [ -d "$s" ] && [ ! -L "$s" ] && rm -rf "$s" 2>/dev/null; done
+        command -v vlog >/dev/null 2>&1 && vlog "library: removed the old uninstall entry $f"
+        RETIRED=1
+    done
+    return 0
+}
+# END vd_retire_uninstall_entry
+vd_retire_uninstall_entry
 uK=/mnt/us/extensions/VeraDroid
 if [ -d "$uK" ] && [ ! -L "$uK" ] && grep -q 'veradroid' "$uK/start.sh" 2>/dev/null; then
     rm -f "$uK/start.sh" "$uK/install.sh" "$uK/config.xml" "$uK/menu.json"; rmdir "$uK" 2>/dev/null && t "uninstall: 已删除 KUAL 菜单 $uK"
@@ -139,7 +165,10 @@ if [ "$PURGE" = 1 ]; then
     # 安装前的书库清单：每个文件都还在才删备份；少了就留着备份并在屏幕上说
     man=/mnt/base-us/veradroid/state/docs-manifest; [ -f $man ] || man=$man.checked
     [ -f $man ] || man=/mnt/base-us/veradroid-docs-manifest; [ -f $man ] || man=$man.checked   # root-legacy: 老版本安装器写的
-    miss=0; [ -f $man ] && while IFS= read -r f; do [ -e "/mnt/base-us/$f" ] || miss=$((miss + 1)); done < $man
+    # 我们自己的书库入口（启动入口和它的 .sdr，上面刚删掉）不算少了的书：升级装的清单里有它们，以前因此总说“少了 2 个文件”、留着备份
+    miss=0; [ -f $man ] && while IFS= read -r f; do
+        case "$f" in "documents/VeraDroid 启动.sh"|"documents/VeraDroid 启动.sh.sdr/"*|documents/VeraDroid-*.sh|documents/VeraDroid-*.sh.sdr/*|documents/VeraDroid-*.sdr/*) continue ;; esac
+        [ -e "/mnt/base-us/$f" ] || miss=$((miss + 1)); done < $man
     for f in "/mnt/us/documents/VeraDroid-Report.sh" "/mnt/us/documents/VeraDroid-Uninstall.sh" "/mnt/us/documents/VeraDroid-Experimental.sh" \
              "/mnt/base-us/documents/VeraDroid-Report.sh" "/mnt/base-us/documents/VeraDroid-Uninstall.sh" "/mnt/base-us/documents/VeraDroid-Experimental.sh"; do
         [ -f "$f" ] && grep -q -i 'veradroid' "$f" 2>/dev/null && rm -f "$f"

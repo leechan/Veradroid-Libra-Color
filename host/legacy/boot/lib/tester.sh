@@ -15,9 +15,10 @@ TDIR=$VD/test
 TRES=$VD/TEST-RESULT.txt
 TLOG=/tmp/veradroid-test.log
 # 序列号里的机型代码 → 机型名（只用于日志和测试报告，不用于判断装哪个包）。数据：公开资料整理的机型代码表
-# （KindleTool kindle_tool.h + FBInk + KOReader 的事实）。规则同 FBInk：序列号 B 开头取第 3–4 位，否则取第 4–6 位。
-# 3XE（Scribe 2）不在任何上游表里，是我们自己补的。
-kindle_code() { ks=$( { tr -cd '0-9A-Za-z' </proc/usid; } 2>/dev/null); case "$ks" in B*) echo "$ks" | cut -c3-4 ;; ?*) echo "$ks" | cut -c4-6 ;; esac; }
+# （KindleTool kindle_tool.h + FBInk + KOReader 的事实）。规则同 FBInk：老格式序列号（B 或 9 开头）取第 3–4 位，否则取第 4–6 位。
+# 3XE（Scribe 2）不在任何上游表里，是我们自己补的。以前只认 B 开头：9 开头的 PaperWhite 2（如 905A…，代码 5A）被当成
+# 新格式取了第 4–6 位，测试报告里写成“未知（代码 A22）”（2026-11-16 用户测试报告 T-905A，主板 027 / fb 758 / 256 MB）。
+kindle_code() { ks=$( { tr -cd '0-9A-Za-z' </proc/usid; } 2>/dev/null); case "$ks" in B*|9*) echo "$ks" | cut -c3-4 ;; ?*) echo "$ks" | cut -c4-6 ;; esac; }
 kindle_name() {
     case "$1" in
         D4|5A|D5|D6|D7|D8|F2|17|60|F4|F9|62|61|5F) echo "PaperWhite 2" ;;

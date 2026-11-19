@@ -61,7 +61,7 @@ input_touch_start() {
     # 边缘手势条的宽度（像素）：120 是按 300 ppi 定的（约 10 mm）；PW2 212 ppi 用 85 才是同样的 10 mm（机型文件 TOUCH_EDGE_PX）。
     # 长按 / 滑动的判定距离按同一比例（120 时就是以前的 60 / 80）
     ge=${TOUCH_EDGE_PX:-120}; case "$ge" in ''|*[!0-9]*) ge=120 ;; esac
-    $VD/bin/veradroid-input $REAL $W/input.log $VD/boot/action.sh --w ${viewWidth:-1272} --h ${viewHeight:-1696} --edge $ge --window ${G_WINDOW:-40} --edge-hold $((ge / 2)) --edge-swipe $((ge * 2 / 3)) --edge-back ${KFB_EDGE_BACK:-1} --corner-ms $cm --flag $W/nogestures --inject $W/inject --gconf $W/gestures --fg $X/fg $(rot_args) >$W/input.err 2>&1 &
+    $VD/bin/veradroid-input $REAL $W/input.log $VD/boot/action.sh --w ${viewWidth:-1272} --h ${viewHeight:-1696} --edge $ge --window ${G_WINDOW:-40} --edge-hold $((ge / 2)) --edge-swipe $((ge * 2 / 3)) --edge-back ${KFB_EDGE_BACK:-1} --corner-ms $cm --flag $W/nogestures --inject $W/inject --gconf $W/gestures --fg $X/fg --rt ${INPUT_RT:-5} $(input_cpufreq_arg) $(rot_args) >$W/input.err 2>&1 &
     echo $! > $W/input.pid
     i=0; while [ $i -lt 20 ]; do
         vt=$(input_sysname veradroid-touch); vk=$(input_sysname veradroid-keys)
@@ -105,3 +105,10 @@ input_release() { bt_release; alive $W/input.pid && kill -USR1 "$(cat $W/input.p
 input_grab()    { bt_grab; alive $W/input.pid && kill -USR2 "$(cat $W/input.pid)" 2>/dev/null; }
 input_stop()    { bt_stop; input_touch_stop; }
 input_touch_stop() { alive $W/input.pid && kill "$(cat $W/input.pid)" 2>/dev/null; rm -f $W/input.pid; }
+
+# 触摸加速（veradroid-input --cpufreq，BOOST_MS / BOOST_KHZ 在 $W/gestures 里）：有 cpufreq 的内核才给
+input_cpufreq_arg() {
+    for d in /sys/devices/system/cpu/cpu0/cpufreq /sys/devices/system/cpu/cpufreq/policy0; do
+        [ -w $d/scaling_min_freq ] && { echo "--cpufreq $d"; return 0; }
+    done
+}

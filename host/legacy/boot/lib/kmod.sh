@@ -4,7 +4,9 @@
 # 整包里按内核版本放预编的模块：
 #   $VD/kmod/<uname -r>/{binder,zram}.ko                    3.0.35：所有机型同一个内核配置（zram：Amazon 3.0.35 源码树 drivers/staging/zram，tools/kmod/build-zram.sh）
 #   $VD/kmod/<uname -r>/<编号>/{binder,uinput}.ko + uname-v 4.1.15：每个机型 / 固件的内核各编一份（结构体布局按那个内核核对过），
-#                                                          uname-v 是那个内核的 `uname -v`，完全一致才加载
+#                                                          uname-v 是那个内核的 `uname -v`，完全一致才加载。
+#                                                          uname-v 可以有多行：同一组固件（config 和全部导出 CRC 都相同、只有编译时间不同）
+#                                                          共用一份模块，每行一个固件的 `uname -v`
 # 内核换了（固件升级）而没有对应的模块时一律不加载：宁可起不来（有提示），也不把按别的内核编的模块塞进去。
 # 设备节点已经存在的就不加载；模块不会卸载（下次启动直接复用）。
 kmod_dir() {
@@ -13,8 +15,13 @@ kmod_dir() {
     if ls $d/*.ko >/dev/null 2>&1; then echo $d; return 0; fi
     v=$(uname -v)
     for s in $d/*/; do
-        [ -f "${s}uname-v" ] && [ "$(cat "${s}uname-v")" = "$v" ] && { echo ${s%/}; return 0; }
+        [ -f "${s}uname-v" ] && kmod_unamev_has "${s}uname-v" "$v" && { echo ${s%/}; return 0; }
     done
+    return 1
+}
+# kmod_unamev_has 文件 版本串：文件里有一行和版本串完全一样（整行比较，不当正则；最后一行没有换行也算）
+kmod_unamev_has() {
+    while IFS= read -r kul || [ -n "$kul" ]; do [ "$kul" = "$2" ] && return 0; done < "$1"
     return 1
 }
 kmod_load() {

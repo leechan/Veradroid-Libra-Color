@@ -1,11 +1,26 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # 公共定义。所有模块都 source 这个文件。
 PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH   # 系统自带的 curl/tar 优先：越狱工具或插件装的 curl 可能没有根证书（HTTPS 全部失败）
+# 老机型内核是 2G/2G 分割：默认的自顶向下 mmap 把 libart.so 放在 0x73xxxxxx，压在启动镜像和 ART 堆要的地址上。容器里的进程
+# 由 container.sh 用 ulimit -s unlimited 换成自底向上的布局；宿主进容器跑的 am / pm / settings / input / monkey（app_process）
+# 也得一样，否则启动镜像重定位以后它们全部 "non_moving_space_mem_map ... overlaps with existing map (libart.so)" 中止
+# （PW4 模拟器：一次开机 10 个 tombstone）。宿主脚本都 source 这个文件，在这里设一次，子进程继承；Kindle 自己的服务由 upstart 起，不受影响。
+# 0.8.7 起的镜像（ro.vd.artbase=0x30000000，启动镜像编在 0x30000000）不用改：自顶向下的库够不着那里，反而自底向上的布局
+# （库从 0x2a000000 往上放）会压上去。所以按镜像选：带 ro.vd.artbase 的用默认 8 MB 栈（自顶向下），老镜像照旧 unlimited。
+# 镜像没挂上（还没启动）时按老镜像处理；容器 init（container.sh）、adb_sh、ashell.sh 在真正起 Android 进程前按当时的镜像再定一次。
+vd_art_stack() {   # [build.prop]
+    case "$(uname -r)" in 3.*|4.1.*) ;; *) return 0 ;; esac
+    if grep -q '^ro.vd.artbase=' "${1:-/mnt/base-us/system/veradroid/rootfs/system/build.prop}" 2>/dev/null; then ulimit -s 8192 2>/dev/null
+    else ulimit -s unlimited 2>/dev/null; fi
+}
+vd_art_stack
 VD=${VD:-/mnt/base-us/veradroid}          # 程序目录（一律走 ext4 的 /mnt/base-us，不走 /mnt/us 的 FUSE）
 SYS=/mnt/base-us/system/veradroid          # 数据：rootfs、data、日志、设置（书库不扫 system/）
 SYSTEM_IMG=/mnt/base-us/veradroid-sys.img   # vfat /mnt/base-us 上的 ext4 系统盘（PW5 等）
 # 日志 / 标记 / 备份的位置（veradroid/logs、state、backup）和根目录旧文件的搬迁：tidy.sh
 [ -f "$VD/boot/lib/tidy.sh" ] && . "$VD/boot/lib/tidy.sh"
+# 更新前备份的设置和“已备份的数据”（列出 / 删除）：backup.sh
+[ -f "$VD/boot/lib/backup.sh" ] && . "$VD/boot/lib/backup.sh"
 # 有的机型（KT6，eink-emulator 实测）loop 节点只有 /dev/loop/N，没有 /dev/loopN，`mount -o loop` 找不到空闲设备。
 # 先试 mount -o loop，不行就自己挑一个空闲节点用 busybox losetup 绑定。
 # 3.0 内核：ext3 的用户扩展属性（user.*）只有带 user_xattr 挂载才有；PW2 5.12 固件的 mkfs.ext3 不把它写进超级块的默认挂载选项
@@ -71,6 +86,28 @@ storage_mount() {
         echo "-- $(date) e2fsck rc=$rc" >>/mnt/base-us/veradroid/logs/fsck.log
     fi
     loop_mount "$SYSTEM_IMG" "$SYS" || return 1
+}
+# 停完 Android 以后还开着系统盘里东西（工作目录 / 根目录 / 打开的文件，比如继承来的写 $LOG 的输出）的 VeraDroid 宿主进程：
+# 预编译工作进程留下的 sleep、看守循环等。不杀掉系统盘就卸不掉（rl-pw4：返回 Kindle 后系统盘一直挂着）。
+# 只动 VeraDroid 自己的：命令行里有 $VD/boot/ 的 shell（后台函数的子 shell 命令行和父进程一样），以及 sleep / usleep；
+# 不动本脚本和它的祖先（看门狗 / 安装器调 stop.sh 时它们在等我们）。
+sys_holders_kill() {
+    sk_anc=" $$ "; sk_p=$$
+    while [ -n "$sk_p" ] && [ "$sk_p" -gt 1 ] 2>/dev/null; do
+        read -r sk_l < /proc/$sk_p/stat 2>/dev/null || break
+        sk_l=${sk_l##*) }; set -- $sk_l; sk_p=$2; sk_anc="$sk_anc$sk_p "
+    done
+    sk_k=
+    for sk_d in /proc/[0-9]*; do
+        sk_p=${sk_d#/proc/}
+        case "$sk_anc" in *" $sk_p "*) continue ;; esac
+        sk_c=$(tr '\000' ' ' < $sk_d/cmdline 2>/dev/null) || continue
+        case "$sk_c" in *"$VD/boot/"*|sleep\ *|usleep\ *|/bin/sleep\ *) ;; *) continue ;; esac
+        ls -l $sk_d/cwd $sk_d/root $sk_d/fd 2>/dev/null | grep -q -- "-> $SYS\(/\|\$\)" || continue
+        kill -9 "$sk_p" 2>/dev/null && sk_k="$sk_k $sk_p:$(echo "$sk_c" | cut -c1-60)"
+    done
+    [ -n "$sk_k" ] && t "stop: killed leftover VeraDroid processes holding the system image:$sk_k"
+    return 0
 }
 storage_umount() {
     # Host-ns leftovers under $SYS (notably after_boot binder_repair bind on
@@ -139,26 +176,6 @@ done
 [ -f "$VD/boot/lib/progress.sh" ] && . "$VD/boot/lib/progress.sh"
 
 t() { echo "[$(date +%H:%M:%S) up=$(cut -d' ' -f1 /proc/uptime)] $*"; }
-# Wi-Fi 开关只动 Wi-Fi。以前用的 com.lab126.cmd wirelessEnable 是 Kindle 的“飞行模式”：关它连蓝牙也关了，开它又把蓝牙打开
-# （KPW6 用户报告）。com.lab126.wifid enable 写得进去但不起作用（一台测试机 5.19.5：仍然连着）。起作用的是 cmd 的哈希属性
-# disableInterfaces（{ wan = (0), wifi = (1) } = 关掉 Wi-Fi 接口；输入格式里整数要带括号）：测试机实测 Wi-Fi 断开（wifid enable 跟着变 0、
-# wlan0 不在了），飞行模式和蓝牙不变，写回 (0) 2 秒内重新连上。没有这个属性的固件退回 wirelessEnable。飞行模式开着时 Wi-Fi 算关。
-wifi_dis() { lipc-hash-prop com.lab126.cmd disableInterfaces </dev/null 2>/dev/null | sed -n "s/^[[:space:]]*$1 = (\([0-9]*\)).*/\1/p" | head -1; }
-wifi_state() {
-    wa=$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null); wd=$(wifi_dis wifi)
-    if [ -n "$wd" ]; then [ "$wd" = 0 ] && ww=1 || ww=0; else ww=${wa:-1}; fi
-    [ "$wa" = 0 ] && ww=0
-    echo "$ww"
-}
-wifi_set() { # 0|1
-    wd=$(wifi_dis wifi)
-    if [ -n "$wd" ]; then
-        wn=$(wifi_dis wan); [ "$1" = 1 ] && wv=0 || wv=1
-        echo "{ wan = (${wn:-0}), wifi = ($wv) }" | lipc-hash-prop com.lab126.cmd disableInterfaces >/dev/null 2>&1
-        # 用户明确要开 Wi-Fi 而飞行模式开着：只有关掉飞行模式 Wi-Fi 才会真的开（蓝牙按 Kindle 自己的规则恢复）
-        [ "$1" = 1 ] && [ "$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)" = 0 ] && lipc-set-prop -i com.lab126.cmd wirelessEnable 1
-    else lipc-set-prop -i com.lab126.cmd wirelessEnable "$1"; fi
-}
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; }
 # 给显示桥发命令。显示桥不在了就不写：往没有读端的 FIFO 里 echo 会永远卡在 open()，
 # 命令监听、看门狗、唤醒流程以前都可能这样被拖死（显示桥崩过：tmpfs 写满时 SIGBUS）。
@@ -174,7 +191,8 @@ vd_timeout() {
     fi
     case $VD_TMO_STYLE in new) timeout "$vt_s" "$@" ;; old) timeout -t "$vt_s" "$@" ;; *) "$@" ;; esac
 }
-epd_send() { [ -p $X/epd.fifo ] && alive $W/epd.pid || return 1; echo "$*" > $X/epd.fifo; }
+# 显示桥在检查和写之间退出时，打开 FIFO 写会一直等一个读者：限 3 秒，不让调用者（sleep_watch、解冻）卡死
+epd_send() { [ -p $X/epd.fifo ] && alive $W/epd.pid || return 1; vd_timeout 3 sh -c 'echo "$1" > "$2"' sh "$*" $X/epd.fifo; }
 # 在 Android 里执行命令的前缀：平时用 nsenter 进容器的命名空间。3.0 内核（$W/mode=chroot）没有 /proc/PID/ns，
 # nsenter 用不了：chroot 到 /proc/<容器 init>/root——这个特殊链接直接落在容器（另一个挂载命名空间）的根上，
 # 容器里的 /dev、/proc、/data 都看得到。用法：$(vd_in) /system/bin/sh -c '...'（也能放在 timeout 后面）。
@@ -194,6 +212,9 @@ vd_in() {
 }
 # 屏幕中间提示一行（启动 / 返回 / 错误），只在界面已暂停时用
 [ -f "$VD/boot/lib/storage.sh" ] && . "$VD/boot/lib/storage.sh"     # 系统盘大小调整 / 断电后的收尾
+[ -f "$VD/boot/lib/lock.sh" ] && . "$VD/boot/lib/lock.sh"           # 锁屏密码：屏保后上锁、USB 重置文件
+[ -f "$VD/boot/lib/usb.sh" ] && . "$VD/boot/lib/usb.sh"             # 插 USB 线时问要不要切换到 USB 传输（cmd usbswitch）
+[ -f "$VD/boot/lib/saver.sh" ] && . "$VD/boot/lib/saver.sh"         # 屏保挑选（桌面写的选择文件）
 case "$0" in */veradroid.sh) ST_START=1 ;; esac                    # 只有真正启动 Android 时才做“下次启动时扩容”
 splash() { [ -x "$FBINK" ] && "$FBINK" -q -c -m -M -t regular=$KFONT,px=${2:-44} "$1" 2>/dev/null; }
 storage_mount
@@ -293,7 +314,12 @@ docs_verify() { # list [why]
         t "!!! documents: restored $((dv_n - dv_left)) of $dv_n from ${dv_b##*/}"; echo "[$(date '+%F %T')] restored $((dv_n - dv_left)) of $dv_n from $dv_b" >> $VD/DOCUMENTS-LOSS.log 2>/dev/null
         dv_r=1; [ $dv_left -eq 0 ] && break
     done
-    [ $dv_r = 1 ] || t "!!! documents: no pre-install backup to restore from"
+    if [ $dv_r != 1 ]; then
+        dv_bm=$(sed -n 's/^result=//p' /mnt/base-us/veradroid/state/backup.last 2>/dev/null | tail -1)
+        t "!!! documents: no pre-install backup to restore from${dv_bm:+ (last pre-install backup: $dv_bm)}"
+        # 更新前备份关着（设置 → 设备与更新 → 更新前备份）/ 空间不够没做：清单照样核对，但没有东西可以补
+        echo "[$(date '+%F %T')] 没有安装前备份，少了的文件补不回来${dv_bm:+（这次安装的备份：$dv_bm；off = 更新前备份已关闭）}" >> $VD/DOCUMENTS-LOSS.log 2>/dev/null
+    fi
     sync
     return 1
 }

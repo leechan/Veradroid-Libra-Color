@@ -8,7 +8,11 @@ screensaver_show() {
     # 透明背景的 PNG 不清屏，直接叠在正在读的那一页上；JPG 和不透明 PNG 先清成白底再居中按比例铺满。
     list=$W/saver.list
     : > "$list"
-    for f in "$VD"/screensaver/*.[pP][nN][gG] "$VD"/screensaver/*.[jJ][pP][gG] "$VD"/screensaver/*.[jJ][pP][eE][gG] \
+    # 桌面“屏保”页的选择（saver.sh）：kindle = 跳过用户图；one = 只用那一张；rotate / 没选过 = 下面原来的做法
+    smode=; sone=
+    type saver_choice >/dev/null 2>&1 && saver_choice
+    [ "$smode" = one ] && [ -n "$sone" ] && echo "$sone" >> "$list"
+    [ "$smode" = kindle ] || [ -s "$list" ] || for f in "$VD"/screensaver/*.[pP][nN][gG] "$VD"/screensaver/*.[jJ][pP][gG] "$VD"/screensaver/*.[jJ][pP][eE][gG] \
              "$SYS"/data/media/0/Screensaver/*.[pP][nN][gG] "$SYS"/data/media/0/Screensaver/*.[jJ][pP][gG] "$SYS"/data/media/0/Screensaver/*.[jJ][pP][eE][gG]; do
         [ -f "$f" ] || continue
         case "$f" in */default.png|*/default.PNG) continue ;; esac
@@ -70,27 +74,47 @@ sleep_watch() {
         case "$st" in
         screenSaver|screenSaverOn|suspended|sleeping)
             if [ "$cur" != saver ]; then
+                sw0=$(cut -d' ' -f1 /proc/uptime)
                 touch $X/ctl/sleep
+                # 设了锁屏密码：冻结前先让桌面把锁屏盖上（显示桥已被 ctl/sleep 挡住，看不到），醒来时第一帧就是锁屏
+                type lock_request >/dev/null 2>&1 && lock_request
                 usleep 300000
                 # Freeze Android first; otherwise its last frame can overwrite
                 # the screensaver image right after eips draws it.
                 # 正在装 APK（afterboot.sh 写 $W/installing）时不冻结：冻在 dex2oat 中间、几小时后解冻，PackageManager
                 # 线程还卡着，system_server 会被自己的 Watchdog 杀掉（用户诊断）。ctl/sleep 已经挡住显示桥；
                 # 机器真睡下去（suspended）时整个系统一起停，uptime 也停，不会触发 Watchdog。
+                # 先画屏保，再冻结（用户报告 PW4 0.8.8：按电源键“要等 1 分钟左右才有反应”）。以前是先冻结：android_freeze 里的 sync
+                # 在真机上要把 vfat 上镜像文件的脏页写完（刚装完应用 / 在编译 / 在换页时可以是几十秒），逐个进程发 SIGSTOP 也要
+                # 扫一遍 /proc，这段时间屏幕一直停在原来的画面上。显示桥已经被 ctl/sleep 挡住（上面等的 0.3 秒让在途的那一帧
+                # 落完），Android 的帧盖不到屏保上。
+                screensaver_show; sv=1
+                t "screensaver: drawn $(awk -v a=$sw0 -v b=$(cut -d' ' -f1 /proc/uptime) 'BEGIN{printf "%.1f", b-a}') s after powerd went to $st"
                 if alive $W/installing; then
                     touch $W/saver_nofreeze; t "screensaver: an apk is being installed, android left running"
                 else
+                    # KINDLE_UI=freeze：每分钟整点的 TIME_TICK 刚发出时别冻（应用在换页时处理得慢，冻在半路醒来就超时）：
+                    # 显示桥已经挡住，先画屏保，等到这一分钟的第 12 秒再冻
+                    if [ "$(kindle_ui_mode 2>/dev/null)" = freeze ]; then
+                        sec=$(date +%S); sec=${sec#0}
+                        [ "${sec:-0}" -lt 12 ] && sleep $((12 - sec))
+                    fi
                     android_freeze && touch $W/saver_frozen
                 fi
                 type wifi_ps_restore >/dev/null 2>&1 && wifi_ps_restore
-                screensaver_show
+                [ "${sv:-0}" = 1 ] || screensaver_show
                 cur=saver
-                t "screensaver on, android frozen"
+                date +%s > $W/saver.t0      # 醒来时看冻了多久（SAVER_EXIT_H，freeze.sh saver_exit_check）
+                t "screensaver on, android frozen ($(awk -v a=$sw0 -v b=$(cut -d' ' -f1 /proc/uptime) 'BEGIN{printf "%.1f", b-a}') s after powerd went to $st)"
                 type tset >/dev/null 2>&1 && [ -f $W/saver_frozen ] && tset sleep.ok "$(date +%H:%M:%S)"
             fi ;;
         active|charging)
             if [ "$cur" = saver ]; then
-                if [ -f $W/saver_nofreeze ]; then rm -f $W/saver_nofreeze; else android_thaw 2>/dev/null; fi
+                type saver_exit_check >/dev/null 2>&1 && saver_exit_check
+                if [ -f $W/saver_nofreeze ]; then rm -f $W/saver_nofreeze
+                elif [ "$(kindle_ui_mode 2>/dev/null)" = freeze ]; then android_thaw_staged ${THAW_SS_DELAY:-3} 2>/dev/null
+                else android_thaw 2>/dev/null; fi
+                type lock_reset_check >/dev/null 2>&1 && { lock_reset_check; lock_request; }
                 ( usleep 500000; trust_unlock ) &
                 rm -f $W/saver_frozen
                 rm -f $X/ctl/sleep
@@ -100,6 +124,8 @@ sleep_watch() {
             fi
             cur=active ;;
         esac
-        sleep 1
+        # 以前每秒 lipc-get-prop 一次（每次一条新的 lipc / dbus 连接，powerd 还往 syslog 记警告）。现在等 powerd 的进 / 出屏保事件，
+        # 最多 5 秒再看一次状态（事件恰好落在两次之间也最多晚 5 秒）；lipc-wait-event 用不了时退回每秒一次（host/pw6 fix/power 91b61ad 的简化版）
+        lipc-wait-event -s 5 com.lab126.powerd goingToScreenSaver,outOfScreenSaver </dev/null >/dev/null 2>&1 || sleep 1
     done
 }

@@ -197,6 +197,15 @@ lg "installing $bestver from $best with $(basename "$(dirname "$BS")")/bootstrap
 m=$(cat $SYS/model 2>/dev/null || cat $VD/model 2>/dev/null)
 case "$VAR" in k49) export VD_EXPERIMENTAL=1 ;; legacy) export VD_EXPERIMENTAL=1 VD_LEGACY_TEST=1 ;; esac   # legacy：装着的人本来就是测试安装的
 case "$m" in ''|pw6) ;; *) export VD_MODEL="$m" VD_EXPERIMENTAL=1 ;; esac
+# 更新前备份（设置 → 设备与更新 → 更新前备份，UPDATE_BACKUP）：新安装器自己读这个设置；离线包里是老安装器时，
+# light / off 至少不备份书（老安装器认 VD_BACKUP_MB=0，不认 off，照样备份设置和阅读进度）
+LU_UB=
+if [ -f $SYS/settings.conf ]; then LU_UB=$(sed -n 's/^UPDATE_BACKUP=//p' $SYS/settings.conf 2>/dev/null | tail -1); LU_UB=${LU_UB:-full}
+else LU_UB=$(cat /mnt/base-us/veradroid/state/update-backup 2>/dev/null); fi
+case "$LU_UB" in full|light|off) ;; *) LU_UB=full ;; esac
+export VD_UPDATE_BACKUP=$LU_UB
+[ "$LU_UB" = full ] || export VD_BACKUP_MB=0
+lg "pre-install backup: $LU_UB"
 ( cd / && VD_BUNDLE="$B" VD_VERSION="$bestver" VD_NO_START=1 sh "$STAGE/bootstrap.sh" ) </dev/null >> $LOG 2>&1
 rc=$?
 # 把 update/ 放回（新装好的 $VD，或安装器自己回退后的旧 $VD）。安装被打断、$VD 不完整时绝不能去建 $VD：

@@ -130,7 +130,7 @@ wifi_connect() {
 $(wifi_saved)
 WIFI_EOF
     [ -n "$found" ] || { t "wificonnect: not a saved network"; wifi_result ok=0 "error=not saved" "essid=$hex"; return 1; }
-    [ "$(wifi_state)" = 1 ] || { wifi_set 1; sleep 2; }
+    [ "$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)" = 1 ] || { lipc-set-prop -i com.lab126.cmd wirelessEnable 1; sleep 2; }
     t "wificonnect: switching to a saved network"
     lipc-set-prop com.lab126.cmd ensureConnection "wifi:$want"
     i=0
@@ -187,6 +187,8 @@ cmd_listen() {
         read -r c a <&3 || { usleep 300000; continue; }
         case "$c" in
         exit)    do_exit ;;
+        usbswitch) type usb_switch >/dev/null 2>&1 && usb_switch ;;   # 插线提示里点了“切换”：回到 Kindle 进 USB 传输（usb.sh）
+        usbnoask)  type usb_noask >/dev/null 2>&1 && usb_noask ;;     # 插线提示里点了“不再询问”
         stop)    do_stop ;;
         restart) do_restart ;;
         diag)    ( diag_save; touch $X/ctl/diag.done ) & ;;
@@ -196,7 +198,9 @@ cmd_listen() {
         screenshot)
             mkdir -p $SYS/data/media/0/Screenshots
             $(vd_in) /system/bin/screencap -p /data/media/0/Screenshots/screen-$(date +%Y%m%d-%H%M%S).png >/dev/null 2>&1 && t "screenshot saved" ;;
-        fg)      type appprof_fg >/dev/null 2>&1 && appprof_fg "$a" ;;       # 前台应用变了（VeraHome 的任务栈监听），见 appprof.sh
+        fg)      type appprof_fg >/dev/null 2>&1 && appprof_fg "$a"
+                 # 后台应用降优先级：ActivityManager 改完各进程的 adj 再看（bgnice.sh）
+                 type bgnice_tick >/dev/null 2>&1 && ( sleep 2; bgnice_tick ) </dev/null >/dev/null 2>&1 & ;;       # 前台应用变了（VeraHome 的任务栈监听），见 appprof.sh
         appset)  type appprof_set >/dev/null 2>&1 && appprof_set "$a" ;;     # 存某个应用的显示设置：appset <pkg>|<spec>
         appdisp)
             # appdisp <pkg>|<KEY=value;...>   or appdisp home
@@ -212,15 +216,16 @@ cmd_listen() {
             # 却把全局的翻页动画和刷新合并关掉了（滑动时闪）。不认这组写死的值，按全局设置来。
             [ "$aspec" = "KFB_ANIM_MODE=0;KFB_SETTLE=25;KFB_MODE=0;KFB_CONTRAST=1.3" ] && aspec=
             if [ "$apkg" != home ] && [ -n "$aspec" ] && [ "$aspec" != "$a" ]; then
-                printf '%s\n' "$aspec" | tr ';' '\n' | grep -E '^KFB_(CONTRAST|DITHER|FLASH|INVERT|MODE|SETTLE|HOLD|SMOOTH|PACE|CLEAN|REAGL_MIN|ANIM_MODE|ANIM_DIR|ANIM_STEPS|ANIM_MIN)=[0-9.]{1,6}$' > $SYS/settings.app.tmp
+                printf '%s\n' "$aspec" | tr ';' '\n' | grep -E '^KFB_(CONTRAST|DITHER|FLASH|INVERT|LIGHTF|DARKEN|MODE|SETTLE|HOLD|SMOOTH|PACE|CLEAN|REAGL_MIN|ANIM_MODE|ANIM_DIR|ANIM_STEPS|ANIM_MIN)=[0-9.]{1,6}$' > $SYS/settings.app.tmp
                 [ -s $SYS/settings.app.tmp ] && mv -f $SYS/settings.app.tmp $SYS/settings.app || rm -f $SYS/settings.app.tmp
             fi
             settings_load 2>/dev/null || true
             settings_publish
             epd_send ANIM $KFB_ANIM_MODE $KFB_ANIM_DIR $KFB_ANIM_STEPS $KFB_ANIM_MIN
-            epd_send SET $KFB_CONTRAST $KFB_DITHER $KFB_FLASH $KFB_INVERT $KFB_MODE $KFB_SETTLE
+            epd_send SET $KFB_CONTRAST $KFB_DITHER $KFB_FLASH $KFB_INVERT $KFB_MODE $KFB_SETTLE ${KFB_LIGHTF:-0} ${KFB_DARKEN:-0}
             epd_send HOLD ${KFB_HOLD:-70}
             type epd_send_smooth >/dev/null 2>&1 && epd_send_smooth   # legacy 的显示桥没有 PACE/CLEAN/REAGL 时不定义
+            type epd_send_scroll >/dev/null 2>&1 && epd_send_scroll   # 触摸滚动（legacy settings.sh）
             echo "$apkg" > $W/appprof.pkg
             t "app display $apkg: $(cat $SYS/settings.app 2>/dev/null | tr '\n' ';')" ;;   # 文件不存在时 "< 文件 2>/dev/null" 的报错照样进日志（重定向从左往右）
         status)  status_write ;;
@@ -242,8 +247,10 @@ cmd_listen() {
         sleeptime) numeric "$a" && [ "$a" -ge 60 ] && lipc-set-prop -i com.lab126.powerd screenSaverTimeout "$a" ;;
         fwd)     numeric "$a" && fwd_on "$a" ;;
         fwdoff)  fwd_off ;;
-        fullupdate) # 整包更新：后台脱离 cmd 进程，stop.sh 杀掉 cmd 也能继续下载/替换；安装器和它的输出放在 /tmp（以前在系统盘里：sh 一直开着它，安装器自己调的 stop.sh 就卸不掉系统盘）；实验机型沿用安装时的 model
-            ( setsid sh -c 'm=$(cat /mnt/base-us/system/veradroid/model 2>/dev/null); case "$m" in ""|pw6) ;; *) export VD_MODEL="$m" VD_EXPERIMENTAL=1 ;; esac; B=/tmp/vd-fullupdate-bootstrap.sh; cd /; U=/dev/shm/veradroid/kfb/ctl/update.status; printf "state=checking\nstep=net\nlabel=正在连接更新服务器\nmode=manual\ntime=%s\n" "$(date +%s)" > $U.tmp && chmod 644 $U.tmp && mv -f $U.tmp $U; if curl -fsSL --retry 3 --connect-timeout 20 https://veradroid.wenjin.jp/bootstrap.sh -o "$B"; then sh "$B"; else printf "state=error\ncode=13\nlabel=连不上 VeraDroid 服务器（下载安装器失败）\nline2=可能被墙或服务器在维护，不是机器的问题。可以在 存储与连接 → 网络诊断 里看看是哪一步不通。\ntime=%s\n" "$(date +%s)" > $U.tmp && chmod 644 $U.tmp && mv -f $U.tmp $U; fi; rm -f "$B"; i=0; while [ $i -lt 3 ]; do sleep 2; P=$(cat /dev/shm/veradroid/pid 2>/dev/null); if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then break; fi; sh /mnt/base-us/veradroid/boot/veradroid.sh home; i=$((i+1)); done' > /tmp/veradroid-fullupdate.log 2>&1; echo $? > /tmp/veradroid-fullupdate.rc ) </dev/null >/dev/null 2>&1 & ;;
+        fullupdate) # legacy：老机型安装器 static/bootstrap-legacy.sh（以前下的是 PW6 / k49 的 bootstrap.sh，它对 3.0 / 4.1 内核直接说
+            # “请改用老机型安装脚本”退出，更新卡片一直停在“正在连接”：用户看到“点更新没反应”）。安装器失败时卡片报错。
+            # 整包更新：后台脱离 cmd 进程，stop.sh 杀掉 cmd 也能继续下载/替换；安装器和它的输出放在 /tmp（以前在系统盘里：sh 一直开着它，安装器自己调的 stop.sh 就卸不掉系统盘）；实验机型沿用安装时的 model
+            ( setsid sh -c 'm=$(cat /mnt/base-us/system/veradroid/model 2>/dev/null); case "$m" in ""|pw6) ;; *) export VD_MODEL="$m" VD_EXPERIMENTAL=1 ;; esac; [ "$(cat /mnt/base-us/veradroid/tested 2>/dev/null)" = emulator-only ] && export VD_EMUONLY_OK=1; B=/tmp/vd-fullupdate-bootstrap.sh; cd /; U=/dev/shm/veradroid/kfb/ctl/update.status; printf "state=checking\nstep=net\nlabel=正在连接更新服务器\nmode=manual\ntime=%s\n" "$(date +%s)" > $U.tmp && chmod 644 $U.tmp && mv -f $U.tmp $U; if curl -fsSL --retry 3 --connect-timeout 20 https://veradroid.wenjin.jp/static/bootstrap-legacy.sh -o "$B"; then sh "$B" || { grep -q "^state=error" $U 2>/dev/null || { printf "state=error\ncode=14\nlabel=更新没有装上\nline2=日志在 USB 里的 veradroid-install-detail.log\ntime=%s\n" "$(date +%s)" > $U.tmp && chmod 644 $U.tmp && mv -f $U.tmp $U; }; }; else printf "state=error\ncode=13\nlabel=连不上 VeraDroid 服务器（下载安装器失败）\nline2=可能被墙或服务器在维护，不是机器的问题。可以在 存储与连接 → 网络诊断 里看看是哪一步不通。\ntime=%s\n" "$(date +%s)" > $U.tmp && chmod 644 $U.tmp && mv -f $U.tmp $U; fi; rm -f "$B"; i=0; while [ $i -lt 3 ]; do sleep 2; P=$(cat /dev/shm/veradroid/pid 2>/dev/null); if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then break; fi; sh /mnt/base-us/veradroid/boot/veradroid.sh home; i=$((i+1)); done' > /tmp/veradroid-fullupdate.log 2>&1; echo $? > /tmp/veradroid-fullupdate.rc ) </dev/null >/dev/null 2>&1 & ;;
         uninstall) # 卸载 VeraDroid：交给 uninstall.sh（先拷到 tmpfs 再跑，因为它会删掉 $VD）。
             # 这里以前内联着旧流程：先 stop.sh（卸载 loop 系统盘）再 mv data/media，PW5 / KT5 / KT6 上 Android 里的书会被一起删掉。
             if [ -f "$VD/boot/uninstall.sh" ]; then
@@ -283,7 +290,11 @@ cmd_listen() {
                   # shares PackageManager but initializes cleanly. It reads the APK
                   # from stdin with -S <size>.
                   sz=$(stat -c%s "$SYS$ipath" 2>/dev/null)
+                  # 装的时候屏保不冻结 Android（sleep.sh 看 $W/installing，和 after_boot 同一个标记）：大应用在 512 MB 机型上
+                  # 刚升级完要装十几分钟（系统自己的 dexopt 拿着安装锁），冻在中间会让安装卡住、PackageManager 被 Watchdog 杀
+                  read -r ipid _ < /proc/self/stat; alive $W/installing || echo "$ipid" > $W/installing
                   r=$(adb_sh "cmd package install -r -d -g -S $sz < $ipath" 2>&1 | tr '\n' ' ')
+                  [ "$(cat $W/installing 2>/dev/null)" = "$ipid" ] && rm -f $W/installing
                   # 失败时把 PackageManager 的代码换成看得懂的原因放在前面（传书网页显示“安装失败：”加这一行）
                   case "$r" in *Success*) ;; *) type apk_fail_reason >/dev/null 2>&1 && r="$(apk_fail_reason "$r" "$SYS$ipath")（$r）" ;; esac
                   # 有的阅读应用把自己也注册成桌面（稻壳阅读器）：装上以后按主页键会弹“选择主屏幕应用”。每次装完都把桌面固定回 VeraHome。
@@ -293,9 +304,9 @@ cmd_listen() {
                   type vp_kvw >/dev/null 2>&1 && vp_kvw $X/ctl/apkinst.status "state=$ist" "name=$iname" "result=$r"
                   # 装好了：后台低优先级预编译（compile.sh；packages.list 变了，扫描会找到新装的包）
                   type compile_release >/dev/null 2>&1 && compile_release
-                  case "$r" in *Success*) type compile_watch >/dev/null 2>&1 && compile_watch
-                      type shizuku_start >/dev/null 2>&1 && shizuku_start ;; esac ) &
+                  case "$r" in *Success*) type compile_watch >/dev/null 2>&1 && compile_watch ;; esac ) &
             fi ;;
+        saver)   type saver_cmd >/dev/null 2>&1 && saver_cmd "$a" ;;   # saver list | done（saver.sh）：屏保挑选页要看 veradroid/screensaver 里的图
         netdiag) # 桌面“网络诊断”（progress.sh 的 vp_netdiag），结果写 ctl/netdiag.status
             type vp_netdiag >/dev/null 2>&1 && ( vp_netdiag $X/ctl/netdiag.status ) </dev/null >/dev/null 2>&1 & ;;
         compile) type compile_cmd >/dev/null 2>&1 && compile_cmd "$a" ;;   # compile all | compile <包>（compile.sh）；进度 ctl/compile.status
@@ -313,7 +324,7 @@ cmd_listen() {
         bt)      type bt_cmd >/dev/null 2>&1 && bt_cmd $a ;;   # bt map volume|page|dpad|raw / bt swap 0|1（bt.sh）
         optimize) ( opt_run ) & ;;   # 面板的“优化机器状态”（opt_run）
         poke)    lipc-set-prop -i com.lab126.powerd touchScreenSaverTimeout 1 2>/dev/null ;;
-        wifi)    case "$a" in 0|1) wifi_set "$a"; status_write ;; esac ;;   # 只开关 Wi-Fi，不动飞行模式和蓝牙（common.sh wifi_set）
+        wifi)    numeric "$a" && lipc-set-prop -i com.lab126.cmd wirelessEnable "$a" ;;
         wifilist)    ( wifi_list ) & ;;
         wificonnect) ( wifi_connect "$a" ) & ;;   # 参数在 wifi_connect 里校验（十六进制、必须是已保存的网络）
         dns)     case "$a" in

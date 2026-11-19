@@ -64,6 +64,10 @@ wa_do() { # 编号 uid 动词 参数 数据
     sshkeyadd) { wa_sshkeyadd "$data"; wa_sshstate; } | wa_put "$n" "$u" ;;
     sshkeydel) { wa_sshkeydel "$arg"; wa_sshstate; } | wa_put "$n" "$u" ;;
     autoupdate) wa_autoupdate "$arg" | wa_put "$n" "$u" ;;
+    # 更新前备份 / 已备份的数据（backup.sh）：改设置、列出、删除。删除只认 backup.sh 自己拼出来的路径
+    updatebackup) { if type vb_setmode >/dev/null 2>&1; then vb_setmode "$arg"; settings_load >/dev/null 2>&1; settings_publish >/dev/null 2>&1; else echo "error=unknown"; fi; } | wa_put "$n" "$u" ;;
+    backups)  { if type vb_info >/dev/null 2>&1; then echo "ok=1"; vb_info; else echo "error=unknown"; fi; } | wa_put "$n" "$u" ;;
+    backupdel) { if type vb_del >/dev/null 2>&1; then echo "ok=1"; vb_del "$arg"; vb_info; else echo "error=unknown"; fi; } | wa_put "$n" "$u" ;;
     storage)  { echo "ok=1"; st_info; } | wa_put "$n" "$u" ;;
     storageresize) case "$arg" in ''|*[!0-9]*) echo "error=nan" ;; *) st_request "$arg" ;; esac | wa_put "$n" "$u" ;;
     storageauto) case "$arg" in 0|1) st_cmd auto "$arg" >/dev/null 2>&1; echo "ok=1"; st_info ;; *) echo "error=bad value" ;; esac | wa_put "$n" "$u" ;;

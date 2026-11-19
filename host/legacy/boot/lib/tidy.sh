@@ -115,3 +115,73 @@ vd_root_tidy() {
     return 0
 }
 # END vd_root_tidy
+# BEGIN vd_user_carry
+# 用户自己放进 veradroid/ 的文件（2026-11-19，KPW5 用户：“放到 veradroid/fonts 的字体，升级以后就没了”）：
+#   fonts/        Android 里的 内部存储/Fonts（容器里绑在 /data/media/0/Fonts 上），用户拷进来的字体、字体商店装的字体都在这里
+#   screensaver/  屏保图片      apps/  还没装的 APK（afterboot 装好才删）      kindle-crash/  从书库挪出来的 Kindle 崩溃转储
+# 整包安装把程序目录挪成 host.bak、卸载删程序：这几个文件夹里用户的文件要带到新程序目录 / 留到 backup/user-files。
+# 包里自带的文件名记在 state/bundled.<文件夹>（整包安装时写）：带过去时跳过旧包自带的（新包有自己的那份；新包去掉的也不复活）。
+# 目标里已有同名文件的不动（包里有的以包为准）。这一段在 bootstrap*.sh 和各机型 boot/lib/tidy.sh 里是同一份
+# （tests/user-files-test.sh 核对）。set -eu 下不能失败。
+VD_USER_DIRS="fonts screensaver apps kindle-crash"
+# vd_user_carry 从 到 "文件夹…" [mv]：$1/<d>/ 下（含子文件夹）用户的文件拷进 $2/<d>/；mv=mv 时挪过去（同一个盘，卸载留下的那份）。
+# 同一个文件系统上先试硬链接（不多占地方，host.bak 里的那份照样能回退），不行再拷。输出带过去的文件数。
+vd_user_carry() {
+    vuc_n=0
+    for vuc_d in $3; do
+        [ -d "$1/$vuc_d" ] || continue
+        vuc_c=$( ( cd "$1/$vuc_d" 2>/dev/null && find . 2>/dev/null ) | vd_user_carry1 "$1/$vuc_d" "$2/$vuc_d" \
+            "${VD_TOP:-/mnt/base-us}/veradroid/state/bundled.$vuc_d" "${4:-}" ) || vuc_c=0
+        vuc_n=$(( vuc_n + ${vuc_c:-0} ))
+    done
+    echo "$vuc_n"
+    return 0
+}
+# vd_user_carry1 从 到 包清单 [mv]：标准输入是 find 列出的相对路径；输出带过去的文件数
+vd_user_carry1() {
+    vuc_c=0
+    while IFS= read -r vuc_f; do
+        vuc_f=${vuc_f#./}
+        [ "$vuc_f" != . ] && [ -n "$vuc_f" ] || continue
+        if [ -d "$1/$vuc_f" ] && [ ! -L "$1/$vuc_f" ]; then continue; fi
+        if [ -e "$2/$vuc_f" ] || [ -L "$2/$vuc_f" ]; then continue; fi
+        if [ -f "$3" ] && grep -Fxq -- "$vuc_f" "$3" 2>/dev/null; then continue; fi
+        vuc_p=$2/$vuc_f; mkdir -p "${vuc_p%/*}" 2>/dev/null || continue
+        if [ "$4" = mv ]; then mv -f "$1/$vuc_f" "$vuc_p" 2>/dev/null || continue
+        else ln "$1/$vuc_f" "$vuc_p" 2>/dev/null || cp -a "$1/$vuc_f" "$vuc_p" 2>/dev/null || { rm -f "$vuc_p" 2>/dev/null; continue; }; fi
+        vuc_c=$((vuc_c + 1))
+    done
+    echo "$vuc_c"
+    return 0
+}
+# vd_bundled_save 包目录：记下包里自带的文件名（fonts/、screensaver/、apks/ → apps）。装完新程序、带完用户文件以后调。
+vd_bundled_save() {
+    vbs_s=${VD_TOP:-/mnt/base-us}/veradroid/state
+    mkdir -p "$vbs_s" 2>/dev/null || return 0
+    for vbs_d in fonts screensaver apps; do
+        vbs_p=$vbs_d; [ "$vbs_d" = apps ] && vbs_p=apks
+        if [ -d "$1/$vbs_p" ]; then
+            ( cd "$1/$vbs_p" 2>/dev/null && find . -type f 2>/dev/null | sed 's#^\./##' ) > "$vbs_s/bundled.$vbs_d.tmp" 2>/dev/null \
+                && mv -f "$vbs_s/bundled.$vbs_d.tmp" "$vbs_s/bundled.$vbs_d" 2>/dev/null || rm -f "$vbs_s/bundled.$vbs_d.tmp" 2>/dev/null || true
+        else rm -f "$vbs_s/bundled.$vbs_d" 2>/dev/null || true; fi
+    done
+    return 0
+}
+# vd_user_keep 程序目录：卸载前把用户的字体 / 屏保挪进 backup/user-files（重新安装时 vd_user_restore 放回去）
+vd_user_keep() {
+    vuk_b=${VD_TOP:-/mnt/base-us}/veradroid/backup/user-files
+    vuk_n=$(vd_user_carry "$1" "$vuk_b" "fonts screensaver" mv)
+    rmdir "$vuk_b"/* "$vuk_b" 2>/dev/null || true
+    echo "$vuk_n"
+    return 0
+}
+# vd_user_restore 程序目录：卸载时留下的 backup/user-files 放回去（同名的不覆盖），放完的空文件夹删掉，没放回去的留着
+vd_user_restore() {
+    vur_b=${VD_TOP:-/mnt/base-us}/veradroid/backup/user-files
+    [ -d "$vur_b" ] || { echo 0; return 0; }
+    vur_n=$(vd_user_carry "$vur_b" "$1" "fonts screensaver" mv)
+    find "$vur_b" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+    echo "$vur_n"
+    return 0
+}
+# END vd_user_carry

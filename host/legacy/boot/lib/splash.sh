@@ -58,21 +58,6 @@ splash_after_stop() {
     SPLASH_KEEP=1 splash_begin "" "${PCT:-20}"
 }
 
-# 开机画面在后台画（splash_begin + 第一格进度）：fbink 每画一段字都要读一遍字体，PW5 模拟器上整屏画完要 3–6 秒，
-# 以前显示桥、触摸、容器都要等它画完才开始。fbink 探测（拿到可用的 FBINK，display_prepare 要用它读屏幕几何）仍在前台做。
-# 之后再画进度条（splash_update）之前先 splash_wait：两个 fbink 同时画同一块会花屏。
-splash_bg() {
-    fbink_probe || return 0
-    ( splash_begin "$@"; splash_update 12 ) </dev/null &
-    echo $! > $W/splash.pid
-}
-splash_wait() {
-    sw_p=$(cat $W/splash.pid 2>/dev/null); rm -f $W/splash.pid
-    [ -n "$sw_p" ] || return 0
-    sw_i=0; while kill -0 "$sw_p" 2>/dev/null && [ $sw_i -lt 150 ]; do usleep 100000; sw_i=$((sw_i + 1)); done
-    return 0
-}
-
 # 只更新底部进度条（它自带百分比，不再重复写一遍；局部刷新，很快）
 splash_update() {   # $1 = 百分比  $2 = 文字
     fbink_probe || return 0
@@ -122,6 +107,8 @@ sp_info() { # 第一行：已用时间 + 正在优化哪个应用；第二行：
         i1="$i1 · $(cat $W/splash.dexopt)"
     fi
     i2="第一次开机（刚装好 / 刚更新）要优化应用，会慢一些"
+    # 包管理真的在逐个检查应用（装好 / 更新后的第一次开机，PW4 真机报告里这一段 100 多秒，被当成死机）：说清楚要多久
+    [ -s $W/splash.dexopt ] && i2="更新后首次启动正在检查应用，约 2–3 分钟，不是死机"
     [ $e -ge 180 ] && i2="比平常慢：多半在优化应用，再等等；超过 10 分钟没动静就长按电源键重启 Kindle"
 }
 sp_draw() { # pct 文字 [norefresh]

@@ -142,6 +142,91 @@ vd_root_tidy() {
     return 0
 }
 # END vd_root_tidy
+# BEGIN vd_user_carry
+# 用户自己放进 veradroid/ 的文件（2026-11-19，KPW5 用户：“放到 veradroid/fonts 的字体，升级以后就没了”）：
+#   fonts/        Android 里的 内部存储/Fonts（容器里绑在 /data/media/0/Fonts 上），用户拷进来的字体、字体商店装的字体都在这里
+#   screensaver/  屏保图片      apps/  还没装的 APK（afterboot 装好才删）      kindle-crash/  从书库挪出来的 Kindle 崩溃转储
+# 整包安装把程序目录挪成 host.bak、卸载删程序：这几个文件夹里用户的文件要带到新程序目录 / 留到 backup/user-files。
+# 包里自带的文件名记在 state/bundled.<文件夹>（整包安装时写）：带过去时跳过旧包自带的（新包有自己的那份；新包去掉的也不复活）。
+# 目标里已有同名文件的不动（包里有的以包为准）。这一段在 bootstrap*.sh 和各机型 boot/lib/tidy.sh 里是同一份
+# （tests/user-files-test.sh 核对）。set -eu 下不能失败。
+VD_USER_DIRS="fonts screensaver apps kindle-crash"
+# vd_user_carry 从 到 "文件夹…" [mv]：$1/<d>/ 下（含子文件夹）用户的文件拷进 $2/<d>/；mv=mv 时挪过去（同一个盘，卸载留下的那份）。
+# 同一个文件系统上先试硬链接（不多占地方，host.bak 里的那份照样能回退），不行再拷。输出带过去的文件数。
+vd_user_carry() {
+    vuc_n=0
+    for vuc_d in $3; do
+        [ -d "$1/$vuc_d" ] || continue
+        vuc_c=$( ( cd "$1/$vuc_d" 2>/dev/null && find . 2>/dev/null ) | vd_user_carry1 "$1/$vuc_d" "$2/$vuc_d" \
+            "${VD_TOP:-/mnt/base-us}/veradroid/state/bundled.$vuc_d" "${4:-}" ) || vuc_c=0
+        vuc_n=$(( vuc_n + ${vuc_c:-0} ))
+    done
+    echo "$vuc_n"
+    return 0
+}
+# vd_user_carry1 从 到 包清单 [mv]：标准输入是 find 列出的相对路径；输出带过去的文件数
+vd_user_carry1() {
+    vuc_c=0
+    while IFS= read -r vuc_f; do
+        vuc_f=${vuc_f#./}
+        [ "$vuc_f" != . ] && [ -n "$vuc_f" ] || continue
+        if [ -d "$1/$vuc_f" ] && [ ! -L "$1/$vuc_f" ]; then continue; fi
+        if [ -e "$2/$vuc_f" ] || [ -L "$2/$vuc_f" ]; then continue; fi
+        if [ -f "$3" ] && grep -Fxq -- "$vuc_f" "$3" 2>/dev/null; then continue; fi
+        vuc_p=$2/$vuc_f; mkdir -p "${vuc_p%/*}" 2>/dev/null || continue
+        if [ "$4" = mv ]; then mv -f "$1/$vuc_f" "$vuc_p" 2>/dev/null || continue
+        else ln "$1/$vuc_f" "$vuc_p" 2>/dev/null || cp -a "$1/$vuc_f" "$vuc_p" 2>/dev/null || { rm -f "$vuc_p" 2>/dev/null; continue; }; fi
+        vuc_c=$((vuc_c + 1))
+    done
+    echo "$vuc_c"
+    return 0
+}
+# vd_bundled_save 包目录：记下包里自带的文件名（fonts/、screensaver/、apks/ → apps）。装完新程序、带完用户文件以后调。
+vd_bundled_save() {
+    vbs_s=${VD_TOP:-/mnt/base-us}/veradroid/state
+    mkdir -p "$vbs_s" 2>/dev/null || return 0
+    for vbs_d in fonts screensaver apps; do
+        vbs_p=$vbs_d; [ "$vbs_d" = apps ] && vbs_p=apks
+        if [ -d "$1/$vbs_p" ]; then
+            ( cd "$1/$vbs_p" 2>/dev/null && find . -type f 2>/dev/null | sed 's#^\./##' ) > "$vbs_s/bundled.$vbs_d.tmp" 2>/dev/null \
+                && mv -f "$vbs_s/bundled.$vbs_d.tmp" "$vbs_s/bundled.$vbs_d" 2>/dev/null || rm -f "$vbs_s/bundled.$vbs_d.tmp" 2>/dev/null || true
+        else rm -f "$vbs_s/bundled.$vbs_d" 2>/dev/null || true; fi
+    done
+    return 0
+}
+# vd_user_keep 程序目录：卸载前把用户的字体 / 屏保挪进 backup/user-files（重新安装时 vd_user_restore 放回去）
+vd_user_keep() {
+    vuk_b=${VD_TOP:-/mnt/base-us}/veradroid/backup/user-files
+    vuk_n=$(vd_user_carry "$1" "$vuk_b" "fonts screensaver" mv)
+    rmdir "$vuk_b"/* "$vuk_b" 2>/dev/null || true
+    echo "$vuk_n"
+    return 0
+}
+# vd_user_restore 程序目录：卸载时留下的 backup/user-files 放回去（同名的不覆盖），放完的空文件夹删掉，没放回去的留着
+vd_user_restore() {
+    vur_b=${VD_TOP:-/mnt/base-us}/veradroid/backup/user-files
+    [ -d "$vur_b" ] || { echo 0; return 0; }
+    vur_n=$(vd_user_carry "$vur_b" "$1" "fonts screensaver" mv)
+    find "$vur_b" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+    echo "$vur_n"
+    return 0
+}
+# END vd_user_carry
+# BEGIN vd_backup_mode
+# 更新前备份的方式：环境变量 VD_UPDATE_BACKUP（离线更新 / 自动更新传进来）> settings.conf 的 UPDATE_BACKUP >
+# veradroid/state/update-backup（宿主每次发布设置时写的副本：系统盘是镜像的机型，安装时镜像可能没挂上，读不到 settings.conf）。
+# settings.conf 在却没写这一项 = 默认 full。认不出的值一律按 full（宁可多备份）。
+vd_backup_mode() {
+    vbm=${VD_UPDATE_BACKUP:-}
+    vbc=${SYS:-/mnt/base-us/system/veradroid}/settings.conf
+    if [ -z "$vbm" ] && [ -f "$vbc" ]; then
+        vbm=$(sed -n 's/^UPDATE_BACKUP=//p' "$vbc" 2>/dev/null | tail -1 || true)
+        vbm=${vbm:-full}
+    fi
+    [ -n "$vbm" ] || vbm=$(head -c 16 "${VD_TOP:-/mnt/base-us}/veradroid/state/update-backup" 2>/dev/null || true)
+    case "$vbm" in full|light|off) echo "$vbm" ;; *) echo full ;; esac
+}
+# END vd_backup_mode
 mkdir -p "$VD_LOGS" "$VD_STATE" "$VD_BACKUP" 2>/dev/null || true
 TMP=/mnt/base-us/veradroid/state/install.$$
 trap 'rm -rf "$TMP"' EXIT
@@ -203,7 +288,15 @@ done
 show() {
     printf '%s\n' "$*"
     if command -v eips >/dev/null 2>&1; then
-        eips 1 3 "$*" >/dev/null 2>&1 || true
+        # eips 没有中文字形：中文字节画出来是乱码，叠在上一行没擦掉的尾巴上（Oasis 3 用户照片：“Backup / ▪ books (3143 MB)…”
+        # 后面一片乱码）。只画英文：“English / 中文”取斜杠前一半，否则去掉非 ASCII；剩下不到 4 个字母的（纯中文的提示）不画，
+        # 屏幕上留着上一条英文。补空格到 60 列，盖住上一行更长的尾巴。
+        case "$*" in *" / "*) se=${*%% / *} ;; *) se=$* ;; esac
+        se=$(printf '%s' "$se" | tr -cd ' -~' | cut -c1-60)
+        # 纯中文的进度行（“下载 45% [####-----]”）去掉中文后还剩百分比和进度条，照样画
+        if [ "$(printf '%s' "$se" | tr -cd 'A-Za-z' | wc -c)" -ge 4 ] || case "$se" in *%*) true ;; *) false ;; esac; then
+            eips 1 3 "$(printf '%-60s' "$se")" >/dev/null 2>&1 || true
+        fi
     fi
 }
 progress_line() { # pct label
@@ -312,24 +405,42 @@ restore_missing() { # backup.tgz destdir
 vlog() { echo "[$(date '+%F %T')] $*" >> /mnt/base-us/veradroid/logs/install-detail.log 2>/dev/null || true; }
 fsize() { { wc -c < "$1"; } 2>/dev/null | tr -d ' ' || true; }
 vp_now() { date +%s; }
+vp_mb() { b=${1:-0}; printf '%d.%d' $((b / 1048576)) $(( (b % 1048576) * 10 / 1048576 )); }
+# 老机型安装器没有新安装器的整屏进度画面（vp_*）：下面两块共用代码（vd_dl、vd_parts，和 bootstrap.sh 一字不差）用到的几个
+# 画面 / 错误代码函数在这里换成 show 一行字
+NET_SUM=; UNPACK_PRI=
+vp_step() { show "$2"; }
+vp_upgrade() { :; }
+dl_code() { echo 14; }
+ui_run() { shift 4; "$@"; }   # ui_run in <文件> <字节> <说明> 命令…：只跑命令
+# BEGIN vd_dl
 # ---- 分段并行下载 + 镜像（docs/download-speed.md）----
+# 这一块在 bootstrap.sh 和 bootstrap-legacy.sh 里一字不差（tests/dl-block-test.sh）。要用到：curl_do、vlog、fsize、vp_now、$TMP、$BASE。
 # 国内到 Cloudflare 免费版的单条连接很慢，但几条连接一起下时总速度差不多按条数涨：大文件（≥ 8 MB）分成 VD_SEGS 段
-# （默认 4，network.conf 里可设 1–6，1 = 不分段；dl.wenjin.jp 每个 IP 最多 8 条连接，所以不超过 6），每段一条 Range 连接同时下；每段下好的部分留在 <输出>.seg/ 里，
+# （默认 4，network.conf 里可设 1–6，1 = 不分段；dl.wenjin.jp 总共 64 条连接，所以不超过 6），每段一条 Range 连接同时下；每段下好的部分留在 <输出>.seg/ 里，
 # 断了 / 重试时各段从自己的断点接着下；全部下完按顺序拼起来（拼一段删一段，不多占一份空间），之后照旧整体校验 SHA-256。
 # 镜像：元数据里可以有 "mirrors": ["https://…", …]（基地址，有顺序；写 [] 就是不用镜像）；元数据里没有这一项时
 # 用默认的 VD_DEF_MIRRORS（dl.wenjin.jp：同一台服务器，不经过 Cloudflare 直连）。network.conf 里的 VD_MIRROR 排在最前。
 # 文件在镜像上的地址 = 基地址/<key>，key = 主站地址去掉域名和 ? 后面的部分（如 bundles/veradroid-pw6-0.95.tar.gz）；
-# 基地址里有 {name} 时换成文件名（GitHub Releases 那种没有目录的）。每次下载前各候选（镜像 + 主站）先下前 256 KB 计时，
-# 用最快的；镜像下坏了（SHA-256 不对）就只用主站重下。镜像上的内容和主站不一样也没关系：最后都要过 SHA-256。
+# 基地址里有 {name} 时换成文件名（GitHub Releases 那种没有目录的）。镜像只认 https（主站本身是 http 的测试服务器时也认 http）。
+# 选源（2026-11-19 起“直链优先”，站长的决定）：按顺序先测镜像（前 256 KB 计时），第一个回 206 且不慢于 VD_MIN_BPS
+# （默认 50 KB/s；整个文件不到 256 KB 时只要回 206）的镜像直接用，不再拿主站比——以前取最快的，国内 Cloudflare 常常短测赢了、
+# 整个下载却很慢。镜像都测不通 / 都太慢时才用主站（主站也不通时用测到的最快的那个）。镜像下坏了（SHA-256 不对）就只用主站重下。
+# 镜像上的内容和主站不一样也没关系：最后都要过 SHA-256。
 VD_SEGS=${VD_SEGS:-4}; case "$VD_SEGS" in [1-6]) ;; *) VD_SEGS=4 ;; esac
 VD_SEG_MIN=8388608
+VD_MIN_BPS=${VD_MIN_BPS:-51200}; case "$VD_MIN_BPS" in ''|*[!0-9]*) VD_MIN_BPS=51200 ;; esac
 VD_DEF_MIRRORS='"https://dl.wenjin.jp"'
+# 元数据（版本、地址、sha256）也先走直链：主站是默认的 veradroid.wenjin.jp 时默认 https://dl.wenjin.jp，network.conf 里
+# VD_DIRECT= 关掉；主站改了（VD_BASE，测试服务器）时默认不用，测试时显式给 VD_DIRECT
+case "$BASE" in https://veradroid.wenjin.jp|https://veradroid.wenjin.jp/) VD_DIRECT=${VD_DIRECT-https://dl.wenjin.jp} ;; *) VD_DIRECT=${VD_DIRECT-} ;; esac
 VD_MIRRORS=
-vd_mirrors_from() { # 元数据 json → VD_MIRRORS（空格分开，只要 https）
+vd_mirrors_from() { # 元数据 json → VD_MIRRORS（空格分开）
+    m_pat='https'; case "$BASE" in http://*) m_pat='https\{0,1\}' ;; esac
     VD_MIRRORS=$( { [ -z "${VD_MIRROR:-}" ] || printf '"%s",' "$VD_MIRROR"
         if printf '%s' "$1" | grep -q '"mirrors"'; then printf '%s' "$1" | tr -d '\n' | sed -n 's/.*"mirrors": *\[\([^]]*\)\].*/\1/p'
         else printf '%s' "$VD_DEF_MIRRORS"; fi; } | tr ',' '\n' \
-        | sed -n 's/^[ ]*"\(https:\/\/[^" ]*\)"[ ]*$/\1/p' | head -n 6 | tr '\n' ' ')
+        | sed -n "s/^[ ]*\"\\($m_pat:\\/\\/[^\" ]*\\)\"[ ]*\$/\\1/p" | head -n 6 | tr '\n' ' ')
     [ -z "$VD_MIRRORS" ] || vlog "mirrors: $VD_MIRRORS"
     return 0
 }
@@ -342,17 +453,22 @@ vd_cands() { # 主站地址 → 候选地址（每行一个：镜像按顺序在
 }
 # vd_pick 主站地址 → 输出“地址 分段”：分段 = VD_SEGS（支持 Range）、1（不支持）、0（都测不通）
 vd_pick() {
-    p_o=$1; p_best=; p_bs=-1; p_seg=1
+    p_o=$1; p_best=; p_bs=-1; p_seg=1; p_why=
     for p_u in $(vd_cands "$p_o"); do
         p_w=$(curl_do -s -o /dev/null -r 0-262143 --connect-timeout 8 --max-time 12 -w '%{http_code} %{size_download} %{time_total}' "$p_u" 2>/dev/null) || p_w="000 0 0"
         set -- $p_w
         # 206 = 支持 Range；镜像必须支持（不然多半是错误页 / 跳转页），主站 200 也行（不分段）
         case "$1" in 206) ;; 200) [ "$p_u" = "$p_o" ] || continue ;; *) vlog "probe: $p_u -> HTTP $1"; continue ;; esac
         p_sp=$(awk -v b="$2" -v t="$3" 'BEGIN { if (t > 0) printf "%d", b / t; else print 0 }')
-        vlog "probe: $p_u -> HTTP $1, $p_sp B/s"
-        if [ "$p_sp" -gt "$p_bs" ] 2>/dev/null; then p_best=$p_u; p_bs=$p_sp; p_seg=1; [ "$1" = 206 ] && p_seg=$VD_SEGS; fi
+        vlog "probe: $p_u -> HTTP $1, $2 bytes, $p_sp B/s"
+        # 直链优先：镜像够快（或整个小文件都拿到了）就用它，后面的（主站）不测
+        if [ "$p_u" != "$p_o" ] && [ "$1" = 206 ] && { [ "$p_sp" -ge "$VD_MIN_BPS" ] || [ "$2" -lt 262144 ]; } 2>/dev/null; then
+            p_best=$p_u; p_bs=$p_sp; p_seg=$VD_SEGS; p_why="mirror first"; break
+        fi
+        if [ "$p_sp" -gt "$p_bs" ] 2>/dev/null; then p_best=$p_u; p_bs=$p_sp; p_seg=1; [ "$1" = 206 ] && p_seg=$VD_SEGS; p_why=fastest; fi
     done
-    [ -n "$p_best" ] || { p_best=$p_o; p_seg=0; }   # 都测不通：分段数未知（0），交给真正的下载去报错
+    [ -n "$p_best" ] || { p_best=$p_o; p_seg=0; p_why="nothing answered"; }   # 都测不通：分段数未知（0），交给真正的下载去报错
+    vlog "source: $p_best ($p_why, $p_bs B/s, $p_seg segments)"
     # 记下选了哪个源（第几个候选），小文件（增量更新的部件）在 10 分钟内直接用它，不再一个个测
     p_i=0; for p_u in $(vd_cands "$p_o"); do p_i=$((p_i + 1)); [ "$p_u" = "$p_best" ] && break; done
     echo "$(vp_now) $p_i" > "$TMP/dl.pick" 2>/dev/null || true
@@ -417,6 +533,343 @@ vd_fetch() {
     mv -f "$f_d/0" "$f_o" && rm -rf "$f_d" || return 23
     return 0
 }
+# vd_meta 主站地址 [curl 选项…]：元数据先从直链（VD_DIRECT + 同一路径，带 ?t= 绕缓存）拿，拿不到 / 不像元数据（没有 "version" 和
+# "url"）时从主站拿。直链和主站是同一台服务器、各自的证书，可信程度一样；元数据里的镜像（可能是第三方的桶）不用来拿元数据。
+# 直链现在只放行下载路径，元数据请求回 404，这里就退回主站：多一次很快的请求，站长放行后自动生效。
+vd_meta() {
+    m_u=$1; shift
+    if [ -n "${VD_DIRECT:-}" ]; then
+        m_k=${m_u#*://}; m_k=${m_k#*/}
+        if m_j=$(curl_do -fsSL --connect-timeout 6 --max-time 15 "${VD_DIRECT%/}/$m_k" 2>/dev/null) \
+            && printf '%s' "$m_j" | grep -q '"version"' && printf '%s' "$m_j" | grep -q '"url"'; then
+            vlog "meta: from the direct link ${VD_DIRECT%/}/${m_k%%\?*}"; printf '%s' "$m_j"; return 0
+        fi
+        vlog "meta: direct link has no ${m_k%%\?*}, using the main site"
+    fi
+    curl_do -fsSL "$@" "$m_u"
+}
+# END vd_dl
+# vd_download 地址 输出文件 总字节（0 = 不知道）：vd_fetch 断点续传 / 分段，卡住 / 断了自动重试（连续 8 次没进展才放弃，
+# DL_RC = curl 的退出码）；每 5 秒一行进度。和新安装器的 vd_download 同样的约定，画面只是一行字
+DL_RC=0
+vd_download() {
+    dw_u=$1; dw_o=$2; dw_t=${3:-0}; [ "$dw_t" -gt 0 ] 2>/dev/null || dw_t=0
+    dw_n=0; dw_last=$(vd_have "$dw_o"); DL_RC=0
+    while :; do
+        # 结束标记文件 + kill -0 一起看：只看 kill -0 时，Linux 上的 busybox 测试偶尔一直转圈（进程早就结束了）
+        rm -f "$dw_o.rc"
+        { vd_fetch "$dw_u" "$dw_o" "$dw_t" && echo 0 > "$dw_o.rc" || echo $? > "$dw_o.rc"; } &
+        dw_p=$!; dw_t0=$(vp_now); dw_a=$(vd_have "$dw_o"); dw_k=0
+        while [ ! -s "$dw_o.rc" ] && kill -0 $dw_p 2>/dev/null; do
+            sleep 1; dw_k=$((dw_k + 1)); [ $((dw_k % 5)) = 0 ] || continue
+            dw_sz=$(vd_have "$dw_o"); dw_dt=$(( $(vp_now) - dw_t0 )); [ $dw_dt -ge 1 ] || dw_dt=1
+            dw_kb=$(( (dw_sz - dw_a) / 1024 / dw_dt ))
+            if [ $dw_t -gt 0 ]; then
+                dw_pct=$(( dw_sz / 1024 * 100 / (dw_t / 1024 + 1) )); [ $dw_pct -gt 100 ] && dw_pct=100
+                progress_line $dw_pct "Downloading / 下载中 $(vp_mb $dw_sz)/$(vp_mb $dw_t) MB ${dw_kb} KB/s"
+            else show "下载中 $(vp_mb $dw_sz) MB ${dw_kb} KB/s"; fi
+        done
+        DL_RC=0; wait $dw_p 2>/dev/null || true
+        DL_RC=$(cat "$dw_o.rc" 2>/dev/null || echo 1); rm -f "$dw_o.rc"; [ -n "$DL_RC" ] || DL_RC=1
+        dw_sz=$(vd_have "$dw_o")
+        [ $DL_RC = 0 ] && return 0
+        [ $dw_t -gt 0 ] && [ $dw_sz -ge $dw_t ] && return 0
+        # 服务器不支持断点续传（33 / 36）：只能从头来
+        case "$DL_RC" in 33|36) rm -rf "$dw_o" "$dw_o.seg"; dw_sz=0 ;; esac
+        [ $((dw_sz - dw_last)) -gt 524288 ] && dw_n=0; dw_last=$dw_sz
+        dw_n=$((dw_n + 1))
+        vlog "download: curl rc=$DL_RC at $dw_sz bytes ($(head -c 200 "$TMP/curl.err" 2>/dev/null | tr '\n' ' ')), attempt $dw_n/8"
+        [ $dw_n -ge 8 ] && return 1
+        show "网络断了 / 卡住了，正在重试（$dw_n/8），下好的部分不会丢…"
+        sleep 5
+    done
+}
+# BEGIN vd_parts
+# 这一块在 bootstrap.sh 和 bootstrap-legacy.sh 里一字不差（tests/dl-block-test.sh）。
+# ---- 增量更新（parts；docs/incremental-updates.md）----
+# 元数据里有 "parts"（索引地址）时，只下载和本机不一样的部分，不下整包：
+#  - 程序目录按目录分成几个部件（boot / bin / fonts / apks …），本机已有同样内容的文件（按 sha256 认，不信版本号）就从本机拷；
+#  - 系统镜像：本机镜像里已有的文件（同样按 sha256 认，包括 slim 挪出去的）直接硬链接，缺的从“差量”部件（相对旧镜像新增 / 变化的文件）
+#    或 vol 部件（安装器 / 宿主会改的几个文件）补；都不够才下整个镜像（xz，比 gz 小约 25%）。
+#  - 重建出来的程序目录和系统镜像都逐个文件和完整目标（索引里的清单）核对 sha256 / 权限 / 链接，任何一步不对就回到整包（或整个镜像）。
+# 整包、老安装器、离线包完全不受影响：新字段只是加在元数据后面。VD_PARTS=0 关掉。
+PARTS=; PARTS_VER=; PARTS_ROOTFS=; PARTS_TREE=; PARTS_ROOTFS_GZ=; PARTS_BASE=; PARTS_DL=0; PARTS_FULL=; PD=
+vd_parts_url() { echo "$PARTS_BASE/$1?v=$(printf '%s' "$2" | cut -c1-8)"; }
+# vd_parts_get 文件 sha 字节 说明：下载一个部件到 $PD 并校验（坏了重下一次）
+vd_parts_get() {
+    pg_f=$PD/$1; pg_n=0
+    while [ $pg_n -lt 2 ]; do
+        pg_n=$((pg_n + 1))
+        [ -f "$pg_f" ] && verify_sha "$pg_f" "$2" && return 0
+        [ -f "$pg_f" ] && [ "$(fsize "$pg_f")" -ge "$3" ] 2>/dev/null && rm -f "$pg_f"   # 下全了却不对：从头来
+        vp_step dl "$4" "$NET_SUM"
+        vd_download "$(vd_parts_url "$1" "$2")" "$pg_f" "$3" || { vlog "parts: $1: download failed (curl $DL_RC)"; return 1; }
+        PARTS_DL=$((PARTS_DL + $3))
+        verify_sha "$pg_f" "$2" && return 0
+        vlog "parts: $1: sha256 mismatch"; rm -rf "$pg_f" "$pg_f.seg"
+        VD_MIRRORS=; rm -f "$TMP/dl.pick"   # 重下只用主站
+    done
+    return 1
+}
+# 目录下所有普通文件（不跨挂载点）："sha256 路径"
+vd_parts_hash() {
+    for ph_d in "$@"; do [ -d "$ph_d" ] && $UNPACK_PRI find "$ph_d" -xdev -type f -exec sha256sum {} + 2>/dev/null; done | awk '{ print substr($0, 1, 64) " " substr($0, 67) }'
+    return 0
+}
+# 树的清单（在树里运行，路径 ./…）："hexmode perm uid gid dev ino size mtime 路径"
+vd_parts_stat() { ( cd "$1" && $UNPACK_PRI find . -xdev ! -path . ! -path './data/*' -exec stat -c '%f %a %u %g %d %i %s %Y %n' {} + ) 2>/dev/null; }
+vd_parts_links() { ( cd "$1" && find . -xdev ! -path './data/*' -type l -exec stat -c '%N' {} + ) 2>/dev/null; }
+# 树 $1 的规范清单（和 mkparts.py 的 rootfs.sums 同一格式，已排序）写到 $2。文件的 sha256：按 dev/ino/size/mtime 在 $PD/hashdb 里找，
+# 找不到的现算并记进 hashdb（同一个 inode 只算一次：硬链接出来的新树不用再算）
+vd_parts_canon() {
+    vd_parts_stat "$1" > "$PD/c.stat"; vd_parts_links "$1" > "$PD/c.links"
+    touch "$PD/hashdb"
+    awk 'FILENAME == ARGV[1] { h[$1 " " $2 " " $3 " " $4] = 1; next }
+         { t = substr($1, 1, length($1) - 3); if (t != "8") next
+           if (!(($5 " " $6 " " $7 " " $8) in h)) { p = $0; for (i = 1; i <= 8; i++) sub(/^[^ ]* /, "", p); print p } }' "$PD/hashdb" "$PD/c.stat" > "$PD/c.todo"
+    if [ -s "$PD/c.todo" ]; then
+        ( cd "$1" && tr '\n' '\0' < "$PD/c.todo" | $UNPACK_PRI xargs -0 sha256sum ) > "$PD/c.sha" 2>/dev/null || true
+        awk 'FILENAME == ARGV[1] { s[substr($0, 67)] = substr($0, 1, 64); next }
+             { p = $0; for (i = 1; i <= 8; i++) sub(/^[^ ]* /, "", p); if ((p in s) && substr($1, 1, length($1) - 3) == "8") print $5, $6, $7, $8, s[p] }' "$PD/c.sha" "$PD/c.stat" >> "$PD/hashdb"
+    fi
+    awk 'FILENAME == ARGV[1] { h[$1 " " $2 " " $3 " " $4] = $5; next }
+         FILENAME == ARGV[2] { if (match($0, /^'"'"'[^'"'"']*'"'"' -> '"'"'/)) { p = substr($0, 2, RLENGTH - 7); x = substr($0, RLENGTH + 1); sub(/'"'"'$/, "", x); l[p] = x }; next }
+         { p = $0; for (i = 1; i <= 8; i++) sub(/^[^ ]* /, "", p); t = substr($1, 1, length($1) - 3)
+           if (t == "4") print "d", $2, $3, $4, p
+           else if (t == "a") print "l", ((p in l) ? l[p] : "?"), p
+           else if (t == "8") print "f", ((($5 " " $6 " " $7 " " $8) in h) ? h[$5 " " $6 " " $7 " " $8] : "?"), $2, $3, $4, p
+           else print "x", t, p }' "$PD/hashdb" "$PD/c.links" "$PD/c.stat" | LC_ALL=C sort > "$2"
+}
+# ---- 第一段（下载阶段，Android 可能还在跑：只读本机文件）----
+vd_parts_prepare() { # 元数据 json；成功：$TMP/veradroid-pw6 就绪（没有 rootfs.tar.gz），PARTS_ROOTFS=tree|full
+    [ "${VD_PARTS:-1}" != 0 ] || return 1
+    pp_u=$(printf '%s' "$1" | sed -n 's/.*"parts": *"\([^"]*\)".*/\1/p')
+    pp_s=$(printf '%s' "$1" | sed -n 's/.*"parts_sha256": *"\([^"]*\)".*/\1/p')
+    pp_z=$(printf '%s' "$1" | sed -n 's/.*"parts_size": *\([0-9]*\).*/\1/p')
+    pp_v=$(printf '%s' "$1" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')
+    [ -n "$pp_u" ] && [ -n "$pp_s" ] || return 1
+    for c in sha256sum xzcat stat find xargs; do command -v $c >/dev/null 2>&1 || { vlog "parts: no $c, whole bundle"; return 1; }; done
+    PD=$TMP/parts; rm -rf "$PD" "$TMP/veradroid-pw6"; mkdir -p "$PD/idx" || return 1
+    PARTS_BASE=${pp_u%%\?*}; PARTS_BASE=${PARTS_BASE%/*}
+    vp_step dl "增量更新：读取更新清单" "$NET_SUM"
+    # 索引也和部件一样：sha256 不对（镜像上是旧的 / 坏的）就只从主站再下一次
+    pp_i=0
+    until vd_download "$pp_u" "$PD/index.tar.gz" "${pp_z:-0}" && verify_sha "$PD/index.tar.gz" "$pp_s"; do
+        rm -rf "$PD/index.tar.gz" "$PD/index.tar.gz.seg"; pp_i=$((pp_i + 1))
+        [ $pp_i -lt 2 ] && [ -n "$VD_MIRRORS" ] || { vlog "parts: index unavailable"; return 1; }
+        vlog "parts: index download failed or sha256 mismatch: again from the main site only"
+        VD_MIRRORS=; rm -f "$TMP/dl.pick"
+    done
+    tar -xzf "$PD/index.tar.gz" -C "$PD/idx" 2>/dev/null || { vlog "parts: index unreadable"; return 1; }
+    I=$PD/idx/index
+    [ "$(head -n 1 "$I")" = "VDPARTS 1" ] && [ -s "$PD/idx/rootfs.sums" ] || { vlog "parts: unknown index format"; return 1; }
+    PARTS_VER=$(awk '$1 == "version" { print $2 }' "$I")
+    [ -n "$PARTS_VER" ] && [ "$PARTS_VER" = "$pp_v" ] || { vlog "parts: index version '$PARTS_VER' != '$pp_v'"; return 1; }
+    # 旧的半成品（上次被打断）
+    if [ -e "$SYS/rootfs.vdnew" ]; then mounts_under "$SYS/rootfs.vdnew" 1 && return 1; rm -rf "$SYS/rootfs.vdnew"; fi
+    vp_step verify "增量更新：核对本机已有的文件" "只下载有变化的部分；系统镜像较大，要一两分钟"
+    pp_t0=$(vp_now)
+    # 程序目录的来源：已装的程序目录、系统里的 VeraHome / VeraIME / libandroid_runtime、KUAL 扩展、上次装时留的原版文件
+    { vd_parts_hash "$VD/boot" "$VD/bin" "$VD/fonts" "$VD/kmod" "$VD/models" "$VD/screensaver" "$VD/apps" "$SYS/vd-pristine" /mnt/us/extensions/VeraDroid
+      for f in "$SYS/rootfs/system/priv-app/VeraHome/VeraHome.apk" "$SYS/rootfs/system/app/VeraIME/VeraIME.apk" "$SYS/rootfs/system/lib/libandroid_runtime.so"; do
+          [ -f "$f" ] && sha256sum "$f" 2>/dev/null | awk '{ print substr($0, 1, 64) " " substr($0, 67) }'; done; } > "$PD/src.host"
+    # 系统镜像的来源：已装的镜像（不跨挂载点，跳过 data/）和 slim 挪出去的系统应用；记 dev/ino/size/mtime，第二段不用再算
+    : > "$PD/hashdb"; : > "$PD/src.rootfs"
+    for pp_d in "$SYS/rootfs" "$SYS/slim-removed"; do
+        [ -d "$pp_d" ] || continue
+        vd_parts_canon "$pp_d" "$PD/c.out"
+        awk -v d="$pp_d" 'FILENAME == ARGV[1] { if ($1 == "f" && $2 != "?") { p = $0; for (i = 1; i <= 5; i++) sub(/^[^ ]* /, "", p); print $2, d "/" substr(p, 3) }; next }' "$PD/c.out" >> "$PD/src.rootfs"
+    done
+    vlog "parts: hashed local files in $(( $(vp_now) - pp_t0 ))s ($(wc -l < "$PD/src.host" | tr -d ' ') program files, $(wc -l < "$PD/src.rootfs" | tr -d ' ') image files)"
+    # 程序目录：每个部件，所有文件本机都有 -> 从本机拷；否则下载
+    pp_need=$(awk 'FILENAME == ARGV[1] { h[$1] = 1; next } $1 == "file" && !($2 in h) { n[$4] = 1 } END { for (p in n) print p }' "$PD/src.host" "$I" | LC_ALL=C sort | tr '\n' ' ')
+    # 系统镜像：缺的内容（sha256）
+    awk 'FILENAME == ARGV[1] { h[$1] = 1; next } $1 == "f" && !($2 in h) { print $2 }' "$PD/src.rootfs" "$PD/idx/rootfs.sums" | LC_ALL=C sort -u > "$PD/missing"
+    awk 'FILENAME == ARGV[1] { h[$1] = 1; next } ($1 in h) { print }' "$PD/src.host" "$PD/missing" > "$PD/missing.h"   # vd-pristine 里有的
+    awk 'FILENAME == ARGV[1] { h[$1] = 1; next } !($1 in h) { print }' "$PD/missing.h" "$PD/missing" > "$PD/missing.r"
+    # 选最省的组合：不用下 / vol / 差量(+vol) / 整个镜像
+    pp_best=; pp_bz=; pp_full=$(awk '$1 == "rpart" && $2 == "full" { print $3, $4, $5, $6; exit }' "$I")
+    [ -n "$pp_full" ] || return 1
+    set -- $pp_full; pp_bz=$2; pp_best="full"
+    pp_vol=$(awk '$1 == "rpart" && $2 == "vol" { print $3, $4, $5, $6, $7; exit }' "$I")
+    covers() { awk 'FILENAME != ARGV[ARGC - 1] { h[$1] = 1; next } !($1 in h) { bad = 1; exit } END { exit bad }' "$@"; }
+    if [ ! -s "$PD/missing.r" ]; then pp_best=none; pp_bz=0
+    else
+        vz=; [ -n "$pp_vol" ] && { set -- $pp_vol; vz=$2; }
+        if [ -n "$vz" ] && covers "$PD/idx/$5" "$PD/missing.r" && [ "$vz" -lt "$pp_bz" ]; then pp_best=vol; pp_bz=$vz; fi
+        while read -r k kind dsh sz fn us lst from; do
+            [ "$k" = rpart ] && [ "$kind" = delta ] || continue
+            if covers "$PD/idx/$lst" "$PD/missing.r"; then t=$sz
+            elif [ -n "$vz" ] && covers "$PD/idx/$lst" "$PD/idx/$(echo $pp_vol | cut -d' ' -f5)" "$PD/missing.r"; then t=$((sz + vz))
+            else continue; fi
+            [ "$t" -lt "$pp_bz" ] && { pp_best="delta $dsh"; pp_bz=$t; }
+        done < "$I"
+    fi
+    pp_hz=$(awk -v n=" $pp_need" '$1 == "part" && index(n, " " $2 " ") { s += $4 } END { print s + 0 }' "$I")
+    pp_tot=$((pp_hz + pp_bz))
+    vlog "parts: $cur_ver -> $PARTS_VER: program parts to download: ${pp_need:-none} ($pp_hz bytes); image: $pp_best ($pp_bz bytes, $(wc -l < "$PD/missing" | tr -d ' ') files missing locally)"
+    [ "$pp_tot" -lt "${size:-999999999999}" ] 2>/dev/null || { vlog "parts: not smaller than the whole bundle"; return 1; }
+    # 空间：下载的部件 + 解开后的程序目录（约 30 MB）+ 余量
+    pp_mb=$(( pp_tot / 1048576 * 2 + 128 ))
+    pp_free=$(df -m /mnt/base-us 2>/dev/null | awk 'NR == 2 { print $4 }')
+    [ "${pp_free:-0}" -ge "$pp_mb" ] 2>/dev/null || { vlog "parts: need ${pp_mb} MB, free ${pp_free:-?} MB"; return 1; }
+    # 要下载的部件（先下 bin：里面的 FBInk 能马上换成整屏方块画面）："文件 sha 字节 说明"
+    : > "$PD/dl.list"
+    pp_order=$(echo " $pp_need " | sed 's/ bin / /'); case " $pp_need " in *" bin "*) pp_order="bin $pp_order" ;; esac
+    for p in $pp_order; do
+        awk -v p="$p" '$1 == "part" && $2 == p { print $5, $3, $4, p; exit }' "$I" >> "$PD/dl.list"
+    done
+    pp_rl=; PARTS_ROOTFS=tree; PARTS_FULL=$pp_full
+    case "$pp_best" in
+        full) set -- $pp_full; echo "$3 $1 $2 系统镜像" >> "$PD/dl.list"; PARTS_ROOTFS=full; PARTS_ROOTFS_GZ=$(( $4 / 2 )) ;;
+        none) PARTS_ROOTFS_GZ=1048576 ;;
+        *)  PARTS_ROOTFS_GZ=0
+            if [ "$pp_best" != vol ]; then
+                set -- $(awk -v s="${pp_best#delta }" '$1 == "rpart" && $3 == s { print $3, $4, $5, $6, $7; exit }' "$I")
+                echo "$3 $1 $2 系统镜像的变化" >> "$PD/dl.list"; pp_rl=$3; PARTS_ROOTFS_GZ=$4
+                covers "$PD/idx/$5" "$PD/missing.r" && pp_vol=
+            fi
+            if [ -n "$pp_vol" ]; then
+                set -- $pp_vol; echo "$3 $1 $2 系统文件" >> "$PD/dl.list"; pp_rl="$pp_rl $3"; PARTS_ROOTFS_GZ=$((PARTS_ROOTFS_GZ + $4))
+            fi ;;
+    esac
+    pp_cnt=$(wc -l < "$PD/dl.list" | tr -d ' '); pp_n=0
+    while read -r f s z l; do
+        pp_n=$((pp_n + 1))
+        vd_parts_get "$f" "$s" "$z" "增量更新 $pp_n/$pp_cnt：$l（$(vp_mb "$z") MB）" < /dev/null || return 1
+    done < "$PD/dl.list"
+    # 程序目录：下载的部件解开，其余文件从本机拷，然后整个目录和清单核对
+    vp_step unpack "增量更新：组装新版本" "只用核对过的文件"
+    mkdir -p "$TMP/veradroid-pw6" || return 1
+    for p in $pp_need; do
+        f=$(awk -v p="$p" '$1 == "part" && $2 == p { print $5; exit }' "$I")
+        xzcat "$PD/$f" | tar -xf - -C "$TMP" || { vlog "parts: unpack $p failed"; return 1; }
+    done
+    awk -v n=" $pp_need " -v t="$TMP/veradroid-pw6" -v q="'" '
+        FILENAME == ARGV[1] { if (!($1 in s) && index(substr($0, 66), q) == 0) s[$1] = substr($0, 66); next }
+        $1 == "file" && !index(n, " " $4 " ") { d = $5; sub(/\/[^\/]*$/, "", d)
+            if (d != $5) print "mkdir -p " q t "/" d q
+            print "cp " q s[$2] q " " q t "/" $5 q " && chmod " $3 " " q t "/" $5 q }' "$PD/src.host" "$I" > "$PD/copy.sh"
+    sh -e "$PD/copy.sh" || { vlog "parts: copying local files failed"; return 1; }
+    vp_upgrade "$TMP/veradroid-pw6/bin/fbink"
+    ( cd "$TMP/veradroid-pw6" && find . -type f -exec sha256sum {} + ) 2>/dev/null | awk '{ print substr($0, 1, 64), substr($0, 69) }' | LC_ALL=C sort -k2 > "$PD/got.files"
+    ( cd "$TMP/veradroid-pw6" && find . -type f -exec stat -c '%a %n' {} + ) 2>/dev/null | awk '{ print $1, substr($0, length($1) + 4) }' | LC_ALL=C sort -k2 > "$PD/got.perm"
+    awk '$1 == "file" { print $2, $5 }' "$I" | LC_ALL=C sort -k2 > "$PD/want.files"
+    awk '$1 == "file" { print $3, $5 }' "$I" | LC_ALL=C sort -k2 > "$PD/want.perm"
+    # 权限只在这个目录真能存权限时才核对：KT5 / KT6 / Scribe 等的用户盘（fuse fsp）上每个文件读回来都是 777，
+    # 整包安装也一样（装好的程序目录同在这块盘上），以前这里每次都失败、增量更新全部退回整包（r093 闸门 KT5 / PW5 实测）
+    pp_pm=1; : > "$PD/.permtest" && chmod 640 "$PD/.permtest" 2>/dev/null && [ "$(stat -c %a "$PD/.permtest" 2>/dev/null)" = 640 ] || pp_pm=
+    rm -f "$PD/.permtest"
+    [ -n "$pp_pm" ] || vlog "parts: this file system keeps no permission bits (read back $(stat -c %a "$TMP/veradroid-pw6/VERSION" 2>/dev/null)): checking contents only"
+    if ! cmp -s "$PD/got.files" "$PD/want.files" || { [ -n "$pp_pm" ] && ! cmp -s "$PD/got.perm" "$PD/want.perm"; }; then
+        vlog "parts: program files do not match the index: $(diff "$PD/want.files" "$PD/got.files" 2>/dev/null | head -5 | tr '\n' ' ') $(diff "$PD/want.perm" "$PD/got.perm" 2>/dev/null | grep '^[-+][0-9]' | head -20 | tr '\n' ' ')"
+        return 1
+    fi
+    # 系统镜像的差量 / vol 部件解开备用（第二段在 Android 停下后组装）
+    mkdir -p "$PD/rsrc" || return 1
+    for f in $pp_rl; do xzcat "$PD/$f" | tar -xf - -C "$PD/rsrc" || { vlog "parts: unpack $f failed"; return 1; }; done
+    vlog "parts: ready, downloaded $PARTS_DL bytes, image $PARTS_ROOTFS ($pp_best)"
+    ver=$PARTS_VER
+    return 0
+}
+# ---- 第二段（Android 已停、还没动任何东西）：组装新的系统镜像 $SYS/rootfs.vdnew ----
+vd_parts_tree() {
+    T=$SYS/rootfs.vdnew
+    [ -d "$SYS/rootfs" ] || return 1
+    mounts_under "$SYS/rootfs" 1 && { vlog "parts: mounts under $SYS/rootfs"; return 1; }
+    if [ -e "$T" ]; then mounts_under "$T" 1 && return 1; rm -rf "$T"; fi
+    # 新镜像先整棵硬链接旧镜像（不占空间），再按目标清单修：多的删掉，不对的换掉，缺的从本机其他地方 / 下载的部件补
+    $UNPACK_PRI cp -al "$SYS/rootfs" "$T" || { vlog "parts: cp -al failed"; rm -rf "$T"; return 1; }
+    rm -rf "$T/data"; mkdir -p "$T/data"   # data/ 是安装器 / 运行时建的骨架，全包安装时也是新的
+    vd_parts_canon "$PD/rsrc" "$PD/r.out" 2>/dev/null
+    awk -v d="$PD/rsrc" '$1 == "f" && $2 != "?" { p = $0; for (i = 1; i <= 5; i++) sub(/^[^ ]* /, "", p); print $2, d "/" substr(p, 3) }' "$PD/r.out" > "$PD/src.dl"
+    vd_parts_canon "$T" "$PD/t.now"
+    # 路径里有空格 / 引号的（运行时建的怪名字）：不处理，走整个镜像
+    awk '($1 == "d" && NF != 5) || ($1 == "f" && NF != 6) || ($1 == "l" && NF != 3) || ($1 == "x" && NF != 3) || index($0, "\047") { bad = 1 } END { exit bad }' "$PD/t.now" \
+        || { vlog "parts: odd names in the installed image"; return 1; }
+    tdev=$(stat -c %d "$T")
+    # 来源：sha -> 路径（先用和新镜像同一文件系统的，能硬链接；再用其他的，拷贝）
+    { cat "$PD/src.rootfs"; cat "$PD/src.dl"; awk '{ print }' "$PD/src.host"; } > "$PD/src.all"
+    awk -v T="$T" -v q="'" -v tdev="$tdev" '
+        FILENAME == ARGV[1] { if (index($0, q)) next; s = $1; p = substr($0, 66); if (!(s in src)) src[s] = p; next }
+        FILENAME == ARGV[2] { p = $NF; now[p] = $0; next }
+        { p = $NF; want[p] = $0; order[++n] = p }
+        END {
+            for (p in now) if (!(p in want) || substr(now[p], 1, 1) != substr(want[p], 1, 1) || (substr(now[p], 1, 1) != "d" && now[p] != want[p])) {
+                print "rm -rf " q T "/" substr(p, 3) q; gone[p] = 1 }
+            for (i = 1; i <= n; i++) { p = order[i]; w = want[p]; split(w, a, " "); x = q T "/" substr(p, 3) q
+                if ((p in now) && !(p in gone)) {
+                    if (a[1] == "d" && now[p] != w) print "chmod " a[2] " " x " && chown " a[3] ":" a[4] " " x
+                    continue }
+                if (a[1] == "d") print "mkdir -p " x " && chmod " a[2] " " x " && chown " a[3] ":" a[4] " " x
+                else if (a[1] == "l") print "ln -s " q a[2] q " " x
+                else if (a[1] == "f") { if (!(a[2] in src)) { print "echo missing " p " >&2; exit 1"; continue }
+                    # 硬链接共享 inode（和权限）：权限一样才链，否则拷贝；链不上（不同挂载点：PW6 的 $SYS 和下载目录同一个分区也会 EXDEV）就拷贝。
+                    # 安装器会原地改写的三个文件一律拷贝，旧镜像（回退用）不跟着变
+                    print "vd_put " q src[a[2]] q " " x " " a[3] " " a[4] " " a[5] }
+            } }' "$PD/src.all" "$PD/t.now" "$PD/idx/rootfs.sums" > "$PD/fix.body"
+    { echo 'set -e'
+      echo 'vd_put() { case "$2" in */system/priv-app/VeraHome/VeraHome.apk|*/system/app/VeraIME/VeraIME.apk|*/system/lib/libandroid_runtime.so|*/system/build.prop|*/init.kindle.rc) cp -p "$1" "$2" ;;'
+      echo '  *) if [ "$(stat -c "%d %a %u %g" "$1")" = "'"$tdev"' $3 $4 $5" ]; then ln "$1" "$2" 2>/dev/null || cp -p "$1" "$2"; else cp -p "$1" "$2"; fi ;; esac'
+      echo '  chmod "$3" "$2"; chown "$4:$5" "$2"; }'
+      cat "$PD/fix.body"; } > "$PD/fix.sh"
+    vlog "parts: image fix-up: $(grep -c '^rm ' "$PD/fix.body") removed, $(grep -c '^vd_put ' "$PD/fix.body") files added, $(grep -c -e '^mkdir ' -e '^ln -s ' "$PD/fix.body") dirs/links added"
+    sh "$PD/fix.sh" 2>>/mnt/base-us/veradroid/logs/install-detail.log || { vlog "parts: image fix-up failed"; return 1; }
+    # 和完整目标逐项核对（文件 sha256、权限、属主、链接、目录）
+    vd_parts_canon "$T" "$PD/t.final"
+    if ! cmp -s "$PD/t.final" "$PD/idx/rootfs.sums"; then
+        vlog "parts: rebuilt image differs from the target: $(diff "$PD/idx/rootfs.sums" "$PD/t.final" 2>/dev/null | grep '^[-+][^-+]' | head -6 | tr '\n' ' ')"
+        return 1
+    fi
+    vlog "parts: rebuilt image matches the target ($(wc -l < "$PD/t.final" | tr -d ' ') entries)"
+    return 0
+}
+# 安装器主流程在 Android 停下之后、备份 / 删除任何东西之前调
+vd_parts_rootfs() {
+    [ "$PARTS_ROOTFS" = tree ] || return 0
+    vp_step unpack "增量更新：组装新的系统镜像" "用本机已有的文件；不对就下载整个镜像"
+    if vd_parts_tree; then PARTS_TREE=$SYS/rootfs.vdnew; return 0; fi
+    if [ -e "$SYS/rootfs.vdnew" ] && ! mounts_under "$SYS/rootfs.vdnew" 1; then rm -rf "$SYS/rootfs.vdnew"; fi
+    set -- $PARTS_FULL
+    vlog "parts: falling back to the whole image ($2 bytes)"
+    vd_parts_get "$3" "$1" "$2" "系统镜像（$(vp_mb "$2") MB）" || DIE_CODE=$(dl_code "$DL_RC") die "系统镜像下载失败（curl $DL_RC）。什么都没有改动"
+    PARTS_ROOTFS=full; PARTS_ROOTFS_GZ=$(( $4 / 2 ))
+}
+# 安装器主流程解开 rootfs 的地方：增量更新时由这里装（返回 0），否则返回 1 走原来的 tar -xzf
+vd_parts_rootfs_install() {
+    if [ -n "$PARTS_TREE" ]; then
+        rmdir "$SYS/rootfs" 2>/dev/null || true
+        [ ! -e "$SYS/rootfs" ] && mv "$PARTS_TREE" "$SYS/rootfs" || die "安装系统镜像失败（rootfs）"
+        # 安装器下面会原地改写这三个文件：先和旧镜像（回退用的 rootfs.bak）分开 inode
+        # build.prop / init.kindle.rc：宿主每次开机原地改（memory.sh 的 heap_fix 往后面追加、slim / props）
+        for f in system/priv-app/VeraHome/VeraHome.apk system/app/VeraIME/VeraIME.apk system/lib/libandroid_runtime.so system/build.prop init.kindle.rc; do
+            [ -f "$SYS/rootfs/$f" ] && cp -p "$SYS/rootfs/$f" "$SYS/rootfs/$f.vdu" && mv -f "$SYS/rootfs/$f.vdu" "$SYS/rootfs/$f"
+        done
+        return 0
+    fi
+    [ "$PARTS_ROOTFS" = full ] || return 1
+    set -- $PARTS_FULL
+    ui_run in "$PD/$3" "$2" "书、应用和账号都保留" ${LOWPRI:-$UNPACK_PRI} sh -c 'xzcat "$1" | tar -xf - -C "$2"' sh "$PD/$3" "$SYS/rootfs" || { syncer_off; die "解压 Android rootfs 失败（空间不足？）"; }
+    return 0
+}
+# 新镜像就位后、安装器改它之前（全包和增量都调）：安装器 / 宿主会改的几个原版文件留一份（$SYS/vd-pristine/<sha256>，约 4 MB），
+# 下次增量更新时本机就有原版，不用再下 vol 部件
+vd_parts_keep_pristine() {
+    if [ -e "$SYS/rootfs.vdnew" ] && ! mounts_under "$SYS/rootfs.vdnew" 1; then rm -rf "$SYS/rootfs.vdnew" || true; fi
+    command -v sha256sum >/dev/null 2>&1 || return 0
+    rm -rf "$SYS/vd-pristine.new"; mkdir -p "$SYS/vd-pristine.new" || return 0
+    for f in "$SYS"/rootfs/system/priv-app/VeraHome/VeraHome.apk "$SYS"/rootfs/system/priv-app/VeraHome/oat/*/* \
+             "$SYS"/rootfs/system/app/VeraIME/VeraIME.apk "$SYS"/rootfs/system/app/VeraIME/oat/*/* \
+             "$SYS/rootfs/system/lib/libandroid_runtime.so" "$SYS/rootfs/system/bin/netd" "$SYS/rootfs/system/lib/hw/hwcomposer.kindle.so" \
+             "$SYS/rootfs/system/build.prop" "$SYS/rootfs/init.kindle.rc"; do
+        [ -f "$f" ] || continue
+        s=$(sha256sum "$f" 2>/dev/null | cut -c1-64); [ -n "$s" ] || continue
+        cp -p "$f" "$SYS/vd-pristine.new/$s" 2>/dev/null || { rm -rf "$SYS/vd-pristine.new"; return 0; }
+    done
+    rm -rf "$SYS/vd-pristine"; mv "$SYS/vd-pristine.new" "$SYS/vd-pristine" 2>/dev/null || true
+    return 0
+}
+# END vd_parts
 android_up() { [ -f "$W/pid" ] && kill -0 "$(cat "$W/pid" 2>/dev/null)" 2>/dev/null; }
 # 用户在用：Android 在前台，或者正在启动 / 解冻（veradroid.sh 的 starting / thawing 锁，持有者还活着）
 android_in_use() {
@@ -617,7 +1070,7 @@ emuonly_ok() {
     case "$MODEL" in imx41) [ "${VD_IMX41_TEST:-0}" = 1 ] ;; legacy) [ "${VD_LEGACY_TEST:-0}" = 1 ] ;; *) return 1 ;; esac
 }
 # 日志里记下序列号的机型代码（不记完整序列号），志愿者的安装日志能直接看出是哪台机型
-sc=$( { tr -cd '0-9A-Za-z' </proc/usid; } 2>/dev/null || true); case "$sc" in B*) sc=$(echo "$sc" | cut -c3-4) ;; ?*) sc=$(echo "$sc" | cut -c4-6) ;; esac
+sc=$( { tr -cd '0-9A-Za-z' </proc/usid; } 2>/dev/null || true); case "$sc" in B*|9*) sc=$(echo "$sc" | cut -c3-4) ;; ?*) sc=$(echo "$sc" | cut -c4-6) ;; esac
 vlog "model $MODEL ($TESTED), serial model code ${sc:-?}, kernel $(uname -r), firmware $(head -1 /etc/prettyversion.txt 2>/dev/null || true)"
 if [ "$TESTED" = emulator-only ] && ! emuonly_ok; then
     if [ "${VD_AUTOUPDATE:-0}" = 1 ]; then echo "emulator-only model $MODEL: no automatic update without the user's confirmation"; exit 0; fi
@@ -627,7 +1080,7 @@ fi
 # emulator-only 机型逐台放行：只有通过了模拟器发布门（全新安装、开机、自检、返回 Kindle、强制失败自动返回、卸载、书库 md5 不变，
 # docs/compat-matrix.md 8.5）的机型才装；其余的屏幕上说“还在测试”，什么都不动。认机型的办法和宿主 settings.sh 的 model_sub 相同。
 # 开发测试（VD_LEGACY_TEST=1 / VD_IMX41_TEST=1）不受限制。
-LEGACY_READY="pw3 pw4 kv oa2 ko3 pw2"
+LEGACY_READY="pw3 pw4 kv oa2 ko3 pw2 kt4"
 legacy_sub() {
     ls_fb=$(awk -F'[:x p]' '/^U:/ { w=$2; h=$3; if (w+0 > 0) { print (w < h ? w : h); exit } }' /sys/class/graphics/fb0/modes 2>/dev/null)
     case "$(uname -r)" in
@@ -720,11 +1173,59 @@ if [ "$MODEL" = legacy ] || [ "$MODEL" = imx41 ]; then
 fi
 # emulator-only 机型：安装前一定要有一份书库的备份（documents 里 20 MB 以下的文件 + 完整文件清单），做不了就不装。
 # 先算好要多大，后面建系统盘时把这部分空间留出来（大文件不备份：屏幕上和说明里都要求用户先自己拷到电脑）。
-EMU_BAKK=0
-if [ "$TESTED" = emulator-only ] && [ -d /mnt/base-us/documents ]; then
-    EMU_BAKK=$(cd /mnt/base-us && find documents -type f -size -20480k 2>/dev/null | while IFS= read -r f; do is_installer_path "$f" || stat -c %s "$f" 2>/dev/null; done | awk '{s += $1} END {print int(s / 1024) + 1}')
-    vlog "emulator-only: small-file documents backup needs ~${EMU_BAKK} KB"
+# 安装前备份挑哪些文件（bk_select，2026-11-16 改）：以前把 documents + koreader + extensions + system/thumbnails 整个 tar -czf，
+# Oasis 3 用户 3 GB 的书在单核上 gzip 一遍要很久（书本来就是压缩格式，白压），备份又占掉同样大的空间。安装本身不删书，
+# 装完第一次开机 boot_data_check 按 veradroid-docs-manifest 逐个核对、少了从这份备份补。现在备份有上限：
+#  - 一定备份：书以外的文件（阅读进度 / 笔记 .sdr、KOReader 和插件的设置、txt 等），每个 20 MB 以下；
+#  - 书（azw3 / epub / pdf / mobi / kfx / cbz …，以及图片 / 音频这些已经压缩过的）20 MB 以下的，按从小到大放进去，
+#    合计不超过 BK_BUDGETK（默认 300 MB，VD_BACKUP_MB 可改）；放不下的书和 20 MB 以上的文件不备份，只记在清单里
+#    （少了照样大声报 DOCUMENTS LOSS），日志里记下跳过了多少；
+#  - system/thumbnails 是缓存，不备份。
+# 结果：$BKL（tar 用的文件清单，按处理顺序）、$BKC（每行累计 KB，画进度用）、BK_NEEDK（合计 KB）。
+BKL=/tmp/veradroid-bk.$$.list; BKC=/tmp/veradroid-bk.$$.cum
+BK_BUDGETK=$(( ${VD_BACKUP_MB:-300} * 1024 )); BK_NEEDK=0
+bk_is_book() { case "$1" in
+    *.[Aa][Zz][Ww]|*.[Aa][Zz][Ww]3|*.[Aa][Zz][Ww]4|*.[Kk][Ff][Xx]|*.[Kk][Ff][Xx]-[Zz][Ii][Pp]|*.[Mm][Oo][Bb][Ii]|*.[Pp][Rr][Cc]|*.[Pp][Dd][Ff]|\
+    *.[Ee][Pp][Uu][Bb]|*.[Cc][Bb][Zz]|*.[Cc][Bb][Rr]|*.[Zz][Ii][Pp]|*.[Rr][Aa][Rr]|*.7[Zz]|*.[Dd][Jj][Vv][Uu]|*.[Kk][Pp][Ff]|*.[Ff][Bb]2.[Zz][Ii][Pp]|\
+    *.[Mm][Pp]3|*.[Mm]4[Aa]|*.[Mm]4[Bb]|*.[Aa][Aa][Xx]|*.[Aa][Aa][Cc]|*.[Oo][Gg][Gg]|*.[Jj][Pp][Gg]|*.[Jj][Pp][Ee][Gg]|*.[Pp][Nn][Gg]|*.[Gg][Ii][Ff]|*.[Ww][Ee][Bb][Pp]) return 0 ;;
+    esac; return 1; }
+bk_select() {
+    : > $BKL; : > $BKC; BK_NEEDK=0; BK_SKIPN=0; BK_SKIPK=0
+    [ -d /mnt/us ] || return 0
+    # 大小(KB) 类别(0 = 非书，1 = 书) 路径；非书在前，书从小到大
+    # 一次 stat 一批文件（-exec … +），不是每个文件起一个进程：几千本书时单核上差几十秒
+    ( cd /mnt/us && for d in documents koreader extensions; do [ -d "$d" ] && find "$d" -type f -exec stat -c '%s %n' {} + 2>/dev/null; done ) | while read -r sz f; do
+        case "$f" in ''|*.partial|*.tmp|documents/veradroid-*.tar.gz) continue ;; esac
+        is_installer_path "$f" && continue
+        c=0; bk_is_book "$f" && c=1
+        printf '%s %s %s\n' "$c" "$sz" "$f"      # 字节数；换算成 KB 在 awk 里做（shell 算术遇到怪名字在 set -e 下会让整个安装器退出）
+    done | awk '{ k = int(($2 + 1023) / 1024); f = $0; sub(/^[^ ]* [^ ]* /, "", f); print $1, k, f }' | sort -k1,1n -k2,2n > $BKL.all
+    set -- $(awk -v budget=$BK_BUDGETK -v cap=20480 -v L=$BKL -v C=$BKC '
+        { c = $1; k = $2; f = $0; sub(/^[^ ]* [^ ]* /, "", f)
+          if (k >= cap || (c == 1 && tot + k > budget)) { sn++; sk += k; next }
+          tot += k; print f > L; print tot > C }
+        END { printf "%d %d %d\n", tot, sn, sk }' $BKL.all)
+    BK_NEEDK=${1:-0}; BK_SKIPN=${2:-0}; BK_SKIPK=${3:-0}
+    rm -f $BKL.all
+    vlog "backup selection: $(wc -l < $BKL | tr -d ' ') files ${BK_NEEDK}K (budget ${BK_BUDGETK}K for books); not backed up: $BK_SKIPN files ${BK_SKIPK}K (books over the budget / files >= 20 MB; listed in the documents manifest)"
+}
+USER_SAFE=; BK_RESULT=empty; BK_FELL=
+BK_MODE=$(vd_backup_mode)
+# emulator-only 机型（没在真机上验证过）：安装前一定要有一份备份，“不备份”在这里按“只备份设置和阅读进度”做
+if [ "$BK_MODE" = off ] && [ "$TESTED" = emulator-only ]; then BK_MODE=light; vlog "user backup: off is not allowed on emulator-only models, using light"; fi
+if [ "$BK_MODE" = off ]; then
+    BK_RESULT=off; : > $BKL; : > $BKC; BK_NEEDK=0; BK_SKIPN=0; BK_SKIPK=0
+    vlog "user backup: off (UPDATE_BACKUP=off); the documents manifest is still taken and checked after the first boot, nothing to restore from"
+else
+    [ "$BK_MODE" = light ] && BK_BUDGETK=0
+    bk_select || true
 fi
+if [ "$BK_MODE" != off ] && [ ! -s $BKL ] && [ -n "$(cd /mnt/us 2>/dev/null && find documents -type f 2>/dev/null | head -n 1)" ]; then
+    vlog "!!! backup selection is empty although documents has files"
+    [ "$TESTED" = emulator-only ] && die "安装前备份的文件清单做不出来。什么都没有改动"
+fi
+EMU_BAKK=0
+[ "$TESTED" = emulator-only ] && EMU_BAKK=$BK_NEEDK
 # emulator-only 机型的安装要 15–40 分钟（建盘最慢），比 Kindle 自动进屏保的时间长：一进屏保机器就睡下去，安装停在半路
 # （PW3 模拟器实测：建盘途中休眠，之后 ssh 都连不上）。安装期间不让它进屏保，结束（成功、失败、被杀）时恢复原来的值。
 KEEPAWAKE=
@@ -928,7 +1429,7 @@ latest_version() {
         4.*) m="$BASE/static/bootstrap-k49.json?t=$(date +%s)" ;;
         *)   m="$BASE/api/bootstrap" ;;
     esac
-    j=$(curl_do -fsSL --max-time 12 "$m" 2>/dev/null) || return 1
+    j=$(vd_meta "$m" --max-time 12 2>/dev/null) || return 1
     LATEST_VER=$(printf '%s' "$j" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')
     LATEST_PATCH_URL=$(printf '%s' "$j" | sed -n 's/.*"patch_url": *"\([^"]*\)".*/\1/p')
     LATEST_PATCH_SHA=$(printf '%s' "$j" | sed -n 's/.*"patch_sha256": *"\([^"]*\)".*/\1/p')
@@ -948,6 +1449,8 @@ install_recover() {
         vd_prog_move "$VD" "$SYS/host.failed.$st"
         vd_prog_move "$SYS/host.bak.$st" "$VD"
         vd_data_rescue "$SYS/host.bak.$st"; rm -rf "$SYS/host.bak.$st"
+        # 半截安装那段时间里用户放进新程序目录的字体 / 屏保也带回来（host.failed 下次安装会删）
+        vd_user_carry "$SYS/host.failed.$st" "$VD" "$VD_USER_DIRS" >/dev/null
         if [ -d "$SYS/rootfs.bak.$st" ]; then
             [ -e "$SYS/rootfs" ] && mv "$SYS/rootfs" "$SYS/rootfs.failed.$st"
             mv "$SYS/rootfs.bak.$st" "$SYS/rootfs"
@@ -982,7 +1485,14 @@ if [ "${VD_FACTORY:-0}" != "1" ]; then
                 [ "${VD_NO_START:-0}" = 1 ] || setsid sh "$VD/boot/veradroid.sh" home </dev/null >/dev/null 2>&1 || true
                 exit 0
             elif [ "$c" -gt 0 ] 2>/dev/null; then
-                show "本机 $cur_ver 不低于服务器 $latest_ver，跳过重装"
+                if [ -n "${VD_BUNDLE:-}" ]; then
+                    # 旧的离线包（用户报告 PW4：用以前下载的 0.8.6 离线包“重装”）：不降级，屏幕上说清楚
+                    show "这个离线安装包（$latest_ver）比已装的版本（$cur_ver）旧，没有安装，直接启动已装的版本"
+                    show "要更新请到官网下载最新的离线包，删掉 documents 里旧的 veradroid-legacy-$latest_ver.tar.gz"
+                    vlog "offline bundle $latest_ver is older than installed $cur_ver: not installed"
+                else
+                    show "本机 $cur_ver 不低于服务器 $latest_ver，跳过重装"
+                fi
                 remove_installer_later
                 [ "${VD_NO_START:-0}" = 1 ] || setsid sh "$VD/boot/veradroid.sh" home </dev/null >/dev/null 2>&1 || true
                 exit 0
@@ -1025,6 +1535,15 @@ if [ -n "${VD_BUNDLE:-}" ] && [ -f "$VD_BUNDLE" ]; then
     size=$(wc -c < "$VD_BUNDLE" | tr -d ' ')
     space_check_before_download "${size:-0}"
     show "使用离线整包 VeraDroid $ver…"
+    # 离线包可能是很久以前下载的：能连上官网就看一眼最新版本，比离线包新就提醒（不拦，没网时什么都不说）
+    case "$(uname -r)" in 3.*|4.1.*) om="$BASE/static/bootstrap-legacy.json?t=$(date +%s)" ;; *) om= ;; esac
+    if [ -n "$om" ]; then
+        ov=$(vd_meta "$om" --connect-timeout 5 --max-time 8 2>/dev/null | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')
+        if [ -n "$ov" ] && [ "$(vercmp "$ov" "$ver")" = 1 ]; then
+            show "注意：这个离线包是 $ver，官网已经有 $ov。装完以后可以在面板里“检查更新”升到 $ov"
+            vlog "offline bundle $ver is older than the server's $ov"
+        fi
+    fi
     cp "$VD_BUNDLE" "$TMP/bundle.tar.gz" || die "无法读取离线安装包"
     progress_line 100 "离线包"
     sha=
@@ -1036,46 +1555,30 @@ else
         4.*) meta="$BASE/static/bootstrap-k49.json?t=$(date +%s)" ;;   # 静态文件，带参数绕过 CDN 缓存
         *) meta="$BASE/api/bootstrap" ;;
     esac
-    json=$(curl_do -fsSL --connect-timeout 20 --max-time 30 "$meta") || die "无法连接更新服务器"
+    json=$(vd_meta "$meta" --connect-timeout 20 --max-time 30) || die "无法连接更新服务器"
     url=$(printf '%s' "$json" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
     sha=$(printf '%s' "$json" | sed -n 's/.*"sha256":"\([^"]*\)".*/\1/p')
     ver=$(printf '%s' "$json" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
     size=$(printf '%s' "$json" | sed -n 's/.*"size":\([0-9]*\).*/\1/p')
     [ -n "$url" ] && [ -n "$sha" ] || die "服务器没有可用的安装包"
     vd_mirrors_from "$json"
-
-    space_check_before_download "${size:-0}"
     mkdir -p "$TMP"
-    show "正在下载 VeraDroid $ver（约 130 MB）…"
-    progress_line 0 "下载中"
-    # Resume partial downloads and abort only on a real stall.  This makes a
-    # flaky/blocked CDN retry from the same byte instead of restarting 130 MB.
-    # 分段并行 + 镜像（vd_fetch）；断了从各段的断点重试，连续 8 次没进展才放弃
-    ( n=0; last=0
-      while :; do
-          vd_fetch "$url" "$TMP/bundle.tar.gz" "${size:-0}" && exit 0
-          rc=$?; [ "$rc" = 33 ] || [ "$rc" = 36 ] && rm -rf "$TMP/bundle.tar.gz" "$TMP/bundle.tar.gz.seg"
-          now=$(vd_have "$TMP/bundle.tar.gz"); [ $((now - last)) -gt 524288 ] && n=0; last=$now
-          n=$((n + 1)); vlog "download: curl rc=$rc at $now bytes, attempt $n/8"
-          [ $n -ge 8 ] && exit $rc
-          sleep 5
-      done ) &
-    cpid=$!
-    while kill -0 "$cpid" 2>/dev/null; do
-        sz=$(vd_have "$TMP/bundle.tar.gz")
+    # 增量更新（vd_parts_prepare，docs/incremental-updates.md）：元数据里有 "parts" 时只下载和本机不一样的部分。
+    # 成功就跳过下面的整包下载 / 校验 / 解压；不成功什么都不影响，照常下整包（失败时 PARTS_* 一起清掉，见 bootstrap.sh 同一处的说明）
+    vd_parts_prepare "$json" && PARTS=1 && sha= || { PARTS=; PARTS_ROOTFS=; PARTS_TREE=; PARTS_FULL=; [ -z "$PD" ] || rm -rf "$PD" "$TMP/veradroid-pw6"; }
+    if [ -n "$PARTS" ]; then
+        vlog "parts: $cur_ver -> $ver: downloaded $PARTS_DL bytes instead of the whole bundle ($size bytes)"
+        show "增量更新：只下载了 $(vp_mb "$PARTS_DL") MB（整包 $(vp_mb "${size:-0}") MB）"
+    else
+        space_check_before_download "${size:-0}"
+        show "正在下载 VeraDroid $ver（约 $(( ${size:-136314880} / 1048576 )) MB）…"
+        progress_line 0 "下载中"
+        # 分段并行 + 镜像（vd_fetch，直链优先）；断了从各段的断点重试，连续 8 次没进展才放弃
+        vd_download "$url" "$TMP/bundle.tar.gz" "${size:-0}" || die "安装包下载失败（curl $DL_RC）"
         if [ -n "$size" ] && [ "$size" -gt 0 ] 2>/dev/null; then
-            pct=$((sz * 100 / size))
-            [ "$pct" -gt 100 ] && pct=100
-            progress_line "$pct" "下载中"
-        else
-            show "下载中 ${sz} / ${size:-?} bytes"
+            got=$(wc -c < "$TMP/bundle.tar.gz" | tr -d ' ')
+            [ "$got" = "$size" ] || die "下载不完整（${got}/${size} bytes）"
         fi
-        sleep 5
-    done
-    wait "$cpid" || die "安装包下载失败"
-    if [ -n "$size" ] && [ "$size" -gt 0 ] 2>/dev/null; then
-        got=$(wc -c < "$TMP/bundle.tar.gz" | tr -d ' ')
-        [ "$got" = "$size" ] || die "下载不完整（${got}/${size} bytes）"
     fi
 fi
 if [ "$offline" = 1 ]; then progress_line 100 "安装包就绪"; else progress_line 100 "下载完成"; fi
@@ -1084,17 +1587,16 @@ if [ -n "$sha" ]; then
     if ! verify_sha "$TMP/bundle.tar.gz" "$sha"; then
         [ "$offline" = 1 ] && die "SHA-256 校验失败"
         # 下载损坏 / 镜像上的文件不对：只从主站重下一次
-        vlog "sha256 mismatch: downloading again from the main site"
+        vlog "sha256 mismatch: downloading again from the main site only"
         rm -rf "$TMP/bundle.tar.gz" "$TMP/bundle.tar.gz.seg" "$TMP/dl.pick"; VD_MIRRORS=
-        show "文件校验没通过，正在重新下载…"
-        vd_fetch "$url" "$TMP/bundle.tar.gz" "${size:-0}" || die "安装包下载失败"
+        show "文件校验没通过，正在从主站重新下载…"
+        vd_download "$url" "$TMP/bundle.tar.gz" "${size:-0}" || die "安装包下载失败（curl $DL_RC）"
         verify_sha "$TMP/bundle.tar.gz" "$sha" || die "SHA-256 校验失败"
     fi
 fi
-show "正在解压安装包…"
-progress_line 100 "解压"
+[ -n "$PARTS" ] || { show "正在解压安装包…"; progress_line 100 "解压"; }
 syncer_on
-$LOWPRI tar -xzf "$TMP/bundle.tar.gz" -C "$TMP" || { syncer_off; die "解压安装包失败"; }
+[ -n "$PARTS" ] || $LOWPRI tar -xzf "$TMP/bundle.tar.gz" -C "$TMP" || { syncer_off; die "解压安装包失败"; }
 syncer_off
 [ -d "$TMP/veradroid-pw6" ] || die "安装包结构不对"
 # 包和内核要对得上：4.9 内核（PW5 / KT5 / KT6）的 binder 是 32 位协议，用 PW6 的系统所有原生服务开机即崩
@@ -1112,10 +1614,12 @@ case "$(uname -r)" in
 esac
 # 4.1 内核：binder 模块是按每个固件的内核单独编、单独核对过的（kmod/<uname -r>/<编号>/uname-v）。
 # 包里没有这台 Kindle 内核的那一份就不装：装上也开不了机，而 Kindle 界面会被停掉一次。
+# uname-v 可以有多行（同一组固件共用一份模块，每行一个固件的 `uname -v`，和 boot/lib/kmod.sh 的 kmod_unamev_has 一样整行比较）。
 if [ "$MODEL" = imx41 ]; then
     kv=$(uname -v); kfound=
     for f in "$TMP"/veradroid-pw6/kmod/"$(uname -r)"/*/uname-v; do
-        [ -f "$f" ] && [ "$(cat "$f")" = "$kv" ] && kfound=$f
+        [ -f "$f" ] || continue
+        while IFS= read -r kl || [ -n "$kl" ]; do [ "$kl" = "$kv" ] && kfound=$f; done < "$f"
     done
     [ -n "$kfound" ] || die "这台 Kindle 的内核（$(uname -r) $kv）还没有对应的 binder 模块，暂时不能安装"
     vlog "imx41: kernel modules $(dirname "$kfound")"
@@ -1132,6 +1636,8 @@ if android_up; then
         grep -q " $SYS " /proc/mounts || loop_mount "$SYSTEM_IMG" "$SYS" || die "无法重新挂载 ext4 系统盘"
     fi
 fi
+# 增量更新：Android 停了，在动任何东西之前组装新系统镜像（硬链接旧镜像，只多占变了的文件；不行就下整个镜像）
+if [ -n "$PARTS" ]; then vd_parts_rootfs; fi
 
 mkdir -p "$SYS"
 # Migrate a pre-existing device id before moving $VD. Older installers stored
@@ -1149,74 +1655,91 @@ BAK="$SYS/host.bak.$stamp"
 #  - 写到 .partial，成功了才改名；只保留最新一份。旧备份只有在“里面的每个文件现在都还在”时才删除，
 #    否则留着（它可能是用户丢书之前唯一的一份）；
 #  - veradroid-documents-backup.tgz 不再写入（user backup 已经包含 documents），已有的那份原样保留。
-USER_SAFE=
-if [ -d /mnt/us ]; then
-    set --
-    for d in documents koreader extensions system/thumbnails; do [ -e "/mnt/us/$d" ] && set -- "$@" "$d"; done
-    if [ $# -gt 0 ]; then
-        need=$(cd /mnt/us && du -sk "$@" 2>/dev/null | awk '{s += $1} END {print s + 0}')
-        freek=$(df -k /mnt/base-us | awk 'NR==2{print $4}')
-        if [ $(( need + 512000 )) -gt "${freek:-0}" ]; then
-            show "空间不够做安装前备份（需要约 $((need / 1024)) MB），跳过备份；安装不会删除任何书或设置"
-            vlog "user backup skipped: need ${need}K + 500M, free ${freek}K"
+# 进度（bk_progress）：tar -v 每处理完一个文件在 stderr 打一行文件名，清单是按顺序的，第 n 行对应 $BKC 第 n 行的累计 KB：
+# 屏幕上是“已备份 / 总共 MB、百分比、还要几分钟”（按已用时间外推）。gzip -1：书以外的小文件压得动，比默认级别快几倍。
+bk_progress() { # verbose-log total-K start-seconds
+    while sleep 5; do
+        [ -f "$1" ] || break
+        n=$(wc -l < "$1" 2>/dev/null | tr -d ' '); [ "${n:-0}" -gt 0 ] 2>/dev/null || continue
+        dk=$(sed -n "${n}p" $BKC 2>/dev/null); dk=${dk:-0}
+        el=$(( $(date +%s) - $3 )); bp=$(( dk * 100 / ($2 + 1) )); [ "$bp" -gt 99 ] && bp=99
+        eta=; [ "$dk" -gt 0 ] && eta=$(( el * ($2 - dk) / dk / 60 + 1 ))
+        progress_line "$bp" "Backup $((dk / 1024))/$(($2 / 1024)) MB ($bp%)${eta:+, about $eta min left} / 备份 $((dk / 1024))/$(($2 / 1024)) MB${eta:+，还要约 $eta 分钟}"
+    done
+}
+[ "$BK_RESULT" = off ] && show "Pre-install backup is off (Settings) / 更新前备份已关闭（设置 → 设备与更新 → 更新前备份）：这次不备份。装完照样核对书库，但出了问题无法恢复"
+# 完整备份放不下（剩余空间要够备份 + 100 MB）：先退到只备份设置和阅读进度，再放不下才跳过（以前直接整个跳过）
+if [ -s $BKL ] && [ "$BK_MODE" = full ] && [ $(( BK_NEEDK + 102400 )) -gt "$(df -k /mnt/base-us | awk 'NR==2{print $4}')" ]; then
+    bk_fullk=$BK_NEEDK; BK_BUDGETK=0; bk_select || true; BK_FELL=1
+    vlog "user backup: a full backup (${bk_fullk}K) does not fit, falling back to settings and reading progress only (${BK_NEEDK}K)"
+fi
+if [ -s $BKL ]; then
+    need=$BK_NEEDK
+    freek=$(df -k /mnt/base-us | awk 'NR==2{print $4}')
+    if [ $(( need + 102400 )) -gt "${freek:-0}" ]; then
+        BK_RESULT=nospace
+        show "Not enough space for the pre-install backup ($((need / 1024)) MB), skipped / 空间不够做安装前备份（需要约 $((need / 1024)) MB），跳过备份；安装不会删除任何书或设置"
+        vlog "user backup skipped: need ${need}K + 100M, free ${freek}K"
+    else
+        part=/mnt/base-us/veradroid/backup/user-backup.partial; bv=/tmp/veradroid-bk.$$.v
+        rm -f "$part"; : > $bv
+        if [ -n "$BK_FELL" ]; then show "Not enough space for a full backup, settings and reading progress only ($((need / 1024)) MB), do NOT restart / 空间不够做完整备份，只备份设置和阅读进度（约 $((need / 1024)) MB），书不备份，请勿重启 Kindle"
+        elif [ "$BK_BUDGETK" = 0 ]; then show "Backing up settings and reading progress ($((need / 1024)) MB), do NOT restart / 正在备份设置和阅读进度（约 $((need / 1024)) MB，书不备份），请勿重启 Kindle"
+        else show "Backing up settings and books ($((need / 1024)) MB), do NOT restart / 正在备份设置和书（约 $((need / 1024)) MB），请勿重启 Kindle"; fi
+        [ "$BK_SKIPN" -gt 0 ] && vlog "user backup: $BK_SKIPN files (${BK_SKIPK}K) not in the backup, they stay where they are"
+        t0=$(date +%s)
+        bk_progress $bv "$need" "$t0" </dev/null &
+        BKW=$!
+        vlog "user backup: ${need}K to back up ($(wc -l < $BKL | tr -d ' ') files)"
+        # 管道的退出码只看 gzip：tar 的失败另外记下来
+        if { tar -cvf - -C /mnt/us -T $BKL 2>$bv || echo fail > $bv.rc; } | gzip -1 > "$part" && [ ! -f $bv.rc ] && gzip -t "$part" 2>/dev/null; then
+            kill "$BKW" 2>/dev/null || true
+            USER_SAFE=/mnt/base-us/veradroid/backup/user-backup-$stamp.tgz
+            mv "$part" "$USER_SAFE"; BK_RESULT=ok
+            vlog "user backup ok: $USER_SAFE ($(wc -c < "$USER_SAFE") bytes, $(( $(date +%s) - t0 )) s)"
+            # 最新这份 + 最多再留一份“含设备上已经没有的文件”的旧备份（最近的那份），更早的删掉（BH081-6）。
+            # 旧备份只解压列一次目录（以前列两次：3 GB 的旧备份在单核上每次都要几分钟）。
+            kept_old=
+            for old in $(ls -t /mnt/base-us/veradroid/backup/user-backup-*.tgz 2>/dev/null); do
+                [ "$old" = "$USER_SAFE" ] && continue
+                # 只管安装器自己按时间戳起名的备份；用户自己改过名、拷过来的（如 …-KEEP-….tgz）一律不动
+                case "${old##*/}" in user-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].tgz) ;; *) continue ;; esac
+                if [ -n "$kept_old" ]; then rm -f "$old"; vlog "pruned $old (already keeping $kept_old as the one older backup)"; continue; fi
+                tar -tzf "$old" > $bv.old 2>/dev/null || { vlog "keep $old (cannot read it)"; continue; }
+                miss=$(while IFS= read -r f; do
+                    case "$f" in (*/|*.partial|*.tmp|system/thumbnails/*|./system/thumbnails/*) continue ;; esac   # 缩略图是缓存，会自己重建
+                    is_installer_path "$f" && continue
+                    p=${f#./}; [ -e "/mnt/us/$p" ] || [ -L "/mnt/us/$p" ] || { echo "$p"; break; }
+                done < $bv.old)
+                if [ -z "$miss" ]; then rm -f "$old"; vlog "pruned $old (everything in it is still on the device)"
+                else kept_old=$old; vlog "keep $old: has files no longer on the device (e.g. $miss)"; fi
+            done
         else
-            part=/mnt/base-us/veradroid/backup/user-backup.partial
+            kill "$BKW" 2>/dev/null || true
             rm -f "$part"
-            # 真机 PW4（第一份真机报告）：书库 260 MB 时这一步要好几分钟，以前屏幕上一直停在“解压 100%”，用户以为卡住又点了一次。
-            # 现在先说在做什么，每 15 秒按已经写出的大小画一次进度（书多半已经是压缩格式，备份大小接近原大小）
-            show "Backing up books ($((need / 1024)) MB), do NOT restart the Kindle / 正在备份书和设置（约 $((need / 1024)) MB），请勿重启 Kindle"
-            ( while sleep 15; do [ -f "$part" ] || break; bk=$(( $(wc -c < "$part" 2>/dev/null || echo 0) / 1024 ))
-                  bp=$(( bk * 100 / (need + 1) )); [ "$bp" -gt 99 ] && bp=99; progress_line "$bp" "Backup / 备份 $((bk / 1024)) MB"; done ) </dev/null &
-            BKW=$!
-            vlog "user backup: ${need}K to back up"
-            if tar -czf "$part" -C /mnt/us "$@" 2>>/mnt/base-us/veradroid/logs/install-detail.log; then
-                kill "$BKW" 2>/dev/null || true
-                USER_SAFE=/mnt/base-us/veradroid/backup/user-backup-$stamp.tgz
-                mv "$part" "$USER_SAFE"
-                vlog "user backup ok: $USER_SAFE ($(wc -c < "$USER_SAFE") bytes)"
-                # BH081-6：以前“旧备份里有设备上已经没有的文件就永远保留”——用户每两次更新之间删过一本读完的书，
-                # 就多留一整份备份（documents+koreader 全量），几次自动更新就把用户存储吃满。
-                # 现在：最新这份 + 最多再留一份“含已删除文件”的旧备份（最近的那份），更早的删掉。
-                kept_old=
-                for old in $(ls -t /mnt/base-us/veradroid/backup/user-backup-*.tgz 2>/dev/null); do
-                    [ "$old" = "$USER_SAFE" ] && continue
-                    # 只管安装器自己按时间戳起名的备份（veradroid-user-backup-YYYYMMDD-HHMMSS.tgz）；
-                    # 用户自己改过名、拷过来的（如 …-KEEP-….tgz）一律不动（真机实测：KEEP 备份曾被当成旧备份删掉）
-                    case "${old##*/}" in user-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].tgz) ;; *) continue ;; esac
-                    if [ -n "$kept_old" ]; then rm -f "$old"; vlog "pruned $old (already keeping $kept_old as the one older backup)"; continue; fi
-                    tar -tzf "$old" >/dev/null 2>&1 || { vlog "keep $old (cannot read it)"; continue; }
-                    miss=$(tar -tzf "$old" 2>/dev/null | while IFS= read -r f; do
-                        case "$f" in (*/|*.partial|*.tmp|system/thumbnails/*|./system/thumbnails/*) continue ;; esac   # 缩略图是缓存，会自己重建
-                        is_installer_path "$f" && continue
-                        p=${f#./}; [ -e "/mnt/us/$p" ] || [ -L "/mnt/us/$p" ] || { echo "$p"; break; }
-                    done)
-                    if [ -z "$miss" ]; then rm -f "$old"; vlog "pruned $old (everything in it is still on the device)"
-                    else kept_old=$old; vlog "keep $old: has files no longer on the device (e.g. $miss)"; fi
-                done
-            else
-                kill "$BKW" 2>/dev/null || true
-                rm -f "$part"
-                show "安装前备份失败（见 veradroid/logs/install-detail.log），继续安装；安装不会删除任何书或设置"
-                vlog "user backup FAILED"
-            fi
+            BK_RESULT=failed
+            show "Pre-install backup failed, installing anyway / 安装前备份失败（见 veradroid/logs/install-detail.log），继续安装；安装不会删除任何书或设置"
+            vlog "user backup FAILED ($(tail -c 300 $bv 2>/dev/null | tr '\n' ' '))"
         fi
+        rm -f $bv $bv.rc $bv.old
     fi
 fi
+# emulator-only 机型：安装前一定要有一份备份（上面那份就是：书以外的文件 + 预算内的书），做不了就什么都不改、停止安装
+if [ "$TESTED" = emulator-only ] && [ -z "$USER_SAFE" ] && [ -s $BKL ]; then
+    die "空间不够做书库备份（需要约 $(( BK_NEEDK / 1024 + 100 )) MB）。什么都没有改动；请先把一些书拷到电脑上再装"
+fi
+rm -f $BKL $BKC
+# 这次的备份结果（veradroid/state/backup.last；设置里“已备份的数据”看它：核对书库之前这次的备份不能删）和每份备份是哪种（backup-kinds）
+bk_kind=$BK_MODE; [ "$BK_BUDGETK" = 0 ] && [ "$BK_MODE" != off ] && bk_kind=light
+{ echo "stamp=$stamp"; echo "mode=$BK_MODE"; echo "kind=$bk_kind"; echo "result=$BK_RESULT"
+  if [ -n "$USER_SAFE" ]; then echo "file=${USER_SAFE##*/}"; fi
+  if [ -n "$BK_FELL" ]; then echo "fallback=light"; fi; } > "$VD_STATE/backup.last.tmp" 2>/dev/null && mv -f "$VD_STATE/backup.last.tmp" "$VD_STATE/backup.last" || true
+if [ -n "$USER_SAFE" ]; then
+    { tail -n 19 "$VD_STATE/backup-kinds" 2>/dev/null || true; echo "${USER_SAFE##*/} $bk_kind"; } > "$VD_STATE/backup-kinds.tmp" 2>/dev/null && mv -f "$VD_STATE/backup-kinds.tmp" "$VD_STATE/backup-kinds" || true
+fi
+vlog "user backup: mode=$BK_MODE kind=$bk_kind result=$BK_RESULT${USER_SAFE:+ file=${USER_SAFE##*/}}"
 # 安装前的 Kindle 书库清单（2026-11-13 事故后加）：新系统第一次开机完成后 after_boot（boot/lib/afterboot.sh 的 boot_data_check）
 # 逐个核对，少了就大声记日志并从上面那份安装前备份补回；核对完改名 .checked。安装器自己启动 Android 时也在这里等它核对。
-if [ "$TESTED" = emulator-only ] && [ -z "$USER_SAFE" ] && [ -d /mnt/base-us/documents ]; then
-    # 整份备份放不下（或失败了）：只备份 20 MB 以下的书库文件。这一份必须成功，否则什么都不改、停止安装
-    bl=$TMP/emu-backup.list
-    ( cd /mnt/base-us && find documents -type f -size -20480k 2>/dev/null ) | while IFS= read -r f; do is_installer_path "$f" || printf '%s\n' "$f"; done > "$bl"
-    freek=$(df -k /mnt/base-us | awk 'NR==2{print $4}')
-    [ $(( EMU_BAKK + 102400 )) -le "${freek:-0}" ] || die "空间不够做书库备份（需要约 $(( EMU_BAKK / 1024 + 100 )) MB）。什么都没有改动；请先把一些书拷到电脑上再装"
-    part=/mnt/base-us/veradroid/backup/user-backup.partial; rm -f "$part"
-    show "正在备份书库里的小文件…"
-    if [ -s "$bl" ]; then tar -czf "$part" -C /mnt/base-us -T "$bl" 2>>/mnt/base-us/veradroid/logs/install-detail.log || { rm -f "$part"; die "书库备份失败。什么都没有改动"; }
-    else tar -czf "$part" -C /mnt/base-us documents 2>/dev/null || { rm -f "$part"; die "书库备份失败。什么都没有改动"; }; fi
-    USER_SAFE=/mnt/base-us/veradroid/backup/user-backup-$stamp.tgz; mv "$part" "$USER_SAFE"
-    vlog "emulator-only: small-file documents backup $USER_SAFE ($(wc -l < "$bl" | tr -d ' ') files, $(wc -c < "$USER_SAFE") bytes)"
-fi
 DOCS_MANIFEST=/mnt/base-us/veradroid/state/docs-manifest
 if [ -d /mnt/base-us/documents ]; then
     ( cd /mnt/base-us && find documents -type f 2>/dev/null ) | while IFS= read -r f; do is_installer_path "$f" || offline_readme_doc "$f" || printf '%s\n' "$f"; done \
@@ -1227,7 +1750,9 @@ if [ -f /var/local/cc.db ] && cp -a /var/local/cc.db /mnt/base-us/veradroid/back
     for old in $(ls -t /mnt/base-us/veradroid/backup/cc.db.* 2>/dev/null | tail -n +2); do rm -f "$old"; done
 fi
 # ---- 空间预检：在动任何东西之前（旧系统要留作回退）----
-rootfs_gz=$(wc -c < "$TMP/veradroid-pw6/rootfs.tar.gz" 2>/dev/null | tr -d ' ')
+# 增量更新时没有 rootfs.tar.gz（打不开时 sh 自己会在屏幕上报 can't open）：用 PARTS_ROOTFS_GZ
+rootfs_gz=; [ -f "$TMP/veradroid-pw6/rootfs.tar.gz" ] && rootfs_gz=$(wc -c < "$TMP/veradroid-pw6/rootfs.tar.gz" | tr -d ' ')
+if [ -n "$PARTS" ]; then rootfs_gz=$PARTS_ROOTFS_GZ; fi
 need_mb=$(( ${rootfs_gz:-150000000} * 3 / 1048576 + 200 ))
 # loop 镜像：旧 rootfs 先删再解新的，不会同时有两份。解开约 2.1 倍（0.8.6 的 129 MB -> 267 MB），按 2.5 倍 + 128 MB 算；
 # 以前按 3 倍 + 200 MB，768 MB 镜像装了几个应用的 PW2 就升级不了
@@ -1241,6 +1766,22 @@ vlog "space: need ${need_mb}M free ${free_mb}M (loop=$LOOP)"
 [ "${free_mb:-0}" -ge "$need_mb" ] || die "空间不够：安装需要约 ${need_mb} MB，现在只有 ${free_mb} MB。什么都没有删除"
 # 动任何东西（包括把程序目录挪成 host.bak）之前先查挂载：拒绝时设备要保持原样，“VeraDroid 启动”还能用
 guard_rm "$SYS/rootfs"
+# 系统镜像是不是和装着的同一份（启动镜像不变）：build.prop 的 ro.build.date.utc + boot.oat / boot.art 的大小。同一份时
+# 下面不清 dalvik-cache（见那里的说明）
+img_key() { # rootfs 目录 -> 标识，认不出时为空
+    ik_u=$(sed -n 's/^ro.build.date.utc=//p' "$1/system/build.prop" 2>/dev/null | head -n 1)
+    ik_o=$( { wc -c < "$1/system/framework/arm/boot.oat"; } 2>/dev/null); ik_a=$( { wc -c < "$1/system/framework/arm/boot.art"; } 2>/dev/null)
+    [ -n "$ik_u" ] && [ -n "$ik_o" ] && [ -n "$ik_a" ] && echo "$ik_u $ik_o $ik_a"
+    return 0
+}
+OLD_IMG=$(img_key "$SYS/rootfs")
+# 1.00 / 0.8.11 及以前的整包安装不带 fonts/ 回来：用户的字体还在最近一份 host.bak 里（loop 机型开机后就删了，那就找不回来）。
+# 删旧备份之前，一次性（state/user-carry.v1）把那里的字体 / 屏保放回程序目录，下面整包安装再带进新程序目录。
+if [ ! -f "$VD_STATE/user-carry.v1" ]; then
+    uc_old=$(ls -dt "$SYS"/host.bak.* 2>/dev/null | head -n 1) || uc_old=
+    if [ -n "$uc_old" ] && [ -d "$uc_old" ] && [ -d "$VD" ]; then vlog "user files rescued from $uc_old: $(vd_user_carry "$uc_old" "$VD" "fonts screensaver")"; fi
+    mkdir -p "$VD_STATE" 2>/dev/null && : > "$VD_STATE/user-carry.v1" 2>/dev/null || true
+fi
 # 只保留最近一份旧系统 / 程序目录备份（不是用户数据）。删之前查挂载。
 for pat in rootfs.bak host.bak rootfs.failed host.failed; do
     for old in $(ls -dt "$SYS"/$pat.* 2>/dev/null); do
@@ -1288,20 +1829,18 @@ chmod 755 "$VD/boot/veradroid.sh" 2>/dev/null || true
 if [ -d "$BAK/ssh" ]; then cp -a "$BAK/ssh" "$VD/ssh" 2>/dev/null || vlog "ssh keys not carried over from $BAK/ssh"; fi
 # BH081-2：程序目录里还有用户自己放的设置 / 文件，整包安装把 $VD 挪成 $BAK 后要带回来，否则每次升级都丢：
 #   autoupdate（=0 关闭自动更新）、network.conf（代理 / DNS，受限网络下没有它就更新不了）、debugboot、
-#   screensaver/ 里的自定义屏保、apps/ 里还没装的 APK（afterboot 装好才删）。包里有的同名文件以包为准。
+#   screensaver/ 里的自定义屏保、apps/ 里还没装的 APK（afterboot 装好才删）、kindle-crash/ 里从书库挪出来的 Kindle 崩溃转储
+#   （fw_tidy_crash；以前升级后留在 host.bak 里，书库核对报“少了文件”，PW3 0.8.7 门）。包里有的同名文件以包为准。
 for f in autoupdate network.conf debugboot; do
     [ -f "$BAK/$f" ] && [ ! -e "$VD/$f" ] && cp -a "$BAK/$f" "$VD/$f" 2>/dev/null || true
 done
-for d in screensaver apps; do
-    [ -d "$BAK/$d" ] || continue
-    mkdir -p "$VD/$d"
-    for f in "$BAK/$d"/*; do
-        [ -f "$f" ] || continue
-        [ -e "$VD/$d/${f##*/}" ] || [ -e "$TMP/veradroid-pw6/apks/${f##*/}" ] || cp -a "$f" "$VD/$d/" 2>/dev/null || true
-    done
-done
 mkdir -p "$VD/apps"
 cp "$TMP/veradroid-pw6/apks/"*.apk "$VD/apps/"
+# fonts/ screensaver/ apps/ kindle-crash/ 里用户的文件（含子文件夹）带进新程序目录：以前只带屏保 / apps / kindle-crash 顶层的文件，
+# fonts/ 整个留在 host.bak 里，下次安装就删了（vd_user_carry）。卸载时留下的 backup/user-files 也放回来。然后记下这个包自带哪些文件。
+vlog "user files carried from $BAK: $(vd_user_carry "$BAK" "$VD" "$VD_USER_DIRS")"
+vlog "user files restored from backup/user-files: $(vd_user_restore "$VD")"
+vd_bundled_save "$TMP/veradroid-pw6"
 # Stable identity lives outside $VD because $VD is moved to .bak on every
 # install. It also survives a factory reset of /data.
 if [ ! -s "$STABLE" ]; then
@@ -1323,14 +1862,15 @@ show "Installing Android, do NOT restart the Kindle (1-5 min) / 正在安装 And
 progress_line 0 "Android system / 安装系统"
 syncer_on
 # 解开约是压缩包的 2.1 倍：每 15 秒按 $SYS/rootfs 已经写出的大小画进度（真机上这一步几分钟，以前一直停在“安装中 100%”）
-rf_total=$(( $(wc -c < "$TMP/veradroid-pw6/rootfs.tar.gz") / 1024 * 21 / 10 ))
+rf_total=$(( ${rootfs_gz:-150000000} / 1024 * 21 / 10 ))
 ( while sleep 15; do rk=$(du -sk "$SYS/rootfs" 2>/dev/null | cut -f1); rp=$(( ${rk:-0} * 100 / (rf_total + 1) )); [ "$rp" -gt 99 ] && rp=99
       progress_line "$rp" "Android system / 安装系统"; done ) </dev/null &
 RFW=$!
-$LOWPRI tar -xzf "$TMP/veradroid-pw6/rootfs.tar.gz" -C "$SYS/rootfs" || { kill "$RFW" 2>/dev/null; syncer_off; die "解压 Android rootfs 失败（空间不足？）"; }
+vd_parts_rootfs_install || $LOWPRI tar -xzf "$TMP/veradroid-pw6/rootfs.tar.gz" -C "$SYS/rootfs" || { kill "$RFW" 2>/dev/null; syncer_off; die "解压 Android rootfs 失败（空间不足？）"; }
 kill "$RFW" 2>/dev/null || true
 syncer_off
 [ -x "$SYS/rootfs/system/bin/sh" ] || die "Android rootfs 不完整（缺少 /system/bin/sh）"
+vd_parts_keep_pristine     # 安装器下面要改的几个原版文件留一份，下次增量更新不用再下
 # Patched Android runtime for 5.17-era kernels: skip unknown zygote fds
 # (ashmem/binder) in FileDescriptorTable instead of aborting.
 if [ -f "$TMP/veradroid-pw6/libandroid_runtime.so" ]; then
@@ -1414,7 +1954,20 @@ rm -rf "$SYS/rootfs/system/app/Settings" 2>/dev/null || true
 # A stale dalvik-cache can contain a dex for a different Settings.apk. ART then
 # ignores the matching system odex and ClassNotFound for CryptKeeper. Clearing it
 # only forces recompilation; apps and books are untouched.
-rm -rf "$SYS/data/dalvik-cache" 2>/dev/null || true
+# 但清掉它的代价很大：dalvik-cache 里是重定位过的启动镜像（boot*.art，patchoat 每次随机偏移），清了以后下次开机重新生成、
+# 偏移变了，所有第三方应用的 odex 都成了 kOatNeedsRelocation，从 apk 解释执行，直到宿主一个个重编（微信读书单核上 6–20 分钟，
+# 用户一打开就被打断：2026-11-18 Oasis 3 诊断的“非常卡”，PW4 模拟器 0.8.10 -> 0.8.11 同一个镜像也全部失效）。
+# 系统镜像没变（OLD_IMG = NEW_IMG）时只删 Settings / VeraHome / VeraIME 自己的那几个（apk 换了），启动镜像和应用的代码留着。
+NEW_IMG=$(img_key "$SYS/rootfs")
+if [ "${VD_FACTORY:-0}" != 1 ] && [ -n "$OLD_IMG" ] && [ "$OLD_IMG" = "$NEW_IMG" ] && [ -d "$SYS/data/dalvik-cache" ]; then
+    for dc in "$SYS"/data/dalvik-cache/*/*Settings* "$SYS"/data/dalvik-cache/*/*VeraHome* "$SYS"/data/dalvik-cache/*/*VeraIME*; do
+        [ -e "$dc" ] && rm -f "$dc"
+    done
+    vlog "dalvik-cache kept: same system image ($NEW_IMG), boot image and app code stay valid"
+else
+    rm -rf "$SYS/data/dalvik-cache" 2>/dev/null || true
+    vlog "dalvik-cache cleared (image ${OLD_IMG:-none} -> ${NEW_IMG:-?})"
+fi
 rm -rf "$SYS/data/resource-cache" 2>/dev/null || true
 # Stale user/settings state from a previous Android image can crash Settings even
 # after app data is cleared. Books, /data/media, and the device token are preserved.
@@ -1489,6 +2042,50 @@ restore_missing "$USER_SAFE" /mnt/us
 if [ -f /mnt/base-us/veradroid/backup/cc.db.$stamp ] && [ ! -f /var/local/cc.db ]; then
     cp -a /mnt/base-us/veradroid/backup/cc.db.$stamp /var/local/cc.db 2>/dev/null || true
 fi
+# “VeraDroid 卸载”不再放进书库（0.8.9）：它和“VeraDroid 启动”用的是同一张封面，用户点错过。现在它只放在程序目录
+# veradroid/VeraDroid-Uninstall.sh（USB 能看到）：平时在 Android 的 设置 → 设备与更新 → 卸载 VeraDroid 卸载；Android 起不来时
+# 用 USB 把它拷进 documents 再在书库里点（先说明，10 秒后 2 分钟内再点一次才卸）。以前版本放进书库的那个，升级时拿掉。
+# BEGIN vd_retire_uninstall_entry
+# 只认我们自己放的那一个：固定文件名 documents/VeraDroid-Uninstall.sh（历来只用过这一个名字），普通文件（不是链接），
+# 头里是我们的标题，内容指向我们的程序目录。用户别的文件、同名但内容不是我们的文件一律不动。
+vd_retire_uninstall_entry() {
+    for d in /mnt/us/documents /mnt/base-us/documents; do
+        f=$d/VeraDroid-Uninstall.sh
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        grep -q '^# Name: VeraDroid 卸载$' "$f" 2>/dev/null && grep -q '^VD=/mnt/base-us/veradroid$' "$f" 2>/dev/null || continue
+        rm -f "$f" 2>/dev/null || continue
+        for s in "$d/VeraDroid-Uninstall.sh.sdr" "$d/VeraDroid-Uninstall.sdr"; do [ -d "$s" ] && [ ! -L "$s" ] && rm -rf "$s" 2>/dev/null; done
+        command -v vlog >/dev/null 2>&1 && vlog "library: removed the old uninstall entry $f"
+        RETIRED=1
+    done
+    return 0
+}
+# END vd_retire_uninstall_entry
+if [ -f "$TMP/veradroid-pw6/entries/VeraDroid-Uninstall.sh" ]; then
+    cp "$TMP/veradroid-pw6/entries/VeraDroid-Uninstall.sh" "$VD/VeraDroid-Uninstall.sh" 2>/dev/null && chmod 755 "$VD/VeraDroid-Uninstall.sh" 2>/dev/null || true
+fi
+RETIRED=
+vd_retire_uninstall_entry
+# 这个入口放在“VeraDroid 启动”之前：书库默认按“最近”排（索引时间倒序），以前它们最后被索引，“VeraDroid 卸载”排在最前面
+# （Oasis 3 用户点了第一个就被卸载了）。启动入口最后写、最后索引，排在它前面。
+# emulator-only 机型：书库里再放一个入口“VeraDroid 上传测试结果”（先在屏幕上说明，再点一次才上传）
+if [ "$TESTED" = emulator-only ] && [ -d "$TMP/veradroid-pw6/entries" ]; then
+    for e in "$TMP/veradroid-pw6/entries"/*.sh; do
+        [ -f "$e" ] || continue
+        [ "${e##*/}" = VeraDroid-Uninstall.sh ] && continue   # 不进书库（见上）
+        # 内容没变就不重写：书库索引（sh_integration）把每次改动当成“删条目 + 新 UUID 重建”，反复覆盖会让条目重复 / 消失。
+        # 入口里也不用 # UseHooks（见 docs/prior-art.md）
+        cmp -s "$e" "$DOCS/${e##*/}" 2>/dev/null && continue
+        cp "$e" "$DOCS/${e##*/}" 2>/dev/null && chmod 755 "$DOCS/${e##*/}" 2>/dev/null || true
+        touch -d '2020-01-01 00:00:00' "$DOCS/${e##*/}" 2>/dev/null || true
+        lipc-set-prop com.lab126.scanner reScanFile "/mnt/us/documents/${e##*/}" 2>/dev/null || true
+        ENTRIES_NEW=1
+    done
+    # 书库自己也会因为文件变了再索引一次（晚几秒）：等它做完，下面的启动入口才是最后索引的（KO3 模拟器：不等的话“卸载”仍然晚 1 秒）
+    [ -n "${ENTRIES_NEW:-}" ] && sleep 8
+fi
+# 删掉旧的卸载入口后让书库马上把它的条目拿掉（索引服务一会儿也会自己发现，这里不等）
+[ -n "$RETIRED" ] && lipc-set-prop com.lab126.scanner doFullScan 1 2>/dev/null || true
 if [ -f "$TMP/veradroid-pw6/VeraDroid-Launch.sh" ]; then
     # Kindle's home library may use either mount; put the launcher in both so
     # returning to Kindle always finds a "VeraDroid 启动" entry.
@@ -1510,17 +2107,6 @@ if [ -f "$TMP/veradroid-pw6/VeraDroid-Launch.sh" ]; then
     # 否则入口文件在、书库里却看不到（“安装后书库入口不见”）。
     lipc-set-prop com.lab126.scanner reScanFile "/mnt/us/documents/VeraDroid 启动.sh" 2>/dev/null || true
     sleep 2
-fi
-# emulator-only 机型：书库里再放两个入口——“VeraDroid 上传测试结果”（先在屏幕上说明，再点一次才上传）和“VeraDroid 卸载”（一点就卸，不留痕迹）
-if [ "$TESTED" = emulator-only ] && [ -d "$TMP/veradroid-pw6/entries" ]; then
-    for e in "$TMP/veradroid-pw6/entries"/*.sh; do
-        [ -f "$e" ] || continue
-        # 内容没变就不重写：书库索引（sh_integration）把每次改动当成“删条目 + 新 UUID 重建”，反复覆盖会让条目重复 / 消失。
-        # 入口里也不用 # UseHooks（见 docs/prior-art.md）
-        cmp -s "$e" "$DOCS/${e##*/}" 2>/dev/null && continue
-        cp "$e" "$DOCS/${e##*/}" 2>/dev/null && chmod 755 "$DOCS/${e##*/}" 2>/dev/null || true
-        lipc-set-prop com.lab126.scanner reScanFile "/mnt/us/documents/${e##*/}" 2>/dev/null || true
-    done
 fi
 # KUAL is an alternative for jailbreaks that do not index .sh books.
 if [ -d "$TMP/veradroid-pw6/kual" ]; then

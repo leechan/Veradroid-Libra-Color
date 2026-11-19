@@ -22,10 +22,13 @@ esac
 umask 022
 VD=${VD:-$(cd "$(dirname "$0")/.." && pwd)}
 . "$VD/boot/lib/common.sh"
-for m in settings memory memkeep slim imgclass freeze kmod framework container input network sleep status cmd watchdog afterboot splash bootwatch diagboot compile energy tz tester; do . "$VD/boot/lib/$m.sh"; done
+for m in settings memory slim freeze kmod framework container input network sleep status cmd watchdog afterboot splash bootwatch diagboot compile energy tz tester bgnice; do . "$VD/boot/lib/$m.sh"; done
 mkdir -p $SYS $W
-# 上次停在某个应用时留下的“当前应用显示参数”不带进这一次（开机时前台是桌面；appprof.sh）
-rm -f $SYS/settings.app $W/appprof.pkg
+# 上次停在某个应用时留下的“当前应用显示参数”不带进这一次（开机时前台是桌面；appprof.sh）。
+# 解冻（Android 冻着、还活着）时不删：显示桥一直在跑，手里还是那个应用的参数（比如微信读书的 KFB_MODE=1 / FLASH=6）。以前这里删了，
+# 解冻后打开桌面时 appprof_fg 比较“新 = 全局、旧 = 空”判成“same as before”，不发 SET，桌面就一直用那个应用的刷新参数。
+# 冷启动在下面另外删（同 pw6 / k49 的 3153aa9）。
+if ! { [ -f $W/frozen ] && kill -0 "$(cat $W/pid 2>/dev/null)" 2>/dev/null; }; then rm -f $SYS/settings.app $W/appprof.pkg; fi
 settings_load
 
 # 第二阶段：在新命名空间里
@@ -40,7 +43,7 @@ if [ -z "$VERADROID_DETACHED" ]; then
     echo 0 > /proc/$$/oom_score_adj 2>/dev/null
     exec env -i VERADROID_DETACHED=1 PATH="$PATH" setsid sh "$0" "$@" </dev/null
 fi
-echo "== $(date) start app=${1:-$SYSTEM_APP} up=$(cut -d' ' -f1 /proc/uptime)"
+echo "== $(date) start app=${1:-$SYSTEM_APP}"
 APP=${1:-$SYSTEM_APP}
 
 # Kindle 正在关机 / 重启（/etc/upstart/shutdown.conf 第一步写 /tmp/shutdown_in_progress）：这时不能再启动——会把系统盘重新挂到
@@ -92,6 +95,26 @@ if [ -z "$VD_INSTWAITED" ] && installer_busy; then
     VD_INSTWAITED=1 exec sh /mnt/base-us/veradroid/boot/veradroid.sh "$@"   # 装好的（或安装器回退后的）那一版
 fi
 
+# 安装器被强行结束（SIGKILL、断电）时它的 EXIT 清理没跑：临时目录 veradroid-install.<pid>（整包 + 解开的 ~290 MB）和过期的安装锁
+# 一直留到下一次安装，老机型的小存储上很占地方。这里没有安装器在跑（上面已经等过）：持有者不在这次开机里活着的都删掉。
+installer_leftovers() {
+    il_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+    il_lp=$(cat /mnt/base-us/veradroid/state/install.lock/pid 2>/dev/null)
+    if [ -d /mnt/base-us/veradroid/state/install.lock ] && { [ -z "$il_lp" ] || ! kill -0 "$il_lp" 2>/dev/null || [ "$(cat /mnt/base-us/veradroid/state/install.lock/boot 2>/dev/null)" != "$il_boot" ]; }; then
+        rm -f /mnt/base-us/veradroid/state/install.lock/pid /mnt/base-us/veradroid/state/install.lock/boot /mnt/base-us/veradroid/state/install.lock/phase
+        rmdir /mnt/base-us/veradroid/state/install.lock 2>/dev/null && il_lp= && t "removed a stale install lock"
+    fi
+    [ -d /mnt/base-us/veradroid/state/install.lock ] && return 0      # 有活着的安装器：它自己管
+    for il_d in /mnt/base-us/veradroid/state/install.[0-9]*; do
+        [ -d "$il_d" ] || continue
+        il_p=${il_d##*.}; case "$il_p" in *[!0-9]*) continue ;; esac
+        kill -0 "$il_p" 2>/dev/null && [ -n "$(find "$il_d" -mmin -2 2>/dev/null | head -1)" ] && continue   # 无锁的老安装器还在写
+        il_mb=$(du -sm "$il_d" 2>/dev/null | cut -f1)
+        case "$il_d" in /mnt/base-us/veradroid/state/install.[0-9]*) rm -rf "$il_d" && t "removed an interrupted installer's temp dir $il_d (${il_mb:-?} MB)" ;; esac
+    done
+}
+installer_leftovers 2>/dev/null
+
 # 把输出接回系统盘上的日志（之前为了让 stop.sh 能卸载系统盘挪到了 /tmp）。系统盘没挂上时不接：exec 重定向失败会让整个脚本退出，
 # 也不要在镜像下面的裸目录里建一个日志文件。
 log_reopen() { if [ ! -f "$SYSTEM_IMG" ] || grep -q " $SYS " /proc/mounts; then exec >>$LOG 2>&1; fi; }
@@ -103,6 +126,7 @@ start_helpers() {
     echo $! > $W/watchdog.pid
     sleep_watch &
     echo $! > $W/sleep.pid
+    type usb_watch_start >/dev/null 2>&1 && usb_watch_start   # 插 USB 线时问要不要切到 USB 传输（usb.sh）
     cmd_listen &
     echo $! > $W/cmd.pid
     # 关机钩子：Kindle 关机 / 重启时先停 Android、卸载系统盘，否则 /mnt/base-us 卸不掉（EBUSY），用户存储会脏。
@@ -137,6 +161,7 @@ if [ -n "$P" ] && kill -0 $P 2>/dev/null; then
         touch $X/ctl/sleep
         input_grab
         android_thaw
+        type lock_reset_check >/dev/null 2>&1 && lock_reset_check
         rm -f $W/frozen
         ( sleep 1; rm -f $X/ctl/sleep; epd_send REDRAW ) &
         start_helpers
@@ -204,20 +229,20 @@ while [ -n "$sp" ] && [ "$sp" != "$$" ] && [ "$sp" != "$PPID" ] && kill -0 "$sp"
 done
 [ $i -gt 0 ] && { ws=$i; storage_mount; log_reopen; t "previous stop.sh finished after ${ws}s, starting"; }   # storage_mount 自己也用 i
 sh $VD/boot/stop.sh --stale >/dev/null 2>&1
-rm -f $SYS/settings.app      # 上次运行时某个应用的显示参数：冷启动从桌面开始
+rm -f $SYS/settings.app $W/appprof.pkg      # 上次运行时某个应用的显示参数：冷启动从桌面开始
 storage_mount || { splash "VeraDroid：系统盘还在被上次的进程占用，请过一分钟再试" 36; sleep 5; exit 1; }
 kmod_load
 [ -d $R ] && [ -e $R/init -o -f $R/.demo ] || { t "no system image at $R"; splash "VeraDroid：还没有安装系统" 40; sleep 5; exit 1; }
-imgclass_check || { splash "VeraDroid：系统镜像和这台 Kindle 的硬件不匹配，请重新安装" 40; sleep 5; exit 1; }
 # 只在模拟器上验证过的机型：独立的看护进程（开机超时 / 启动脚本中途死掉时自己回到 Kindle）+ 开机后自检（tester.sh）
 test_begin
-FRAMEWORK_AFTER_SAVE='splash_bg 正在准备 3'
+FRAMEWORK_AFTER_SAVE='splash_begin 正在准备 3'
 framework_stop || { t "cannot pause kindle ui"; exit 1; }
-[ -f $W/splash.pid ] || splash_update 12     # Kindle 界面本来就停着（重启 Android）：没有后台画面，这里画
+splash_update 12
 splash_after_stop &
 [ -x "$FBINK" ] || { t "no fbink; continuing with framebuffer/eips fallback"; FBINK=; }
 display_prepare
 touch $X/ctl/sleep       # 开机画面期间，显示桥不画 Android 的帧（开机完成后 splash_end 放开）
+rm -f $W/epd.restarts $W/input.restarts   # watchdog.sh helpers_supervise：每次开机各最多重启 3 次
 display_start
 settings_publish
 type appprof_publish >/dev/null 2>&1 && appprof_publish   # 每个应用的显示设置：合并表给桌面看（/dev/kfb/appprof）
@@ -236,13 +261,12 @@ zram_on
 slim_apply
 readahead_on
 net_setup
-boot_mark_setup
 container_start || { log_release; sh $VD/boot/stop.sh >/dev/null 2>&1; exit 1; }
 bat_baseline       # 电量统计起点（energy.sh）
 net_start
 echo "$APP" > $X/ctl/app
-splash_wait
 splash_update 20
+dedup_start
 boot_watch &
 echo $! > $W/boot.pid
 start_helpers

@@ -10,34 +10,59 @@ CURL_OPTS=
 [ -n "${VD_IP:-}" ] && CURL_OPTS="$CURL_OPTS --resolve veradroid.wenjin.jp:443:$VD_IP --resolve veradroid.wenjin.jp:80:$VD_IP"
 [ -n "${VD_DNS:-}" ] && CURL_OPTS="$CURL_OPTS --dns-servers $VD_DNS"
 curl_do() { curl $CURL_OPTS "$@"; }
+# 直链优先（站长 2026-11-19）：元数据和安装器先从直链拿（dl.wenjin.jp：同一台服务器，不经过 Cloudflare），拿不到 / 不像样再走主站。
+# dl.wenjin.jp 现在只放行下载路径，这两样回 404，于是退回主站（多一次很快的请求）；放行以后自动走直链。network.conf 里 VD_DIRECT= 关掉
+case "$BASE" in https://veradroid.wenjin.jp) DIRECT=${VD_DIRECT-https://dl.wenjin.jp} ;; *) DIRECT=${VD_DIRECT-} ;; esac
+au_meta() { # 主站地址 -> 元数据（stdout）
+    if [ -n "$DIRECT" ]; then
+        k=${1#*://}; k=${k#*/}
+        j=$(curl_do -fsSL --connect-timeout 6 --max-time 20 "${DIRECT%/}/$k" 2>/dev/null) \
+            && printf '%s' "$j" | grep -q '"version"' && printf '%s' "$j" | grep -q '"url"' && { printf '%s' "$j"; return 0; }
+    fi
+    curl_do -fsSL --max-time 20 "$1"
+}
+au_script() { # 主站地址 输出文件：完整下载、非空、语法检查通过才算（直链先，主站后）；日志记下用了哪个
+    if [ -n "$DIRECT" ]; then
+        k=${1#*://}; k=${k#*/}; rm -f "$2"
+        if curl_do -fsSL --connect-timeout 6 --max-time 120 -o "$2" "${DIRECT%/}/$k" 2>/dev/null && [ -s "$2" ] && sh -n "$2" 2>/dev/null; then
+            echo "$(date) auto update: installer from the direct link ${DIRECT%/}/$k" >> "$LOG"; return 0
+        fi
+    fi
+    rm -f "$2"
+    curl_do -fsSL --max-time 120 -o "$2" "$1" && [ -s "$2" ] && sh -n "$2" 2>>"$LOG"
+}
 LOG=/mnt/base-us/veradroid/logs/autoupdate.log
 PID=/dev/shm/veradroid/autoupdate.pid
 LOCK=/mnt/base-us/veradroid/state/autoupdate.lock
 mkdir -p /mnt/base-us/veradroid/logs /mnt/base-us/veradroid/state 2>/dev/null
 [ -f "$VD/autoupdate" ] && [ "$(cat "$VD/autoupdate")" = "0" ] && exit 0
-# 只留一个实例。以前只看锁目录：锁目录没了（或者锁里的 pid 已经不是自动更新）以后，每次启动 Android 都会再起一个，
-# 旧的那些照样每 6 小时醒来一次，谁也不退出（两台 PW6 测试机上各堆了 6-7 个 sh auto-update.sh，最老的 3 天）。
-# 现在：① 锁里的 pid 必须真是一个自动更新进程（断电后 pid 会被别的进程用掉）；② 已经有别的自动更新进程在跑就不起；
-# ③ 每次睡醒先确认锁还是自己的，不是就悄悄退出（不删别人的锁），已经多出来的实例最多 6 小时内自己消失。
-au_is() { case "$(tr '\000' ' ' < /proc/$1/cmdline 2>/dev/null)" in "sh "*"/auto-update.sh "*) return 0 ;; esac; return 1; }   # 只认 "sh …/auto-update.sh"（不认 cp / grep 之类）
-au_others() {
-    for d in /proc/[0-9]*; do
-        p=${d#/proc/}; [ "$p" = "$$" ] && continue
-        au_is "$p" && [ "$(awk '{print $4}' $d/stat 2>/dev/null)" != "$$" ] && return 0   # 自己的子进程（$(...)）不算
-    done
-    return 1
-}
 if [ -d "$LOCK" ]; then
     old=$(cat "$LOCK/pid" 2>/dev/null)
-    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null && au_is "$old"; then exit 0; fi
+    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then exit 0; fi
     rm -rf "$LOCK"
 fi
-au_others && exit 0
 mkdir "$LOCK" 2>/dev/null || exit 0
 echo $$ > "$LOCK/pid"
 trap 'rm -rf "$LOCK" 2>/dev/null' EXIT
-au_mine() { [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] || { trap - EXIT; exit 0; }; }
 echo $$ > "$PID"
+# au_kmod_mine：这台机器现在加载的那一套模块，"<uname -r>/<套件>=<编号>"（和 pack-legacy.sh 写的 kmod.sets 同一格式、同一算法：
+# 套件目录里全部文件按路径排序后内容的 sha256 前 12 位；选套件同 boot/lib/kmod.sh 的 kmod_dir）。认不出时什么都不输出。
+au_kmod_mine() {
+    akd=$VD/kmod/$(uname -r); [ -d "$akd" ] || return 0
+    command -v sha256sum >/dev/null 2>&1 || return 0
+    aks=
+    if ls "$akd"/*.ko >/dev/null 2>&1; then aks=$akd
+    else
+        akv=$(uname -v)
+        for akx in "$akd"/*/; do
+            [ -f "${akx}uname-v" ] || continue
+            while IFS= read -r akl || [ -n "$akl" ]; do [ "$akl" = "$akv" ] && aks=${akx%/}; done < "${akx}uname-v"
+            [ -n "$aks" ] && break
+        done
+    fi
+    [ -n "$aks" ] || return 0
+    echo "${aks#$VD/kmod/}=$(find "$aks" -type f | LC_ALL=C sort | xargs cat | sha256sum | cut -c1-12)"
+}
 # 点分版本号比较：$1 比 $2 新时返回 0（0.25 > 0.24，0.21.41 > 0.21.9）
 ver_gt() {
     [ "$1" = "$2" ] && return 1
@@ -53,7 +78,6 @@ cur_version() {
 }
 sleep 120
 while :; do
-    au_mine
     [ -f "$VD/autoupdate" ] && [ "$(cat "$VD/autoupdate")" = "0" ] && exit 0
     cur=$(cur_version)
     # Old installs may not have a version file at all. Treat them as 0 so
@@ -67,11 +91,7 @@ while :; do
         4.*) meta="$BASE/static/bootstrap-k49.json?t=$(date +%s)" ;;
         *) meta="$BASE/api/bootstrap" ;;
     esac
-    # 装的是按类别编的系统（bootstrap 记在 $VD/image-class）：先看那个类别的版本，服务器上没有再看通用的
-    ic=$(cat "$VD/image-class" 2>/dev/null)
-    json=
-    [ -n "$ic" ] && json=$(curl_do -fsSL --max-time 20 "$BASE/static/bootstrap-$ic.json?t=$(date +%s)" 2>/dev/null)
-    [ -n "$json" ] || json=$(curl_do -fsSL --max-time 20 "$meta" 2>/dev/null) || { sleep 3600; continue; }
+    json=$(au_meta "$meta" 2>/dev/null) || { sleep 3600; continue; }
     # 版本号有 "version":"x" 和 "version": "x" 两种写法
     new=$(printf '%s' "$json" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')
     # 安装时记录的实验机型：更新时沿用，否则 bootstrap 会拒绝（要求 VD_EXPERIMENTAL=1）
@@ -81,10 +101,16 @@ while :; do
     # 只往新版本更新：本地版本更新（比如用离线包装了新版）时绝不降级（KT6 模拟器实测 0.25 被拉回 0.24）
     # 只在模拟器上验证过的机型（$VD/tested = emulator-only）：内核模块（binder / uinput / zram）换了的更新绝不在后台悄悄装，
     # 要用户自己再点一次“VeraDroid 安装（实验机型）”（会再看到警告并确认）。模块没变（kmod 编号相同）的更新照常自动装。
+    # 0.8.13 起：元数据里有每个套件的编号（"kmodsets"）时只看这台机器加载的那一套变没变（au_kmod_mine）；
+    # 没有，或认不出这台机器用哪一套时，照旧比整体编号（"kmod" 和 $VD/kmod.id，0.8.12 及以前的更新程序只会比这个）。
     if [ "$(cat "$VD/tested" 2>/dev/null)" = emulator-only ]; then
         nk=$(printf '%s' "$json" | sed -n 's/.*"kmod": *"\([^"]*\)".*/\1/p')
-        if [ -z "$nk" ] || [ "$nk" != "$(cat "$VD/kmod.id" 2>/dev/null)" ]; then
-            ver_gt "$new" "$cur" && echo "$(date) auto update $cur -> $new skipped: emulator-only model and the kernel modules changed (kmod ${nk:-?}); tap the installer to update" >> "$LOG"
+        ks=$(printf '%s' "$json" | sed -n 's/.*"kmodsets": *"\([^"]*\)".*/\1/p'); mine=; kok=
+        [ -n "$ks" ] && mine=$(au_kmod_mine)
+        if [ -n "$mine" ]; then case " $ks " in *" $mine "*) kok=1 ;; esac
+        else [ -n "$nk" ] && [ "$nk" = "$(cat "$VD/kmod.id" 2>/dev/null)" ] && kok=1; fi
+        if [ -z "$kok" ]; then
+            ver_gt "$new" "$cur" && echo "$(date) auto update $cur -> $new skipped: emulator-only model and the kernel modules changed (kmod ${nk:-?}${mine:+, set on this device $mine}); tap the installer to update" >> "$LOG"
             sleep 21600; continue
         fi
         export VD_EMUONLY_OK=1
@@ -116,7 +142,7 @@ while :; do
     # BH081-7：不要 `curl | sh`——下载中途断网/超时，sh 会执行半截脚本。先完整下载到文件，curl 成功且语法检查通过才执行。
     BS=/mnt/base-us/veradroid/state/autoupdate-bootstrap.sh
     rm -f "$BS.part"
-    if curl_do -fsSL --max-time 120 -o "$BS.part" "$BASE/static/bootstrap-legacy.sh" && [ -s "$BS.part" ] && sh -n "$BS.part" 2>>"$LOG"; then
+    if au_script "$BASE/static/bootstrap-legacy.sh" "$BS.part"; then
         mv -f "$BS.part" "$BS"
         # VD_AUTOUPDATE=1：下载期间用户又打开了 Android 时，安装器等用户离开再替换，不把正在用的 Android 关掉；
         # 等太久（2 小时）它以 75 退出，什么都没动，过半小时再来

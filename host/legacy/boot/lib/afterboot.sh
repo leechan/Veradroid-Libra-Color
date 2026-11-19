@@ -25,14 +25,26 @@ home_aot() {
     for ap in VeraHome:com.veradroid.home VeraIME:com.veradroid.ime; do
         o=$SYS/data/dalvik-cache/arm/system@priv-app@${ap%%:*}@${ap%%:*}.apk@classes.dex
         [ -f "$o" ] || o=$SYS/data/dalvik-cache/arm/system@app@${ap%%:*}@${ap%%:*}.apk@classes.dex
-        # PW6 / k49 镜像：系统应用开机时根本不做 dexopt（dalvik-cache 里没有它们的 odex，内存里解压 dex 解释执行，0.98 真机实测），
-        # 这时也编一次（f=none）；编完 odex 就在上面第一个路径
-        f=none
-        [ -f "$o" ] && f=$(dd if="$o" bs=4096 count=4 2>/dev/null | tr '\0' '\n' | sed -n '/^compiler-filter$/{n;p;q;}')
+        [ -f "$o" ] || continue
+        f=$(dd if="$o" bs=4096 count=4 2>/dev/null | tr '\0' '\n' | sed -n '/^compiler-filter$/{n;p;q;}')
         case "$f" in speed|everything) continue ;; esac
-        [ -f $W/frozen ] || [ -f $W/saver_frozen ] && return 0
+        # 一次只跑一个 dex2oat：应用的预编译（compile.sh）正在编、或者别的 dex2oat 在跑时等它们做完（PW4 模拟器：和微信读书的编译
+        # 撞在一起、换页时，编桌面用了 1205 秒，单独编 9 秒；0.98 门禁 PW6 第一次开机两边也叠在一起）。只是排着队等前台应用的
+        # 工作进程不算忙（以前等 compile.pid，会被它挡满 30 分钟）。最多等 30 分钟，冻结 / 屏保时不编。编的时候写 $W/aot.pid，
+        # 预编译的工作进程看到就先不开始下一个。
+        hw=0
+        while pidof dex2oat >/dev/null 2>&1 || [ "$(sed -n 's/^state=//p' $X/ctl/compile.status 2>/dev/null)" = running ] || [ -f $W/frozen ] || [ -f $W/saver_frozen ]; do
+            hw=$((hw + 1)); [ $hw -gt 180 ] && { t "aot: ${ap#*:} skipped (compiler busy for 30 min)"; return 0; }
+            sleep 10
+        done
+        read -r ah _ < /proc/self/stat; echo "$ah" > $W/aot.pid
         a0=$(cut -d' ' -f1 /proc/uptime)
-        r=$(adb_sh "cmd package compile -m speed -f ${ap#*:}" 2>&1 | tr -d '\r' | tail -1)
+        adb_sh "cmd package compile -m speed -f ${ap#*:}" > $W/aot.out 2>&1 &
+        ac=$!
+        # 和应用的预编译一样：dex2oat 调成 nice 19 + IO 空闲、内存危险时停掉（compile.sh）
+        type compile_babysit >/dev/null 2>&1 && compile_babysit $ac   # 不带包名：桌面本来就在前台，带了会被当成“到了前台”停掉
+        wait $ac; rm -f $W/aot.pid
+        r=$(tr -d '\r' < $W/aot.out | tail -1)
         t "aot: ${ap#*:} ${f:-?} -> speed: $r ($(awk -v a=$a0 -v b=$(cut -d' ' -f1 /proc/uptime) 'BEGIN{printf "%.0f", b-a}') s)"
     done
 }
@@ -40,7 +52,9 @@ adb_sh() {
     # Refresh into a live container; never run host sh if vd_in fails (empty prefix).
     pref=$(vd_in) || return 1
     [ -n "$pref" ] || return 1
-    $pref /system/bin/sh -c "export PATH=/system/bin:/system/xbin ANDROID_DATA=/data ANDROID_ROOT=/system; $*"
+    # am / pm / settings 是 ART 进程：栈限制按正在跑的镜像定（vd_art_stack，在子 shell 里改，不影响调用者）
+    ( vd_art_stack
+      $pref /system/bin/sh -c "export PATH=/system/bin:/system/xbin ANDROID_DATA=/data ANDROID_ROOT=/system; $*" )
 }
 
 # 包是否已安装：读 PackageManager 自己维护的 packages.list（宿主上直接读文件，不用为一次查询起一个 JVM）
@@ -140,25 +154,6 @@ boot_data_check() {
     fi
     return 0
 }
-# Shizuku（moe.shizuku.privileged.api，用户申请 #2）：它的“启动（针对已 root 设备）”走应用自己的 su，Android 里的 su 只认
-# root / shell，应用调不动（“未授予 root 权限”）；“通过电脑 adb 启动”在 Kindle 上也没有电脑那一头。宿主本来就是 root：
-# 装了 Shizuku 就在开机完成后（和传书 / 商店装好它之后）替用户跑一次它自带的启动器 libshizuku.so，等于 root 模式启动，
-# 之后哪个应用能用 Shizuku 仍由用户在 Shizuku 里逐个授权。SHIZUKU_AUTOSTART=off 关掉。
-shizuku_start() {
-    [ "${SHIZUKU_AUTOSTART:-on}" = off ] && return 0
-    pkg_installed moe.shizuku.privileged.api || return 0
-    local sd sl
-    for sd in $SYS/data/app/moe.shizuku.privileged.api-*; do
-        for sl in lib/arm/libshizuku.so lib/armeabi-v7a/libshizuku.so lib/armeabi/libshizuku.so; do
-            [ -f "$sd/$sl" ] && { sl=${sd#$SYS}/$sl; break 2; }
-        done
-    done
-    case "$sl" in /data/app/*/libshizuku.so) ;; *) t "shizuku: starter not found"; return 0 ;; esac
-    case "$sl" in *[!A-Za-z0-9._/-]*) return 0 ;; esac
-    adb_sh 'pidof shizuku_server' >/dev/null 2>&1 && return 0
-    if adb_sh "$sl" >/dev/null 2>&1; then t "shizuku: server started (root)"; else t "shizuku: start failed"; fi
-}
-
 after_boot() {
     # Re-assert binder before waiting — covers init races that hide the node.
     binder_repair 2>/dev/null || true
@@ -193,6 +188,7 @@ after_boot() {
     done
     t "after_boot: boot completed"
     rm -f $SYS/sysfont.try       # 带着系统字体开机完成了（container.sh 的 sysfont_prepare）
+    type lock_reset_check >/dev/null 2>&1 && lock_reset_check   # USB 上的锁屏密码重置文件（lock.sh）
     boot_data_check
     cut -d. -f1 /proc/uptime > $W/booted     # compile.sh：开机完成一分钟后才开始后台预编译（看门狗）
     # 有些机型/模拟器上 epd 收不到 Android 首帧，splash_end 的 FULL 也可能落在 e-ink 尚未就绪时；
@@ -219,7 +215,6 @@ after_boot() {
         fi
     fi
     lmk_tune          # 运行时参数，不持久：每次开机都要做
-    type boot_block_apply >/dev/null 2>&1 && ( boot_block_apply ) &      # 第三方应用的开机自启（memkeep.sh，BOOT_BLOCK）
     proc_limit_apply  # 机型文件的 PROC_LIMIT（memory.sh）：同样不持久
     trust_unlock      # 剪贴板可读（见 trust_unlock）
     # 默认桌面固定为 VeraHome（装了自带“桌面”入口的应用后，系统会让用户重新选）。cmd 走 binder，不起 JVM，约 0.1 秒。
@@ -372,18 +367,16 @@ RDME
     # 12 / 24 小时制跟 Kindle（tz.sh；值没变就不写）
     type time_format_apply >/dev/null 2>&1 && time_format_apply
     type tz_sync_live >/dev/null 2>&1 && tz_sync_live       # 开机前按偏移猜的时区，后台已经查到准确名字时换掉
-    shizuku_start
 }
 
 # 小内存机型（< 700 MB：PW5 / KT5 / KT6 / 老机型）：ActivityManager 按“内存 + 屏幕尺寸”给 lmkd 选杀进程的门槛，
 # Kindle 的大屏让它选了大屏手机那一档：文件缓存低于 72 MB 就连前台应用也杀。512 MB 的 Kindle 上微信读书（墨水屏版）
 # 每 12 秒被杀一次、无限重启（KT5 模拟器实测）。开机后用 vdlmk 把门槛降下来（单位：页 = 4 KB）：
-# 前台 8 MB、可见 12 MB、可感知 16 MB、备份 20 MB、缓存 24–32 MB。1 GB 机型的门槛见 memkeep.sh（LMK_MINFREE）。
+# 前台 8 MB、可见 12 MB、可感知 16 MB、备份 20 MB、缓存 24–32 MB。957 MB 的 PW6 不改。
 lmk_tune() {
-    lmk_kernel_tune 2>/dev/null || true      # 内核 LMK（只有 < 700 MB 的老内核有）
-    if type lmk_send >/dev/null 2>&1; then lmk_send; return 0; fi      # memkeep.sh：按 LMK_MINFREE（1 GB 机型也降，见那里的说明）
     mt=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
     [ -n "$mt" ] && [ "$mt" -lt 700000 ] || return 0
+    lmk_kernel_tune 2>/dev/null || true
     [ -x "$VD/bin/vdlmk" ] || { t "lmk: vdlmk missing"; return 0; }
     s=/proc/$P/root/dev/socket/lmkd
     i=0; while [ ! -S "$s" ] && [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done

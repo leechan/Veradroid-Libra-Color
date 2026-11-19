@@ -6,7 +6,9 @@
 # 957 MB 的 PW6（5.15 内核）不受影响，不改。
 overcommit_on() {
     mt=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
-    [ -n "$mt" ] && [ "$mt" -lt 700000 ] || return 0
+    # 4.x 及更老的内核一律开（同 host/k49 4609bda：Scribe 上 zram 满、shmem 高时启发式 overcommit 拒了 zygote 的 fork，
+    # 微信读书开书时起 :seg 进程失败、整个包被 force-stop）。legacy 的 3.0 / 4.1 机型本来都在 700 MB 以下，这里只是把规则写全
+    case "$(uname -r)" in [1-4].*) ;; *) [ -n "$mt" ] && [ "$mt" -lt 700000 ] || return 0 ;; esac
     [ -f $W/overcommit.state ] || cat /proc/sys/vm/overcommit_memory > $W/overcommit.state
     echo 1 > /proc/sys/vm/overcommit_memory && t "low ram ${mt}kB: overcommit_memory=1"
 }
@@ -136,11 +138,9 @@ zram_on() {
         [ -f $W/wsf.state ] || cat /proc/sys/vm/watermark_scale_factor > $W/wsf.state
         echo "$VM_WATERMARK" > /proc/sys/vm/watermark_scale_factor 2>/dev/null
     fi
-    type zram_extra >/dev/null 2>&1 && zram_extra     # zram0 被占着、比 ZRAM_MB 小：再加一块（memkeep.sh）
     t "zram ${ZRAM_MB}MB on"
 }
 zram_restore() {
-    type mem_keep_off >/dev/null 2>&1 && mem_keep_off
     overcommit_restore
     tune_restore
     swapfile_off
@@ -338,4 +338,33 @@ proc_limit_apply() {
     # IActivityManager.SET_PROCESS_LIMIT_TRANSACTION = FIRST_CALL_TRANSACTION + 50（7.1.1 源码），即开发者选项里的“后台进程限制”
     r=$(adb_sh "service call activity 51 i32 $PROC_LIMIT" 2>/dev/null | tr -d '\r\n')
     t "am: background process limit $PROC_LIMIT (${r:-no reply})"
+}
+
+# 页缓存去重（CACHE_DEDUP，默认 1；docs/legacy-perf.md）。系统盘是 vfat 上的 ext4 镜像（loop1），vfat 本身又挂在 eMMC 分区上的 loop0：
+# 缓冲方式的 loop 让 Android 读过的每一页在页缓存里存三份（ext4 文件、vfat 上的镜像文件、loop0 下的块设备）。4.9 以后的机型用
+# loop 直读写（k49 的 loopdio_on）；4.1 / 3.0 内核没有这个功能，只能定期把后两份丢掉：bin/vdloopdio --drop 对镜像文件和 loop0 的
+# 后端做 posix_fadvise(DONTNEED)，只丢干净、没映射的页，脏页照常写回。PW4 5.18.1 模拟器，微信读书从桌面冷启动（150 秒窗口）：
+# 显示出来 44.5 s -> 13.6 s，读盘 0.80 GB -> 0.13 GB，workingset_refault 20 万 -> 1 万页，整机 CPU（不含微信读书）23.7 % -> 6.9 %。
+# Android 冻着（返回 Kindle / 屏保）时不丢，30 秒才看一次。
+dedup_start() {
+    [ "${CACHE_DEDUP:-1}" = 1 ] && [ -x "$VD/bin/vdloopdio" ] && [ -f "$SYSTEM_IMG" ] || return 0
+    d=$(awk '$2 == "/mnt/base-us" {print $1}' /proc/mounts | tail -1)
+    n=$(echo "${d##*/}" | sed 's/^loop//'); bk=
+    case "$d" in /dev/loop*) bk=$(cat /sys/block/loop$n/loop/backing_file 2>/dev/null) ;; esac
+    case "$bk" in /dev/*) [ -b "$bk" ] || bk= ;; *) bk= ;; esac
+    alive $W/dedup.pid && return 0
+    (
+        while [ -f $W/pid ]; do
+            if [ -f $W/frozen ] || [ -f $W/saver_frozen ]; then sleep 30; continue; fi
+            "$VD/bin/vdloopdio" --drop "$SYSTEM_IMG" $bk 2>/dev/null
+            sleep ${CACHE_DEDUP_S:-3}
+        done
+    ) </dev/null >/dev/null 2>&1 &
+    echo $! > $W/dedup.pid
+    t "cache dedup: dropping duplicate pages of $SYSTEM_IMG${bk:+ and $bk} every ${CACHE_DEDUP_S:-3}s"
+}
+dedup_stop() {
+    p=$(cat $W/dedup.pid 2>/dev/null); rm -f $W/dedup.pid
+    [ -n "$p" ] && kill "$p" 2>/dev/null
+    return 0
 }

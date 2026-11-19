@@ -3,10 +3,12 @@
 # home / IME kept out of swap, timed background stop. Same file in the three hosts, wired into boot / watchdog / fg / stop.
 cd "$(dirname "$0")/.." || exit 2
 fail() { echo "FAIL: $*"; exit 1; }
-for h in k49 legacy; do
+# host/legacy is the legacy line's own release (docs/legacy-line.md): it is checked only once it carries this change.
+HL=; [ -f host/legacy/boot/lib/memkeep.sh ] && HL=legacy
+for h in k49 $HL; do
     cmp -s host/pw6/boot/lib/memkeep.sh host/$h/boot/lib/memkeep.sh || fail "host/$h/boot/lib/memkeep.sh differs from host/pw6"
 done
-for h in pw6 k49 legacy; do
+for h in pw6 k49 $HL; do
     b=host/$h/boot
     sh -n $b/lib/memkeep.sh || fail "syntax $b/lib/memkeep.sh"
     grep -q '^for m in settings memory memkeep ' $b/veradroid.sh || fail "$b/veradroid.sh does not source memkeep.sh"

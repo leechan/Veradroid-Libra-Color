@@ -3,7 +3,9 @@
 # the three hosts carry the same files, the built-in table is well-formed, and the lookup / save logic behaves.
 cd "$(dirname "$0")/.." || exit 2
 fail() { echo "FAIL: $*"; exit 1; }
-for h in k49 legacy; do
+# host/legacy is the legacy line's own release (docs/legacy-line.md): it is checked only once it carries this change.
+HL=; grep -q 'appprof_oec_publish' host/legacy/boot/lib/appprof.sh && HL=legacy
+for h in k49 $HL; do
     cmp -s host/pw6/boot/lib/appprof.sh host/$h/boot/lib/appprof.sh || fail "host/$h/boot/lib/appprof.sh differs from host/pw6"
     cmp -s host/pw6/boot/appprofiles.conf host/$h/boot/appprofiles.conf || fail "host/$h/boot/appprofiles.conf differs from host/pw6"
 done

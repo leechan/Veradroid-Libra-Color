@@ -46,7 +46,25 @@ display_prepare() {
     # Hardware model detected by bootstrap; Android's ro.product.model is generic.
     m=$(cat $SYS/model 2>/dev/null | tr -d '\r\n')
     [ -n "$m" ] && echo "$m" > $X/model
+    hwc_prepare
     chmod -R 777 $X
+}
+# 系统合成：hwcomposer.kindle.so（和 host/pw6、host/k49 同一个文件，android/hwcomposer）随宿主程序发（bin/），开机前装进系统的
+# /system/lib/hw；KFB_HWC=0 时写 $X/hwc.off，模块拒绝加载，SurfaceFlinger 回到原来的软件 GLES（libagl）。
+# 为什么 legacy 也要：libagl 把每个图层画成两个三角形，非全屏的窗口（对话框、弹出菜单、输入法）两个三角形的纹理坐标差 1–2 像素，
+# 画面沿一条斜线错开一格（PW4 模拟器：首页右上角菜单，GLES 帧和 1:1 拷贝相比 x 946–987、y 861–1088 的 1021 个像素整体右移 1 像素；
+# 输入法窗口同样）。这个模块把不缩放、不旋转的图层按行原样拷贝，错位没有了，也省掉了 libagl 每帧的合成时间。
+hwc_prepare() {
+    if [ -f "$VD/bin/hwcomposer.kindle.so" ] && [ -d "$R/system/lib/hw" ]; then
+        if ! cmp -s "$VD/bin/hwcomposer.kindle.so" "$R/system/lib/hw/hwcomposer.kindle.so"; then
+            cp "$VD/bin/hwcomposer.kindle.so" "$R/system/lib/hw/hwcomposer.kindle.so.new" && chmod 644 "$R/system/lib/hw/hwcomposer.kindle.so.new" \
+                && mv -f "$R/system/lib/hw/hwcomposer.kindle.so.new" "$R/system/lib/hw/hwcomposer.kindle.so" && t "display: hwcomposer.kindle.so installed"
+        fi
+    fi
+    if [ "${KFB_HWC:-1}" = 1 ] && [ -f "$R/system/lib/hw/hwcomposer.kindle.so" ]; then rm -f $X/hwc.off; else touch $X/hwc.off; fi
+    case "$KFB_HZ" in 60|20|15) echo $KFB_HZ > $X/hz ;; *) echo 30 > $X/hz ;; esac
+    case "${KFB_DIM:-20}" in off) echo -1 > $X/hwc.dim ;; ''|*[!0-9]*) echo 51 > $X/hwc.dim ;;
+        *) d=${KFB_DIM}; [ "$d" -gt 100 ] && d=100; echo $((d * 255 / 100)) > $X/hwc.dim ;; esac
 }
 # 屏幕旋转 KFB_ROTATE=0|90|180|270（docs/rotation.md）：Android 永远正着画，显示桥（veradroid-epd）转画面，
 # 触摸前端（veradroid-input）转坐标和边缘手势区。0 时两个程序的命令行和以前完全一样。
@@ -62,7 +80,8 @@ rot_args() {   # 给 veradroid-epd / veradroid-input 的额外参数（0 度时�
 # 显示桥接：系统往共享缓冲 $X/fb 画、往 $X/epd.fifo 报“第几页”，桥接程序比较差异后局部刷新墨水屏
 display_start() {
     [ -x "$VD/bin/veradroid-epd" ] || { t "display: veradroid-epd missing"; return 0; }
-    $VD/bin/veradroid-epd run $X/fb $X/epd.fifo $X/ctl --w ${viewWidth:-1272} --h ${viewHeight:-1696} --contrast ${KFB_CONTRAST:-1.3} --dither ${KFB_DITHER:-3} --flash ${KFB_FLASH:-0} --invert ${KFB_INVERT:-0} --mode ${KFB_MODE:-0} --settle ${KFB_SETTLE:-120} --hold ${KFB_HOLD:-70} --anim-mode ${KFB_ANIM_MODE:-1} --anim-dir ${KFB_ANIM_DIR:-2} --anim-steps ${KFB_ANIM_STEPS:-12} --anim-min ${KFB_ANIM_MIN:-60} $(rot_args) >$W/epd.log 2>&1 &
+    : > $W/epd.log   # 追加方式打开：watchdog 的 log_cap 截短它时，显示桥接着写在新的末尾（不会留下空洞）
+    $VD/bin/veradroid-epd run $X/fb $X/epd.fifo $X/ctl --w ${viewWidth:-1272} --h ${viewHeight:-1696} --contrast ${KFB_CONTRAST:-1.3} --dither ${KFB_DITHER:-3} --flash ${KFB_FLASH:-0} --invert ${KFB_INVERT:-0} --lightf ${KFB_LIGHTF:-0} --darken ${KFB_DARKEN:-0} --mode ${KFB_MODE:-0} --settle ${KFB_SETTLE:-120} --hold ${KFB_HOLD:-70} --anim-mode ${KFB_ANIM_MODE:-1} --anim-dir ${KFB_ANIM_DIR:-2} --anim-steps ${KFB_ANIM_STEPS:-12} --anim-min ${KFB_ANIM_MIN:-60} --scroll-delay ${KFB_SCROLLDELAY:-500} --scroll-style ${KFB_SCROLLSTYLE:-1} --scroll-wfm ${KFB_SCROLLWFM:-a2} --nice ${KFB_EPD_NICE:--8} $(rot_args) >>$W/epd.log 2>&1 &
     echo $! > $W/epd.pid
     rot_deg > $W/rotate
     # 以后能不能当场转 180：0 度启动时没传 --vw，可见宽 != 行宽（PW5 无 FBInk）的机器转了会偏 12 像素，只能重启
@@ -186,68 +205,7 @@ sysfont_mount() {     # 容器里（run_in_ns），/dev 的 tmpfs 建好之后�
     echo "veradroid: system font $sf_src not mounted, stock fonts" >&2
     return 0
 }
-sysbin_wrap_mount() {   # 容器里（run_in_ns），/dev 的 tmpfs 建好之后、换根之前
-    # 两个系统程序换成 boot/ 里的小脚本（原因写在脚本里）：
-    #   dex2oat：应用自己（DexClassLoader / 插件框架）编 /data 下的代码时只做 verify-at-runtime，不用 speed；
-    #   cmd：应用自己跑的 "cmd package compile ..."（自己给自己强制重编）不执行。
-    # 真的程序复制到 /dev/vdbin（不能 bind：Android init 把根设成 shared，后面绑在 /system/bin/dex2oat 上的包装会传播到
-    # 同一个 peer 的 bind 上，包装 exec 自己死循环；测试机实测）。SYSBIN_WRAP=off 关掉。
-    [ "${SYSBIN_WRAP:-on}" = off ] && return 0
-    for sw_n in dex2oat cmd; do
-        [ -f $VD/boot/$sw_n-wrap.sh ] && [ -x $R/system/bin/$sw_n ] || continue
-        mkdir -p $R/dev/vdbin || return 0
-        if cp $R/system/bin/$sw_n $R/dev/vdbin/$sw_n && cp $VD/boot/$sw_n-wrap.sh $R/dev/vdbin/$sw_n-wrap &&
-            chmod 755 $R/dev/vdbin/$sw_n $R/dev/vdbin/$sw_n-wrap &&
-            mount --bind $R/dev/vdbin/$sw_n-wrap $R/system/bin/$sw_n; then :
-        else
-            rm -f $R/dev/vdbin/$sw_n $R/dev/vdbin/$sw_n-wrap
-            echo "veradroid: $sw_n wrapper not mounted" >&2
-        fi
-    done
-    return 0
-}
-# AlarmManager 的定时器（docs/host-settings.md 第 5 节“时钟”）：Android 7.1 的 libandroid_servers.so 建 5 个 timerfd，其中两个用
-# CLOCK_REALTIME_ALARM / CLOCK_BOOTTIME_ALARM，要 CAP_WAKE_ALARM；7.1 的 zygote 不给 system_server 这个权限（8.0 才加），
-# timerfd_create 返回 EPERM，AlarmManager 退回“Falling back to a handler”：所有闹钟改用一个按 uptime 计时的 Handler 消息，
-# 非唤醒和唤醒闹钟共用一条消息、后排的把前面的顶掉，休眠的时间也不算。结果：TIME_TICK 晚几分钟到几小时才到
-# （测试机：TIME_TICK 过期 22 分钟还没发，下一条唤醒闹钟在 10 小时后），状态栏和应用里的时钟停着（1.00 用户反馈“时间还是不对”），
-# 应用的定时任务也一样。镜像修好之前（android/small-patches.py），开机前把这个库的副本改两处再绑上去：
-#   1. 时钟表 {REALTIME_ALARM, REALTIME, BOOTTIME_ALARM, BOOTTIME, MONOTONIC, REALTIME} 里的两个 *_ALARM 换成不要权限的
-#      REALTIME / BOOTTIME（休眠时不叫醒 Kindle：休眠归 Kindle 的 powerd；醒来后照样马上到期）；
-#   2. epoll 的 EPOLLWAKEUP 去掉（movt r5,#0x2000 换成 nop.w）：Android 冻结时到期的定时器不在内核里挂着唤醒源、挡住休眠。
-# 只在两处的原字节完全对上时才改（1.00 的 pw6 / 32 位镜像都在同一个偏移），对不上（已修好的镜像、别的版本）就什么都不做。
-# ALARM_FIX=0 关掉。
-ALARMFIX_LIB=system/lib/libandroid_servers.so
-ALARMFIX_TAB=154856; ALARMFIX_TAB_OLD=080000000000000009000000070000000100000000000000; ALARMFIX_TAB_NEW=000000000000000007000000070000000100000000000000
-ALARMFIX_EPW=52736;  ALARMFIX_EPW_OLD=c2f20005; ALARMFIX_EPW_NEW=aff30080
-alarmfix_hex() { dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null | od -An -v -tx1 | tr -d ' \n'; }
-alarmfix_put() { printf "$(printf '%s' "$3" | sed 's/../\\x&/g')" | dd of="$1" bs=1 seek="$2" conv=notrunc 2>/dev/null; }
-alarmfix_prepare() {   # 宿主侧，container_start 里、启动容器之前：$W/alarmfix/lib.so = 改好的副本（不改镜像里的文件：它和回退用的旧镜像是硬链接）
-    rm -rf $W/alarmfix
-    [ "${ALARM_FIX:-1}" = 0 ] && return 0
-    af_src=$R/$ALARMFIX_LIB; [ -f "$af_src" ] || return 0
-    [ "$(alarmfix_hex "$af_src" $ALARMFIX_TAB 24)" = $ALARMFIX_TAB_OLD ] && [ "$(alarmfix_hex "$af_src" $ALARMFIX_EPW 4)" = $ALARMFIX_EPW_OLD ] || return 0
-    mkdir -p $W/alarmfix && cp "$af_src" $W/alarmfix/lib.so || { rm -rf $W/alarmfix; return 0; }
-    alarmfix_put $W/alarmfix/lib.so $ALARMFIX_TAB $ALARMFIX_TAB_NEW; alarmfix_put $W/alarmfix/lib.so $ALARMFIX_EPW $ALARMFIX_EPW_NEW
-    if [ "$(alarmfix_hex $W/alarmfix/lib.so $ALARMFIX_TAB 24)" = $ALARMFIX_TAB_NEW ] && [ "$(alarmfix_hex $W/alarmfix/lib.so $ALARMFIX_EPW 4)" = $ALARMFIX_EPW_NEW ] &&
-       [ "$(wc -c < $W/alarmfix/lib.so)" = "$(wc -c < "$af_src")" ]; then
-        chmod 644 $W/alarmfix/lib.so; t "alarmfix: AlarmManager timerfd clocks without CAP_WAKE_ALARM"
-    else
-        rm -rf $W/alarmfix; t "alarmfix: patching the copy failed, AlarmManager left as is"
-    fi
-    return 0
-}
-alarmfix_mount() {     # 容器里（run_in_ns），/dev 的 tmpfs 建好之后、换根之前。副本放进 /dev（不和别的绑定共用文件）
-    [ -s $W/alarmfix/lib.so ] || return 0
-    mkdir -p $R/dev/vdlib && cp $W/alarmfix/lib.so $R/dev/vdlib/libandroid_servers.so && chmod 644 $R/dev/vdlib/libandroid_servers.so &&
-        mount --bind $R/dev/vdlib/libandroid_servers.so $R/$ALARMFIX_LIB && mount -o remount,ro,bind $R/$ALARMFIX_LIB 2>/dev/null
-    [ "$(alarmfix_hex $R/$ALARMFIX_LIB $ALARMFIX_TAB 24)" = $ALARMFIX_TAB_NEW ] && return 0
-    umount $R/$ALARMFIX_LIB 2>/dev/null; rm -f $R/dev/vdlib/libandroid_servers.so
-    echo "veradroid: AlarmManager fix not mounted" >&2
-    return 0
-}
 container_start() {
-    alarmfix_prepare      # AlarmManager 的 timerfd（run_in_ns 绑进去）
     sysfont_prepare       # 系统字体：生成 $W/sysfont（run_in_ns 绑进去）
     fstrim_defuse
     docs_snapshot         # 开机完成后 after_boot 拿它核对 Kindle 书库（docs_verify）
@@ -445,8 +403,6 @@ run_in_ns() {
         [ -d $VD/fonts ] && mount --bind $VD/fonts $R/data/media/0/Fonts
         chmod 777 $R/data/media/0/Fonts 2>/dev/null
         sysfont_mount        # 系统字体（SYSTEM_FONT）：上面 sysfont_prepare 准备好的才绑
-        sysbin_wrap_mount    # dex2oat / cmd 的包装（boot/*-wrap.sh）
-        alarmfix_mount       # AlarmManager 的 timerfd（alarmfix_prepare 改好的副本）
         # /sdcard -> /storage/self/primary -> /storage/emulated/0. vold/FUSE
         # replaces /storage/emulated and filters by sdcard_rw group; KOReader
         # then gets EACCES on books. Drop that FUSE view and bind the ext4
@@ -463,6 +419,15 @@ run_in_ns() {
         cd $R && pivot_root . old && cd / && umount -l /old && rmdir /old 2>/dev/null
         exec /init
     fi
+    # 启动镜像（boot.art / boot*.oat，约 70 MB）编在 0x70000000 起。老机型的内核是 2G/2G 分割（CONFIG_VMSPLIT_2G，用户空间到
+    # 0x7f000000），默认的自顶向下 mmap 把 libart.so 这些库放在 0x73xxxxxx–0x77xxxxxx，正好压在启动镜像要的地址上：
+    # zygote 开机时 patchoat 重定位崩溃（SIGSEGV），之后每个进程都 "Attempting to fall back to imageless running"
+    # （整个框架没有启动镜像，每个进程自己加载初始化所有类），dex2oat 也起不来（"Only the zygote can create the global boot image"），
+    # 所有应用都没有 odex、从 apk 边校验边解释（PW4 5.18.1 模拟器：微信读书每次冷启动都 ANR）。
+    # 栈不限大小时内核改用自底向上的老布局（库从 TASK_SIZE/3 ≈ 0x2a000000 往上放），0x70000000 一带空出来，重定位和编译都正常。
+    # 只影响容器里的进程（Android 的 init 及其子进程继承），不碰 Kindle。docs/legacy-perf.md。
+    # 0.8.7 起的镜像把启动镜像编在 0x30000000（ro.vd.artbase）：用默认的自顶向下布局，不改栈限制（vd_art_stack，lib/common.sh）
+    vd_art_stack $R/system/build.prop
     # legacy：HOSTNS 也走 pivot_root（在 unshare -m 的私有挂载命名空间里），不直接 chroot
     exec $VD/bin/pivot_init $R mnt /init --second-stage
 }

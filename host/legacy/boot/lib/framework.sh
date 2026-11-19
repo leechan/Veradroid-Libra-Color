@@ -101,27 +101,16 @@ fw_restore_running() {
     t "fw: $n dependent kindle services restarted"
 }
 
-# 一批 Kindle 服务并行起来，全部起好（upstart 的 start 要等任务真的跑起来）才返回。
-# 以前一个一个 start：每个要 0.3–2 秒（stored、scanner、webreader……），十来个加起来好几秒，都算在“回到书库”里（PW5 模拟器约 9 秒）。
-fw_start_many() {
-    fs_p=
-    for fs_s in "$@"; do ( start $fs_s >/dev/null 2>&1 ) & fs_p="$fs_p $!"; done
-    for fs_x in $fs_p; do wait $fs_x 2>/dev/null; done
-    return 0
-}
-
 kindle_home() {
     # 框架停过（stop）：等它和书库程序重新起来，最多 3 分钟；只暂停的情况最多 1 分钟
     max=30; [ -n "$NOFW" ] && max=90
     i=0
     if [ -f /etc/upstart/kppmainapp.conf ]; then
-        until lipc-probe com.lab126.KPPMainApp 2>/dev/null | grep -qw go || [ $i -ge $((max * 8)) ]; do usleep 250000; i=$((i + 1)); done
-        i=$((i / 8))   # 每 0.25 秒看一次（以前每 2 秒）；下面的日志仍按“约几秒”记
+        until lipc-probe com.lab126.KPPMainApp 2>/dev/null | grep -qw go || [ $i -ge $max ]; do sleep 2; i=$((i + 1)); done
     else
         # 5.16 以前的固件（PW2 5.12、Voyage 5.13）没有 KPPMainApp，书库是 Java 框架里的 booklet：等框架报“已启动”。
         # 以前在这里干等 KPPMainApp，每次返回 Kindle 都白等满 1 / 3 分钟（pw2-5122 模拟器）。
-        until [ "$(lipc-get-prop com.lab126.kaf frameworkStarted 2>/dev/null)" = 1 ] || [ $i -ge $((max * 8)) ]; do usleep 250000; i=$((i + 1)); done
-        i=$((i / 8))
+        until [ "$(lipc-get-prop com.lab126.kaf frameworkStarted 2>/dev/null)" = 1 ] || [ $i -ge $max ]; do sleep 2; i=$((i + 1)); done
     fi
     t "fw: kindle home after $((i * 2))s"
     if [ -f /etc/upstart/kppmainapp.conf ]; then
@@ -146,6 +135,33 @@ fw_wait_screen() {
 }
 framework_paused() { [ -f $FWD/paused ]; }
 
+# 停书库程序（KPPMainApp）。它收到 SIGTERM 后自己有一套退出流程，最后打 "main() returns"；之后只剩 C++ 的析构，
+# 在固件 5.19.5 上其中清理 CurlHandleContainer 时经常段错误（一台 PW6 测试机的系统日志："main() returns" → 0.4 秒后
+# "Cleaning up CurlHandleContainer" → stackdumpd "received Segmentation fault"）：stackdumpd 收集堆栈、写 core，dmcc 再打出
+# 约 3.6 MB 的 KPPMainAppV2_*_crash_*.tgz / .txt 放进书库；进程要等收集完才退出，停它要 4–6.4 秒（不崩时 0.7 秒）。
+# 不是我们停得不对（pillow / awesome 当时都还正常），是它自己退出路径上的错；5.20.2 的另一台测试机上 3.6 秒正常退出。
+# 老机型同样：PW3 5.16.2 模拟器 "main() returns" 之后 SIGABRT，stackdumpd + dmcc 花约 19 秒写 KPPMainAppV2_*_crash_*（正赶上 Android 开机抢 CPU）；
+# PW4 5.18.1 打这一行后正常退出。5.16 以前的固件（PW2 5.12、Voyage 5.13）没有 KPPMainApp，不走这里。
+# 所以：照常 `stop kppmainapp`（upstart 记下“要停”，不会 respawn），盯着系统日志，它的 "main() returns" 一出现
+# （应用层的保存 / 关闭已经做完）就直接 SIGKILL，不给它走到崩溃的那段析构；先删掉 upstart 任务的标记文件，
+# 让 KPPMainAppCrashRecovery 当成正常退出（它看标记文件判断是否崩溃循环）。日志里看不到这一行（别的固件 / 日志位置不同）
+# 就和以前一样等它自己退出，最多 10 秒。
+fw_stop_kpp() {
+    kp=$(pidof KPPMainApp 2>/dev/null | cut -d' ' -f1)
+    ff=$(sed -n 's/^env KPPMAINAPP_FLAG_FILE=//p' /etc/upstart/kppmainapp.conf 2>/dev/null | head -1)
+    ( stop kppmainapp >/dev/null 2>&1 ) & sp=$!
+    i=0; how=exit
+    while kill -0 $sp 2>/dev/null && [ $i -lt 200 ]; do
+        if [ "$how" = exit ] && [ -n "$kp" ] && kill -0 "$kp" 2>/dev/null && \
+           tail -n 40 /var/log/messages 2>/dev/null | grep -q "\[$kp\].*main() returns"; then
+            [ -n "$ff" ] && rm -f "$ff"
+            kill -9 "$kp" 2>/dev/null && how="killed after main() returned"
+        fi
+        usleep 50000; i=$((i + 1))
+    done
+    t "fw: library app stopped before pausing the window manager ($((i * 50)) ms, $how)"
+}
+
 framework_stop() {
     mkdir -p $FWD $SYS || return 1
     framework_paused && { t "kindle ui already paused"; return 0; }
@@ -160,6 +176,17 @@ framework_stop() {
     stat -c %Y /mnt/base-us/documents > $W/docs.mtime 2>/dev/null      # 回到 Kindle 时用来判断书库目录有没有变过
     echo "|/bin/true" > /proc/sys/kernel/core_pattern
     t "fw: screen saved"
+    # 书库程序要停的时候（低内存模式、KINDLE_UI=stop）：先把它停掉，再关 pillow、冻 awesome / volumd（同 host/pw6）：它退出时要和这两个
+    # 打交道，pillow 关着或 awesome 冻着会卡住、被当成挂死写转储。以前 legacy 在后台和别的服务一起停（pillow 已关、awesome 已冻）。
+    fw_services
+    fw_running > $FWD/running0          # 回来时用它找出“跟着框架一起停掉、却不会自己回来”的任务（要在先停书库之前记）
+    case " $FW_SERVICES " in
+        *" kppmainapp "*)
+            if grep -qx kppmainapp $FWD/running0; then
+                echo kppmainapp >> $FWD/stopped     # 马上记下：启动在这之后被叫停（stop.sh 结束 veradroid.sh）时也要把它起回来
+                fw_stop_kpp
+            fi ;;
+    esac
     lipc-set-prop com.lab126.pillow disableEnablePillow disable 2>/dev/null
     killall -STOP awesome volumd 2>/dev/null
     t "fw: pillow off, awesome stopped"
@@ -172,13 +199,11 @@ framework_stop() {
     # 恢复（framework_start）会等 stopdone 出现再往下。
     # 中途叫停时 framework_start 写 $FWD/abort：后台这一段就不再起 vdkaf / 自检 / 冻进程（同 host/k49，KT5 早退出挂十几分钟）
     rm -f $FWD/stopdone $FWD/abort
-    fw_services
-    fw_running > $FWD/running0          # 回来时用它找出“跟着框架一起停掉、却不会自己回来”的任务
     echo "$FW_MODE" > $FWD/mode
     (
         RUNNING=" $(tr '\n' ' ' < $FWD/running0) "
         for s in $FW_SERVICES; do
-            case "$RUNNING" in *" $s "*) echo $s >> $FWD/stopped; ( stop $s >/dev/null 2>&1 ) & ;; esac
+            case "$RUNNING" in *" $s "*) grep -qx $s $FWD/stopped || echo $s >> $FWD/stopped; ( stop $s >/dev/null 2>&1 ) & ;; esac
         done
         wait
         fw_clear_restart_counters
@@ -268,6 +293,14 @@ launcher_ensure() {
     elif command -v sqlite3 >/dev/null 2>&1 && [ -f /var/local/cc.db ]; then
         n=$(sqlite3 /var/local/cc.db "select count(*) from Entries where p_location='$L'" 2>/dev/null)
         if [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null; then
+            # 书库按“最近”排：启动入口要排在“上传测试结果”“卸载”前面（Oasis 3 用户点了排第一的“卸载”）。比它们旧就重新索引一次
+            la=$(sqlite3 /var/local/cc.db "select max(p_lastAccess) from Entries where p_location='$L'" 2>/dev/null)
+            lo=$(sqlite3 /var/local/cc.db "select max(p_lastAccess) from Entries where p_location like '/mnt/us/documents/VeraDroid-%.sh'" 2>/dev/null)
+            if [ -n "$la" ] && [ -n "$lo" ] && [ "$la" -le "$lo" ] 2>/dev/null; then
+                touch "$L" 2>/dev/null
+                lipc-set-prop com.lab126.scanner reScanFile "$L" 2>/dev/null && t "launcher: start entry was below the other VeraDroid entries in the library, indexed it again"
+                return 0
+            fi
             # 已经在书库里。封面：索引服务从脚本头的 "# Icon:" 解出 <文件>.sdr/icon.png；没有这张图时书库显示成普通文档的样子。
             # 每个固件版本只补扫一次（有的越狱环境不解图标，不要每次返回都重扫）。
             [ -f "$L.sdr/icon.png" ] && return 0
@@ -281,6 +314,23 @@ launcher_ensure() {
         return 0
     fi
     lipc-set-prop com.lab126.scanner reScanFile "$L" 2>/dev/null && t "launcher: asked the scanner to index the library entry"
+}
+
+# Kindle 自己的 /etc/upstart/chroot.conf（浏览器用的 chroot）每次 framework_ready 都把 /lib、/proc、/dev、/usr/bin/chromium、
+# /usr/lib 等重新绑到 /var/tmp/chroot 下面，可它的 chroot_umount 并不卸这几项：框架每重启一次就多叠一层。
+# KINDLE_UI=stop（legacy 512 MB 机型的默认）每次回 Kindle 都重启框架：PW5 模拟器 9 次后每项叠了 10 层，一台测试机上 75 层、/proc/mounts 570 行。
+# 框架回来后把多出来的层去掉，只留一层。只动下面没有别的挂载的那几项（/usr/lib 上还压着 pango / locale 的绑定，层次关系
+# 说不清，不碰）。
+fw_chroot_dedupe() {
+    i=0; while [ $i -lt 50 ] && initctl status chroot 2>/dev/null | grep -q "start/"; do usleep 200000; i=$((i + 1)); done
+    n=0
+    for m in $(awk '$2 ~ "^/var/tmp/chroot/" {print $2}' /proc/mounts | sort | uniq -d); do
+        awk -v d="$m/" 'index($2, d) == 1 { f = 1 } END { exit !f }' /proc/mounts && continue
+        c=$(awk -v m="$m" '$2 == m' /proc/mounts | wc -l)
+        while [ "$c" -gt 1 ]; do umount -l "$m" 2>/dev/null || break; c=$((c - 1)); n=$((n + 1)); done
+    done
+    [ $n -gt 0 ] && t "fw: dropped $n stacked binds under /var/tmp/chroot (chroot.conf re-binds them on every framework start)"
+    return 0
 }
 
 framework_start() {
@@ -322,18 +372,15 @@ framework_start() {
     fw_clear_restart_counters
     NOFW=; case "$(cat $FWD/mode 2>/dev/null)" in stop|stopfail) NOFW=1 ;; esac
     fw_unfreeze
-    fw_svc=; for s in $(cat $FWD/stopped 2>/dev/null); do [ "$s" = framework ] || fw_svc="$fw_svc $s"; done
     if [ -n "$NOFW" ]; then
+        # 框架要重新启动（冷启动约一分钟）：先告诉用户在等什么，不然屏幕上是停之前存下的那一帧，点了没反应
+        fw_wait_screen || splash "正在恢复 Kindle 界面，大约需要一分钟…" 36
         vdkaf_stop
         killall vdkaf vdkaf-sf 2>/dev/null      # 被叫停的后台那一段刚起、漏记 pid 的也不能留（它顶着 com.lab126.kaf）
-        # 框架先起（别的任务有些要等它），再并行起其余的；放到后台，同时画等待画面（以前画完才开始起框架）
-        ( grep -qx framework $FWD/stopped 2>/dev/null && start framework >/dev/null 2>&1; fw_start_many $fw_svc ) & fw_svp=$!
-        # 框架要重新启动（冷启动约一分钟）：告诉用户在等什么，不然屏幕上是停之前存下的那一帧，点了没反应
-        fw_wait_screen || splash "正在恢复 Kindle 界面，大约需要一分钟…" 36
-        wait $fw_svp 2>/dev/null
-    else
-        fw_start_many $fw_svc
+        # 框架先起（别的任务有些要等它），再起其余的
+        grep -qx framework $FWD/stopped 2>/dev/null && start framework >/dev/null 2>&1
     fi
+    for s in $(cat $FWD/stopped 2>/dev/null); do [ "$s" = framework ] || start $s >/dev/null 2>&1; done
     [ -n "$NOFW" ] && fw_restore_running
     sleep 1
     kindle_home
@@ -342,6 +389,8 @@ framework_start() {
     rm -rf $FWD
     # Android 运行期间 Kindle 的索引服务是停的：这期间传进 documents 的书，回来以后要让它整库重扫一次才会出现在书库里
     dm0=$(cat $W/docs.mtime 2>/dev/null); dm1=$(stat -c %Y /mnt/base-us/documents 2>/dev/null); rm -f $W/docs.mtime
+    # 框架冷启动（stop 模式）约一分钟后 framework_ready 才触发 chroot.conf：那时再去掉它叠上的那一层
+    [ -n "$NOFW" ] && ( sleep 120; fw_chroot_dedupe ) </dev/null >/dev/null 2>&1 &
     ( sleep 10; launcher_ensure; fw_tidy_crash
       if [ -n "$dm0" ] && [ -n "$dm1" ] && [ "$dm0" != "$dm1" ]; then lipc-set-prop com.lab126.scanner doFullScan 1 2>/dev/null; fi ) >/dev/null 2>&1 &
     t "kindle ui resumed"

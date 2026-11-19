@@ -532,6 +532,7 @@ public class ReaderActivity extends Activity {
     /** 左右划翻页：往左划下一页，往右划上一页；抬手时翻一次，不跟手。 */
     @Override public boolean dispatchTouchEvent(android.view.MotionEvent e) {
         Perf.touch(e);
+        if (notePop != null) return super.dispatchTouchEvent(e);   // 注释框开着：点哪里都是框自己的事（收起 / 全文），不翻页、不划页
         int slop = android.view.ViewConfiguration.get(this).getScaledTouchSlop() * 4;
         switch (e.getActionMasked()) {
         case android.view.MotionEvent.ACTION_DOWN: lastX = e.getX(); lastY = e.getY(); swiped = false; break;
@@ -781,6 +782,14 @@ public class ReaderActivity extends Activity {
         content.getLocationInWindow(loc);
         int i = content.linkAt(lastX - loc[0], lastY - loc[1], dp(16));
         if (i < 0 || i >= shownLinks.size()) return false;
+        // 注释号那一行的上下边（窗口坐标）：注释框贴着这一行放，不切半行字
+        noteLineTop = noteLineBot = -1;
+        android.text.Layout l = content.getLayout();
+        if (l != null) {
+            int off = Math.max(0, Math.min(l.getText().length(), shownLinks.get(i).start - shownStart));
+            int line = l.getLineForOffset(off), y0 = loc[1] + content.getExtendedPaddingTop();
+            noteLineTop = y0 + l.getLineTop(line); noteLineBot = y0 + l.getLineBottom(line);
+        }
         follow(shownLinks.get(i));
         return true;
     }
@@ -789,77 +798,147 @@ public class ReaderActivity extends Activity {
         int hash = k.target.indexOf('#');
         final String entry = hash >= 0 ? k.target.substring(0, hash) : k.target;
         final String frag = hash >= 0 ? k.target.substring(hash + 1) : "";
+        final String label = shownChap == null ? "" : shownChap.text.substring(Math.max(0, k.start), Math.min(shownChap.text.length(), k.end)).trim();
         int ci = -1;
         Chapter ch = null;
         for (int i = 0; i < chapters.size(); i++) if (entry.equals(chapters.get(i).entry)) { ci = i; ch = chapters.get(i); break; }
         if (ch == null && provChapter != null && entry.equals(provChapter.entry)) ch = provChapter;
-        if (ch != null) { followIn(k, ch, ci, frag); return; }
+        if (ch != null) {
+            // 是注释就弹出注释的字；不是注释（目录、回链），或者取不出字，第一下就直接跳过去（不再弹一个只有“跳到注释处”的框）
+            Epub.Note n = Epub.note(k, label, ch, frag);
+            int[] info = frag.length() > 0 ? ch.ids.get(frag) : null;
+            int off = info == null ? 0 : info[0];
+            if (n != null) showNote(n, ci, off);
+            else jumpTo(ci, off);
+            return;
+        }
         // 注释文件不在正文顺序里（或者整本还没读完）：单独读那一个文件，只弹出注释
         final File f = new File(path);
         new Thread(new Runnable() { @Override public void run() {
             Chapter c = null;
             try { c = Epub.loadChapter(f, entry); } catch (Throwable ignored) { }
-            final Chapter fc = c;
+            final Epub.Note n = Epub.note(k, label, c, frag);
+            final boolean found = c != null;
             ui.post(new Runnable() { @Override public void run() {
                 if (isDestroyed()) return;
-                if (fc == null) { VeraToast.show(ReaderActivity.this, "这个链接指向的内容不在书里"); return; }
-                int[] info = frag.length() > 0 ? fc.ids.get(frag) : null;
-                String t = noteText(fc, info);
-                if (t.length() == 0) { VeraToast.show(ReaderActivity.this, "这个链接指向的内容不在正文里"); return; }
-                showNote(t, -1, 0);
+                if (n != null) { showNote(n, -1, 0); return; }
+                VeraToast.show(ReaderActivity.this, found ? "这个链接指向的内容不在正文里" : "这个链接指向的内容不在书里");
             } });
         } }, "reader-note").start();
     }
 
-    private void followIn(Link k, Chapter ch, int ci, String frag) {
-        int[] info = frag.length() > 0 ? ch.ids.get(frag) : null;
-        int off = info == null ? 0 : info[0];
-        String label = shownChap == null ? "" : shownChap.text.substring(Math.max(0, k.start), Math.min(shownChap.text.length(), k.end)).trim();
-        // 注释：链接标了 noteref、目标是 aside / 注释类元素，或者链接只是一个短短的注释号而目标是一整段（p / li / div……）
-        // 或者目标是段落里的一个锚点（<p><a id="n1">1</a> 注释文字</p>）而链接的字像个注释号（[1]、注1、①、*）。
-        // 回链（注释里“返回正文”的 ↩ / [1]，epub:type="backlink"、class="footnote-back"……）一律跳回去，不弹注释。
-        // 段落里的锚点只在它是一行的开头时才算注释（注释条目 “[1] 注释文字”）；在一段正文中间的锚点是正文里的注释号，指向它的是回链，跳回去。
-        boolean note = !k.back && (k.noteref || info != null && (info[2] == 1 || info[3] == 1 && label.length() <= 6
-            || noteMark(label) && lineStart(ch.text, info[0])));
-        if (note) {
-            String t = noteText(ch, info);
-            if (t.length() > 0) { showNote(t, ci, off); return; }
-        }
-        jumpTo(ci, off);
-    }
+    // ------------------------------------------------------------------ 注释弹框（微信读书那样：点注释号，旁边出一个小框直接是注释的字）
+    //
+    // 不用对话框：对话框是另一个窗口，有暗化层、淡入淡出，墨水屏上按 DU 局部刷，框里的灰字和底下的正文叠在一起（KPW5 用户的视频）。
+    // 现在是正文窗口里的一层：白底、黑框、黑字，没有阴影 / 透明 / 动画。出来前一刻和收起前一刻各给显示桥发一行
+    // “H R x y w h”（display/epd.c：下一帧这一块每个像素用 REAGL 重刷），这一块整个刷干净，不留底下那页的残影。
 
-    /** 像注释号的链接文字：[1]、(2)、〔3〕、注1、①、*、†、a…… */
-    private static final Pattern NOTE_MARK = Pattern.compile("^[\\[(（〔【<［]?\\s*(注|註|note|Note|NOTE)?\\s*([0-9０-９]{1,3}|[a-zA-Z]|[*＊†‡§]{1,3}|[①-⑳]|[ⅰ-ⅹⅠ-Ⅹ]|[一二三四五六七八九十]{1,3})\\s*[\\])）〕】>］]?$");
-    /** 这个位置前面（同一行里）只有空白或 li 的“· ”：是一行的开头 */
-    private static boolean lineStart(String t, int pos) {
-        for (int i = Math.min(pos, t.length()) - 1; i >= 0; i--) {
-            char ch = t.charAt(i);
-            if (ch == '\n') return true;
-            if (ch != ' ' && ch != '\u3000' && ch != '\t' && ch != '·') return false;
+    private FrameLayout notePop;
+    private int noteLineTop = -1, noteLineBot = -1;
+    private final int[] noteRect = new int[4];
+
+    private void showNote(final Epub.Note n, final int ci, final int off) { showNote(n, ci, off, false); }
+
+    private void showNote(final Epub.Note n, final int ci, final int off, final boolean tall) {
+        closeNote(false);
+        FrameLayout scrim = new FrameLayout(this);     // 整屏透明（画面不变，不刷屏）：点框外面收起，不翻页
+        scrim.setClickable(true);
+        scrim.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { closeNote(true); } });
+        int W = pageRoot.getWidth() > 0 ? pageRoot.getWidth() : getResources().getDisplayMetrics().widthPixels;
+        int H = pageRoot.getHeight() > 0 ? pageRoot.getHeight() : getResources().getDisplayMetrics().heightPixels;
+        int side = dp(8), pad = dp(14), st = Math.max(2, dp(2)), gap = dp(30);   // 框比正文左右各宽出一点：盖住的行两头不露半个字
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+        bg.setColor(Color.WHITE);
+        bg.setStroke(st, Color.BLACK);
+        box.setBackground(bg);
+        box.setPadding(pad + st, pad + st, pad + st, pad + st);
+        box.setClickable(true);   // 点框里也收起
+        box.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { closeNote(true); } });
+        TextView tv = new TextView(this);
+        tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, Math.max(15, textSize - 3));
+        Fonts.apply(tv, false);
+        tv.setTextColor(Color.BLACK);
+        tv.setLineSpacing(0, Math.min(lineSpacing, 1.4f));
+        tv.setIncludeFontPadding(true);
+        // 框放在注释号那一行的下面（注释号在下半屏就放上面），最多占半屏；放不下就截断，出“全文”
+        boolean below = lastY < 0 || lastY < H / 2f;
+        // 框的上边 / 下边：注释号那一行的下面 / 上面（量不到行就按点的位置留一行的距离）
+        int y = below ? (noteLineBot >= 0 ? noteLineBot + dp(4) : lastY < 0 ? H / 3 : (int) lastY + gap)
+                      : (noteLineTop >= 0 ? noteLineTop - dp(4) : (int) lastY - gap);
+        int room = tall ? H - 2 * dp(40) : below ? H - y - dp(12) : y - dp(12);
+        room = Math.max(room, H / 4);
+        if (!tall) room = Math.min(room, H / 2);
+        int textW = W - 2 * side - 2 * (pad + st);
+        int lineH = tv.getLineHeight();
+        int btnH = dp(40);
+        int maxLines = Math.max(2, (room - 2 * (pad + st)) / Math.max(1, lineH));
+        android.text.StaticLayout sl = new android.text.StaticLayout(n.text, tv.getPaint(), Math.max(1, textW),
+            android.text.Layout.Alignment.ALIGN_NORMAL, Math.min(lineSpacing, 1.4f), 0, true);
+        boolean cut = sl.getLineCount() > maxLines;
+        if (cut || n.more) maxLines = Math.max(2, (room - 2 * (pad + st) - btnH) / Math.max(1, lineH));
+        cut = cut || n.more;
+        if (sl.getLineCount() > maxLines) {   // 截在第 maxLines 行末尾，加“…”
+            int end = sl.getLineEnd(maxLines - 1);
+            tv.setText(n.text.substring(0, Math.max(0, Math.min(n.text.length(), end - 1))).trim() + "…");
+        } else tv.setText(n.text);
+        box.addView(tv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        if (cut && (ci >= 0 && !pages.isEmpty() || !tall)) {
+            TextView all = Ui.text(this, "全文 ›", 15, true);
+            all.setTextColor(Color.BLACK);
+            all.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+            all.setPadding(dp(12), 0, 0, 0);
+            all.setClickable(true);
+            all.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+                // 注释在正文里：跳过去看（带“‹ 返回第 N 页”）；不在正文里（单独的注释文件）：框拉高到差不多整屏
+                if (ci >= 0 && !pages.isEmpty()) { closeNote(true); jumpTo(ci, off); }
+                else { closeNote(true); showNote(n, ci, off, true); }
+            } });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, btnH);
+            lp.gravity = Gravity.END;
+            box.addView(all, lp);
         }
-        return true;
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            tall ? Gravity.CENTER_VERTICAL : below ? Gravity.TOP : Gravity.BOTTOM);
+        lp.leftMargin = side; lp.rightMargin = side;
+        if (!tall) { if (below) lp.topMargin = y; else lp.bottomMargin = H - y; }
+        scrim.addView(box, lp);
+        notePop = scrim;
+        final View fbox = box;
+        // 第一帧画出去之前：量出框在屏幕上的位置，告诉显示桥这一块用闪刷
+        box.getViewTreeObserver().addOnPreDrawListener(new android.view.ViewTreeObserver.OnPreDrawListener() {
+            @Override public boolean onPreDraw() {
+                fbox.getViewTreeObserver().removeOnPreDrawListener(this);
+                int[] loc = new int[2];
+                fbox.getLocationOnScreen(loc);
+                int m = dp(4);
+                noteRect[0] = Math.max(0, loc[0] - m); noteRect[1] = Math.max(0, loc[1] - m);
+                noteRect[2] = fbox.getWidth() + 2 * m; noteRect[3] = fbox.getHeight() + 2 * m;
+                epdClean();
+                return true;
+            }
+        });
+        pageRoot.addView(scrim, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
-    static boolean noteMark(String label) { return label != null && label.length() > 0 && label.length() <= 8 && NOTE_MARK.matcher(label).matches(); }
 
     /**
-     * 注释的文字：块级元素到它结束为止；不知道结束在哪（目标是段落里的锚点）就到这一行结束——以前到空一行为止，
-     * 注释是一串 div / 只隔一个换行时一下子把后面几十条注释都带上了。开头 li 的“· ”去掉。最多 1500 字。
+     * 下一帧里注释框那一块整块重刷干净（display/epd.c 的 H 提示，500 ms 内的下一帧有效；没有显示桥就什么也不发生）。
+     * 用 R（REAGL，FULL：这一块每个像素都重新驱动，16 级灰，不闪）：H 的 F 是整屏闪刷（force_full），每点一次注释整屏黑一下太重；
+     * 桥自己翻页清残影用的也是 REAGL。4 位波形的 i.MX 机型上桥换成 GL16 FULL。
      */
-    private static String noteText(Chapter c, int[] info) {
-        if (c == null || info == null) return "";
-        int st = Math.max(0, Math.min(c.text.length(), info[0]));
-        int en = info[1] > st ? info[1] : -1;
-        if (en < 0) { en = c.text.indexOf('\n', st + 1); if (en < 0) en = c.text.length(); }
-        String t = c.text.substring(st, Math.min(en, st + 1500)).trim();
-        if (t.startsWith("· ")) t = t.substring(2).trim();
-        if (en > st + 1500) t += "…";
-        return t;
+    private void epdClean() {
+        if (noteRect[2] <= 0 || noteRect[3] <= 0) return;
+        HostLink.epd("H R " + noteRect[0] + " " + noteRect[1] + " " + noteRect[2] + " " + noteRect[3]);
     }
 
-    private void showNote(String text, final int ci, final int off) {
-        VeraDialog.Builder b = new VeraDialog.Builder(this).title("注释").message(text).negative("关闭", null);
-        if (ci >= 0 && !pages.isEmpty()) b.positive("跳到注释处", new Runnable() { @Override public void run() { jumpTo(ci, off); } });
-        b.show();
+    /** 收起注释框。clean：框那一块再闪刷一次（框下面的正文露出来时不留框的残影）。 */
+    private boolean closeNote(boolean clean) {
+        if (notePop == null) return false;
+        if (clean) epdClean();
+        pageRoot.removeView(notePop);
+        notePop = null;
+        return true;
     }
 
     /** 跳到书里另一处，记下现在这一页：左下角出一个“返回”，点了回来。 */
@@ -895,6 +974,7 @@ public class ReaderActivity extends Activity {
     @Override public boolean onKeyDown(int keyCode, android.view.KeyEvent event) {
         int d = keyDir(keyCode);
         if (d == 0) return super.onKeyDown(keyCode, event);
+        if (notePop != null) { if (event.getRepeatCount() == 0) closeNote(true); return true; }   // 翻页键先收起注释框
         if (event.getRepeatCount() == 0) {
             if (chromeVisible) toggleChrome();
             if (d > 0) next(); else prev();
@@ -907,6 +987,7 @@ public class ReaderActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        if (closeNote(true)) return;
         if (!backStack.isEmpty() && !chromeVisible) { goBack(); return; }
         super.onBackPressed();
     }

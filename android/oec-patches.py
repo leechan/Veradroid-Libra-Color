@@ -6,6 +6,7 @@ image built with them behaves like the release image on an unchanged host. Same 
 replacement, error when the old text is not found, skipped when already applied.
 
   ActivityThread.handleBindApplication  OecConfig.init(package) before the app's resources exist
+  ActivityThread.updateDefaultDensity   the same dpi as the process default density (DENSITY_DEVICE, Bitmap default)
   ResourcesImpl.updateConfiguration     per-app density (OEC_DPI / DENSITY): Configuration copy with the app's dpi
   DisplayManagerGlobal.getDisplayInfo   the same dpi in Display.getMetrics()
   Activity.performResume                re-read the table when it changed (settings page)
@@ -26,6 +27,13 @@ PATCHES = [
      "        mBoundApplication = data;\n",
      "        mBoundApplication = data;\n"
      "        " + O + ".init(data.appInfo != null ? data.appInfo.packageName : null);   // VeraDroid per-app settings\n"),
+    # ro.vd.oec=2: the process default density (DisplayMetrics.DENSITY_DEVICE, Bitmap default density) follows the app's dpi,
+    # as with the global density switch. 多看 draws its page into a Bitmap made at the default density and puts it on a
+    # 376 dpi canvas: with only Resources at 376 the page came out 1.25x too big (1.00, pw6-a8ffca4).
+    (B + "android/app/ActivityThread.java",
+     "    private void updateDefaultDensity() {\n        final int densityDpi = mCurDefaultDisplayDpi;\n",
+     "    private void updateDefaultDensity() {\n"
+     "        final int densityDpi = " + O + ".defaultDensity(mCurDefaultDisplayDpi);   // VeraDroid: per-app density\n"),
     (B + "android/content/res/ResourcesImpl.java",
      "                mDisplayAdjustments.getCompatibilityInfo().applyToDisplayMetrics(mMetrics);\n\n"
      "                final @Config int configChanges = calcConfigChanges(config);\n",

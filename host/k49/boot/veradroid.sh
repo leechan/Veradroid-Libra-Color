@@ -106,6 +106,7 @@ start_helpers() {
     echo $! > $W/watchdog.pid
     sleep_watch &
     echo $! > $W/sleep.pid
+    type usb_watch_start >/dev/null 2>&1 && usb_watch_start   # 插 USB 线时问要不要切到 USB 传输（usb.sh）
     cmd_listen &
     echo $! > $W/cmd.pid
     # 关机钩子：Kindle 关机 / 重启时先停 Android、卸载系统盘，否则 /mnt/base-us 卸不掉（EBUSY），用户存储会脏。

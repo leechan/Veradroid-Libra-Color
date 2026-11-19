@@ -37,6 +37,8 @@ rm -rf /mnt/base-us/veradroid-autoupdate.lock /mnt/base-us/veradroid-install.loc
 # 删程序时 logs / backup 留着（卸载日志、安装前备份、卸载时拷出来的书），state 里只留书库清单这类以后还有用的记录：
 # 锁、半截安装标记、安装器临时目录、系统盘调整记录删掉。以前这些都在根目录，那边的老文件一起删。
 un_clean() {
+    # 用户自己放的字体（veradroid/fonts = Android 的 内部存储/Fonts）和屏保图片不删：挪进 backup/user-files，重新安装时放回去
+    if type vd_user_keep >/dev/null 2>&1; then t "uninstall: 用户的字体 / 屏保留在 veradroid/backup/user-files：$(vd_user_keep "$VD") 个文件"; fi
     vd_prog_rm "$VD"
     rm -rf "$VD_STATE"/install.lock "$VD_STATE"/autoupdate.lock "$VD_STATE"/install.[0-9]* 2>/dev/null
     rm -f "$VD_STATE"/install.incomplete "$VD_STATE"/autoupdate-bootstrap.sh "$VD_STATE"/autoupdate-bootstrap.sh.part "$VD_STATE"/resize.state "$VD_STATE"/resize.pending "$VD_STATE"/resize.last "$VD_STATE"/resize.notify "$VD_LOGS"/resize.log 2>/dev/null

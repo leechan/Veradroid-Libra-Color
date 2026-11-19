@@ -64,15 +64,25 @@ compile_mode() {
     esac
 }
 compile_done_filter() { case "$1" in speed|everything) return 0 ;; esac; return 1; }
+# 这个安装记过几次某个结果（$CLOG 一行："包 目录 结果 过滤器 秒数 时间"）。只算 base.apk 写入之后的记录：卸载再装 / 更新后
+# 目录名常常不变（又是 <包>-1），以前这个安装之前的 timeout / capped / fail 记录照样算数，新装的应用就永远不编、一直解释执行
+# （测试机 2026-11-19：番茄免费小说 11-17 那次安装的 speed 超时记录挡住了 11-19 重新装的同名目录，冷启动 25-50 s、点开章节转圈几分钟、ANR）。
+# date -r 不支持时（时间为空）所有记录都算，和以前一样。
+compile_rec() { # pkg dir result
+    [ -f $CLOG ] || { echo 0; return 0; }
+    cr_s=$(date -r "$SYS/data/app/$2/base.apk" +%Y%m%d-%H%M%S 2>/dev/null)
+    awk -v p="$1" -v d="$2" -v r="$3" -v s="$cr_s" '$1 == p && $2 == d && $3 == r && $6 >= s { n++ } END { print n + 0 }' $CLOG
+}
 # 这个包要不要编（$2=force 时只要装着就编）
 compile_needed() { # pkg [force]
     app_dir "$1" >/dev/null || return 1
     case "$2" in force|stale) return 0 ;; esac
     compile_done_filter "$(odex_filter "$1")" && return 1
     # 同一个安装失败过两次就不再自动试（命令 compile <包> 仍然会强制编）
-    nf=$(grep -c "^$1 $(app_dir "$1") fail" $CLOG 2>/dev/null); [ "${nf:-0}" -ge 2 ] && return 1
-    grep -q "^$1 $(app_dir "$1") capped" $CLOG 2>/dev/null && return 1
-    grep -q "^$1 $(app_dir "$1") timeout" $CLOG 2>/dev/null && return 1
+    cn_d=$(app_dir "$1")
+    [ "$(compile_rec "$1" "$cn_d" fail)" -ge 2 ] && return 1
+    [ "$(compile_rec "$1" "$cn_d" capped)" -gt 0 ] && return 1
+    [ "$(compile_rec "$1" "$cn_d" timeout)" -gt 0 ] && return 1
     return 0
 }
 
@@ -294,6 +304,12 @@ compile_idle_s() {
     d=$(( $(date +%s) - l )); [ $d -lt 0 ] && d=0; echo $d
 }
 compile_user_active() { [ "$(compile_idle_s)" -lt "${COMPILE_IDLE_S:-300}" ]; }
+# 给用户看的“什么时候开始”：离“COMPILE_IDLE_S 秒没摸屏”还差多久（等待时每 30 秒重写一次状态，跟着变）
+compile_idle_wait_text() {
+    ci_r=$(( ${COMPILE_IDLE_S:-300} - $(compile_idle_s) )); [ $ci_r -lt 0 ] && ci_r=0
+    ci_m=$(( (ci_r + 59) / 60 )); [ $ci_m -lt 1 ] && ci_m=1
+    echo "$(( ${COMPILE_IDLE_S:-300} / 60 )) 分钟不碰屏幕后开始（还要约 $ci_m 分钟）"
+}
 compile_charging() { [ "$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)" = 1 ]; }
 # 开始编之前要有的可用内存（MB）：dex2oat 编一个大应用（微信读书 ~25 MB dex）要 150–250 MB。
 # 用户正在用：要求高得多（编译不能把前台应用挤进 zram），512 MB 机型按比例减半
@@ -474,28 +490,28 @@ compile_worker() {
         [ -n "$mode" ] || { compile_status state=paused reason=off "total=$(cat $W/compile.total 2>/dev/null)"; rm -f $CQ; break; }
         last=$(cat $W/compile.last 2>/dev/null)
         # 有安装 / 卸载在等 PackageManager 的锁：先让它做完
-        if compile_held || compile_session_pending; then compile_status state=waiting reason=install "index=$idx" "total=$(cat $W/compile.total 2>/dev/null)" "last=$last"; sleep 3; continue; fi
+        if compile_held || compile_session_pending; then compile_status state=waiting reason=install "index=$idx" "total=$(cat $W/compile.total 2>/dev/null)" "last=$last" "msg=正在安装应用，装完马上继续"; sleep 3; continue; fi
         # 冻结（回到 Kindle / 屏保）时 Android 里的命令会一直卡住：等解冻
-        if [ -f $W/frozen ] || [ -f $W/saver_frozen ]; then compile_status state=waiting reason=frozen "index=$idx" "total=$(cat $W/compile.total)" "last=$last"; sleep 30; continue; fi
-        if ! compile_battery_ok; then compile_status state=paused reason=battery "index=$idx" "total=$(cat $W/compile.total)" "last=$last"; t "compile: paused, battery low"; sleep 300; continue; fi
+        if [ -f $W/frozen ] || [ -f $W/saver_frozen ]; then compile_status state=waiting reason=frozen "index=$idx" "total=$(cat $W/compile.total)" "last=$last" "msg=Android 暂停中（屏保或回到了 Kindle），回到 Android 后继续"; sleep 30; continue; fi
+        if ! compile_battery_ok; then compile_status state=paused reason=battery "index=$idx" "total=$(cat $W/compile.total)" "last=$last" "msg=电量低于 20%，插上电源后继续"; t "compile: paused, battery low"; sleep 300; continue; fi
         tot=$(cat $W/compile.total 2>/dev/null)
         # 上次因为“在用 + 内存紧”停过：等用户不用了（COMPILE_IDLE_S 秒没摸屏）再开始，免得开了又停
         if [ -f $W/compile.needidle ] && compile_user_active; then
-            compile_status state=waiting reason=你在用机器，等空闲时再优化 code=busy "index=$idx" "total=$tot" "last=$last" "msg=你在用机器，等空闲时再优化"; sleep 30; continue
+            compile_status state=waiting reason=你在用机器，等空闲时再优化 code=busy "index=$idx" "total=$tot" "last=$last" "msg=你在用机器，$(compile_idle_wait_text)（优化很占内存，用着的时候不做；充电不影响）"; sleep 30; continue
         fi
         if ! compile_mem_ok; then
             if compile_user_active; then
                 # 用户在用：一直等（不算进下面的放弃计时），他不用了门槛就降下来
-                compile_status state=waiting reason=你在用机器、内存不多，等空闲时再优化 code=busy "index=$idx" "total=$tot" "last=$last" "msg=你在用机器、内存不多，等空闲时再优化"
+                compile_status state=waiting reason=你在用机器、内存不多，等空闲时再优化 code=busy "index=$idx" "total=$tot" "last=$last" "msg=你在用机器、可用内存 $(mem_avail_mb) MB（用着时要 $(compile_mem_need) MB）：$(compile_idle_wait_text)，清理后台也可能提前开始"
                 sleep 30; continue
             fi
-            compile_status state=waiting reason=memory "index=$idx" "total=$tot" "last=$last"
+            compile_status state=waiting reason=memory "index=$idx" "total=$tot" "last=$last" "msg=可用内存不够（$(mem_avail_mb) MB，要 $(compile_mem_need) MB），内存够了就继续"
             n=$(( $(cat $W/compile.memwait 2>/dev/null || echo 0) + 1 )); echo $n > $W/compile.memwait
             # 空闲了 10 分钟内存还是不够：工作进程先停，队列留着，30 分钟后看门狗（compile_watch）再起
             if [ $n -ge 20 ]; then
                 t "compile: not enough free memory for 10 min ($(mem_avail_mb) MB), retrying in 30 min"
                 rm -f $W/compile.memwait; echo $(( $(cut -d. -f1 /proc/uptime) + 1800 )) > $W/compile.retry_at
-                compile_status state=paused reason=memory "index=$idx" "total=$tot" "last=$last"; gaveup=1; break
+                compile_status state=paused reason=memory "index=$idx" "total=$tot" "last=$last" "msg=可用内存一直不够（$(mem_avail_mb) MB），约 30 分钟后再试"; gaveup=1; break
             fi
             sleep 30; continue
         fi
@@ -512,7 +528,7 @@ compile_worker() {
         if [ -z "$line" ] && [ -n "$crun" ]; then
             compile_bg_kill $crun
             cr1=${crun# }; cr1=${cr1%% *}
-            compile_status state=waiting reason=等应用退出后再优化 code=running "pkg=$cr1" "index=$idx" "total=$tot" "last=$last" "msg=等应用退出后再优化"
+            compile_status state=waiting reason=等应用退出后再优化 code=running "pkg=$cr1" "index=$idx" "total=$tot" "last=$last" "msg=等应用退出后再优化（它还在后台运行，已请 Android 结束它）"
             sleep 30; continue
         fi
         if [ -z "$line" ]; then

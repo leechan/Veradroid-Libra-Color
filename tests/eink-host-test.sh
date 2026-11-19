@@ -28,7 +28,7 @@ for h in pw6 k49; do
     S=host/$h/boot/lib/settings.sh
     for k in $APPK BOOST_MS BOOST_KHZ SCROLL_PX; do
         grep -q "^    $k=" $S || fail "$S: no default for $k"
-        n=$(grep -c -E "GESTURE_HINT BOOST_MS BOOST_KHZ SCROLL_PX PASS_PX IDLE_FREEZE IDLE_WAKE IDLE_FREEZE_EXCLUDE( UPDATE_BACKUP)?; do" $S)
+        n=$(grep -c -E "GESTURE_HINT BOOST_MS BOOST_KHZ SCROLL_PX PASS_PX IDLE_FREEZE IDLE_WAKE IDLE_FREEZE_EXCLUDE( USB_ASK)?( UPDATE_BACKUP)?; do" $S)
         [ "$n" = 2 ] || fail "$S: BOOST_MS / SCROLL_PX not in the publish / apply lists ($n)"
     done
     for k in $APPK; do
@@ -50,6 +50,15 @@ for h in pw6 k49; do
     grep -q -- '--rt ${INPUT_RT:-0}' host/$h/boot/lib/input.sh || fail "$h input.sh: no --rt for the touch front end"
     grep -q '/dev/shm/vd-tracefs' host/$h/boot/lib/container.sh || fail "$h container.sh: no tracefs debug switch"
 done
+# page-turn merge window (KFB_TURNHOLD, per app; docs/boox-host.md 4)
+grep -q 'strncmp(line, "TURNHOLD"' $E && grep -q '^ \*     TURNHOLD' $E || fail "epd.c: no TURNHOLD"
+for h in pw6 k49; do
+    grep -q '^    KFB_TURNHOLD=0 ' host/$h/boot/lib/settings.sh || fail "$h settings.sh: no default for KFB_TURNHOLD"
+    grep -q 'epd_send TURNHOLD ' host/$h/boot/lib/settings.sh || fail "$h settings.sh: epd_send_smooth does not send TURNHOLD"
+    grep -q 'FLIPINPUT|TURNHOLD|' host/$h/boot/lib/cmd.sh || fail "$h cmd.sh: appdisp regex has no TURNHOLD"
+done
+grep -q 'echo "TURNHOLD ${KFB_TURNHOLD:-0}"' host/pw6/boot/lib/appprof.sh || fail "appprof_send does not send TURNHOLD"
+printf '%s\n' KFB_TURNHOLD=150 | grep -Eq "$(sed -n "s/^APPPROF_RE='\(.*\)'$/\1/p" host/pw6/boot/lib/appprof.sh)" || fail "APPPROF_RE does not accept KFB_TURNHOLD"
 for c in SCROLLWFM 'RT '; do
     grep -q "strn\?cmp(line, \"$c\"" $E || fail "epd.c does not parse $c"
     grep -q "^ \*     $c" $E || fail "epd.c header does not document $c"
@@ -79,7 +88,7 @@ run() {   # $1 = settings.conf line(s); prints what reached the bridge per step
         for k in $(cut -d"|" -f1 $X/appknobs); do printf "%s\n" "$k=1" | grep -Eq "$APPPROF_RE" || echo "KNOB NOT SAVABLE $k"; done'
 }
 out=$(run 'KFB_NEWWIN=1')
-for l in "com.a 1 1 FLIPCOUNT=1" "com.b 1 0 FLIPCOUNT=1" "com.b 0 0 " "com.c 1 0 FLIPCOUNT=1" "home 1 0 FLIPCOUNT=0" "KNOBS 7 0"; do
+for l in "com.a 1 1 FLIPCOUNT=1" "com.b 1 0 FLIPCOUNT=1" "com.b 0 0 " "com.c 1 0 FLIPCOUNT=1" "home 1 0 FLIPCOUNT=0" "KNOBS 8 0"; do
     printf '%s\n' "$out" | grep -qxF "$l" || fail "KFB_NEWWIN=1: expected '$l' in:
 $out"
 done

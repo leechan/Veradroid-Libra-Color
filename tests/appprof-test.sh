@@ -102,4 +102,21 @@ expect "U 2"
 expect "V default 4"
 expect "Y 376 5 com.duokan.reader"
 expect "Z com.duokan.reader com.duokan.einkreader "
+# image with per-app settings (ro.vd.oec): level 1 (1.00's pw6-a8ffca4, no default-density fix) keeps the host's global
+# density for the built-in DENSITY rules (多看) and leaves DENSITY out of appoec; level 2 hands density to the image
+for lv in 1 2; do
+    rm -rf $T/r $T/w/density.* $T/w/appprof.pkg $T/w/kfb/appoec $T/w/wm.log; mkdir -p $T/r/system
+    echo "ro.vd.oec=$lv" > $T/r/system/build.prop
+    oout=$(R=$T/r VD=$T/vd SYS=$T/sys W=$T/w X=$T/w/kfb sh -c '
+        t() { :; }; settings_load() { :; }
+        . host/pw6/boot/lib/appprof.sh
+        appprof_wm() { echo "WM $*" >> $W/wm.log; case "$1" in 6) echo "Result: Parcel(00000000 00000001 000004f8 000006a0 '"'"'....'"'"')" ;; 10) echo "Result: Parcel(00000000 0000012c   '"'"'....'"'"')" ;; *) echo "Result: Parcel(00000000    '"'"'....'"'"')" ;; esac; }
+        appprof_publish
+        appprof_fg com.duokan.einkreader
+        echo "O$(cat $W/density.cur 2>/dev/null || echo default)|$(tr "\n" " " < $X/density.apps)|$(grep "^com.duokan.einkreader " $X/appoec)"')
+    case $lv in
+        1) [ "$oout" = "O376|com.duokan.reader com.duokan.einkreader |" ] || fail "ro.vd.oec=1: $oout" ;;
+        2) [ "$oout" = "Odefault||com.duokan.einkreader DENSITY=auto1080" ] || fail "ro.vd.oec=2: $oout" ;;
+    esac
+done
 echo "appprof: ok"

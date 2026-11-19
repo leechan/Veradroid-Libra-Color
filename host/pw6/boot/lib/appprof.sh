@@ -15,7 +15,7 @@
 #   appset <pkg>|<spec>        存用户的设置（spec 空 = 删掉这一行，回到内置推荐 / 全局；"-" = 全跟随）；"appset *|" 全部清掉
 # KEEPALIVE / BGSTOP 不是显示参数：保持后台 / 离开后几分钟自动停止（memkeep.sh 读合并表 $X/appprof），不发给显示桥
 # OEC_* 不是显示桥的参数：系统镜像（feat/fw-oec，ro.vd.oec=1）里每个应用进程自己读 $X/appoec（见下面 appprof_oec_publish）
-APPPROF_RE='^KFB_(CONTRAST|DITHER|FLASH|INVERT|LIGHTF|DARKEN|MODE|SETTLE|HOLD|SMOOTH|PACE|CLEAN|REAGL_MIN|SETTLE2|SCROLLDU|IMG|SCROLLDELAY|SCROLLSTYLE|GCN|NEWWIN|MONO|MAXDEFER|FLIPINPUT|ANIM_MODE|ANIM_DIR|ANIM_STEPS|ANIM_MIN)=[0-9.]{1,6}$|^(KEEPALIVE|BGSTOP)=[0-9]{1,4}$|^OEC_(DPI|FLING|SMOOTH|PAGEKEY|TOAST|LIGHTBAR|DLGBORDER|WBOLD|WBLACK|WFONT|WCSS)=[0-9]{1,3}$'
+APPPROF_RE='^KFB_(CONTRAST|DITHER|FLASH|INVERT|LIGHTF|DARKEN|MODE|SETTLE|HOLD|SMOOTH|PACE|CLEAN|REAGL_MIN|SETTLE2|SCROLLDU|IMG|SCROLLDELAY|SCROLLSTYLE|GCN|NEWWIN|MONO|MAXDEFER|FLIPINPUT|TURNHOLD|ANIM_MODE|ANIM_DIR|ANIM_STEPS|ANIM_MIN)=[0-9.]{1,6}$|^(KEEPALIVE|BGSTOP)=[0-9]{1,4}$|^OEC_(DPI|FLING|SMOOTH|PAGEKEY|TOAST|LIGHTBAR|DLGBORDER|WBOLD|WBLACK|WFONT|WCSS)=[0-9]{1,3}$'
 
 appprof_valid_pkg() { case "$1" in ''|*[!A-Za-z0-9._]*) return 1 ;; esac; [ ${#1} -le 200 ]; }
 
@@ -44,11 +44,12 @@ appprof_publish() {
         'KFB_GCN|界面残影定时全刷|关=0,每 20 次刷新=20,每 30 次刷新=30,每 50 次刷新=50' \
         'KFB_NEWWIN|打开时整屏刷新|关=0,开=1' \
         'KFB_MONO|快刷黑白分明|关=0,开=128' \
-        'KFB_MAXDEFER|画面最长等待|0.6 秒=600,1.2 秒=1200,不限=0' > $X/appknobs.d/epd.tmp 2>/dev/null \
+        'KFB_MAXDEFER|画面最长等待|0.6 秒=600,1.2 秒=1200,不限=0' \
+        'KFB_TURNHOLD|翻页动画合并（应用自己有翻页动画时只刷最后一帧）|关=0,0.1 秒=100,0.15 秒=150,0.25 秒=250' > $X/appknobs.d/epd.tmp 2>/dev/null \
         && mv -f $X/appknobs.d/epd.tmp $X/appknobs.d/epd
     # 要换显示密度的包（内置表里带 DENSITY 的规则，可以以 * 结尾）：桌面打开它们之前等宿主换好密度（/dev/kfb/density.apps）
-    # 系统镜像自己按应用换密度（appprof_oec）时，宿主不换、桌面也不用等：表是空的
-    if appprof_oec; then : > $X/density.apps.tmp
+    # 系统镜像自己按应用换密度（appprof_oec_density）时，宿主不换、桌面也不用等：表是空的
+    if appprof_oec_density; then : > $X/density.apps.tmp
     else awk '/^[ \t]*(#|$)/ { next } { sub(/[ \t]*#.*/, "") } $2 ~ /(^|;)DENSITY=/ { print $1 }' "$VD/boot/appprofiles.conf" > $X/density.apps.tmp 2>/dev/null; fi
     chmod 644 $X/density.apps.tmp 2>/dev/null; mv -f $X/density.apps.tmp $X/density.apps
     # 桌面“应用优化”页上宿主管的选项：每个模块写自己的一份 $X/appknobs.d/<模块>（memkeep.sh 的 mem_knobs = appknobs.d/mem，
@@ -130,7 +131,7 @@ appprof_send() {
       if type epd_send_smooth >/dev/null 2>&1; then
           echo "PACE ${KFB_PACE:-0}"; echo "CLEAN ${KFB_CLEAN:-0}"; echo "REAGL ${KFB_REAGL_MIN:-35}"
           echo "SETTLE2 ${KFB_SETTLE2:-40}"; echo "SCROLLDU ${KFB_SCROLLDU:-0}"; echo "IMG ${KFB_IMG:-0}"
-          echo "SCROLLDELAY ${KFB_SCROLLDELAY:-500}"; echo "SCROLLSTYLE ${KFB_SCROLLSTYLE:-1}"; echo "GCN ${KFB_GCN:-0}"; echo "MONO ${KFB_MONO:-0}"; echo "MAXDEFER ${KFB_MAXDEFER:-1200}"; echo "FLIPINPUT ${KFB_FLIPINPUT:-1000}"
+          echo "SCROLLDELAY ${KFB_SCROLLDELAY:-500}"; echo "SCROLLSTYLE ${KFB_SCROLLSTYLE:-1}"; echo "GCN ${KFB_GCN:-0}"; echo "MONO ${KFB_MONO:-0}"; echo "MAXDEFER ${KFB_MAXDEFER:-1200}"; echo "FLIPINPUT ${KFB_FLIPINPUT:-1000}"; echo "TURNHOLD ${KFB_TURNHOLD:-0}"
       fi; })
     # 显示桥在上面的检查和这次写之间退出时，打开 FIFO 写会一直等读者：和 epd_send 一样限 3 秒（vd_timeout，common.sh），
     # 不让命令监听（fg / appset）卡死。没有 vd_timeout 的老宿主照旧直接写。
@@ -194,7 +195,7 @@ appprof_wm() { type vd_in >/dev/null 2>&1 || return 1; ad_in=$(vd_in) || return 
 
 # 这个包要的密度（数字）；空 = 默认。auto1080 = 320 × 屏宽 / 1080 舍去小数（屏宽取 Android 的原始显示宽度，开机后算一次）
 appprof_density_want() {
-    appprof_oec && return 0      # 系统镜像按进程换密度（OEC_DPI / DENSITY，OecConfig），全局密度不动
+    appprof_oec_density && return 0      # 系统镜像按进程换密度（OEC_DPI / DENSITY，OecConfig），全局密度不动
     ad_r=; [ "$1" = home ] || ad_r=$(appprof_density_rule "$1")
     case "$ad_r" in
         auto1080)
@@ -265,9 +266,25 @@ appprof_density_boot() { appprof_density_scrub; }
 appprof_oec() {
     if [ -z "${APPPROF_OEC:-}" ]; then
         APPPROF_OEC=0
-        grep -q '^ro.vd.oec=1' "$R/system/build.prop" 2>/dev/null && ! grep -qx 'DENSITY_HOST=1' "$SYS/settings.conf" 2>/dev/null && APPPROF_OEC=1
+        grep -q '^ro.vd.oec=[1-9]' "$R/system/build.prop" 2>/dev/null && ! grep -qx 'DENSITY_HOST=1' "$SYS/settings.conf" 2>/dev/null && APPPROF_OEC=1
     fi
     [ "$APPPROF_OEC" = 1 ]
+}
+
+# 内置表里的 DENSITY（多看）交给镜像按进程换，还是照旧由宿主换全局密度。ro.vd.oec=2 起的镜像才交给镜像：
+# ro.vd.oec=1（1.00 的 pw6-a8ffca4）只换了 Resources / Display，进程的默认密度（ActivityThread.mCurDefaultDisplayDpi ->
+# DisplayMetrics.DENSITY_DEVICE、Bitmap 的默认密度）还是 300。多看把正文画进按默认密度建的 Bitmap、再贴到 376 的画布上：
+# 整页放大 376 / 300 = 1.25 倍，下面几行压到页脚、出了屏幕（测试机实测；1.00 用户反馈“多看排版有问题”）。
+# 这种镜像上带 DENSITY 的内置规则仍由宿主换全局密度（和 0.99 一样：density.apps 有它、appoec 里不带 DENSITY），其它 OEC_* 照旧。
+# 用户自己在“应用优化”里选的 OEC_DPI 照旧给镜像（宿主的全局切换只认内置表）。
+appprof_oec_density() {
+    appprof_oec || return 1
+    if [ -z "${APPPROF_OECD:-}" ]; then
+        APPPROF_OECD=0
+        ap_v=$(sed -n 's/^ro\.vd\.oec=\([0-9][0-9]*\)$/\1/p' "$R/system/build.prop" 2>/dev/null | head -1)
+        [ "${ap_v:-0}" -ge 2 ] 2>/dev/null && APPPROF_OECD=1
+    fi
+    [ "$APPPROF_OECD" = 1 ]
 }
 
 # 合并后的表里这个包的 OEC_DPI / DENSITY（精确的包名行；比较前后用）
@@ -277,13 +294,14 @@ appprof_oec_publish() {
     if ! appprof_oec; then rm -f $X/appoec $X/appknobs.d/oec; appknobs_join; return 0; fi
     set --; for ap_f in "$VD/boot/appprofiles.conf" "$SYS/settings.apps"; do [ -f "$ap_f" ] && set -- "$@" "$ap_f"; done
     { grep -E '^OEC_[A-Z]+=[0-9]{1,3}$' "$SYS/settings.conf" 2>/dev/null | tr '\n' ';' | sed 's/;$//; s/^./* &/; /^\* /!d'; echo
-      [ $# -gt 0 ] && awk 'FNR == 1 { src = (FILENAME ~ /settings\.apps$/) ? "u" : "b" }
+      ap_nod=1; appprof_oec_density && ap_nod=0
+      [ $# -gt 0 ] && awk -v nod=$ap_nod 'FNR == 1 { src = (FILENAME ~ /settings\.apps$/) ? "u" : "b" }
          /^[ \t]*(#|$)/ { next }
          { sub(/[ \t]*#.*/, ""); p = $1; if (!(p in seen)) { seen[p] = 1; ord[++n] = p }
            m = split($2, a, ";")
            for (i = 1; i <= m; i++) if (a[i] ~ /^(OEC_[A-Z]+=[0-9]+|DENSITY=[0-9a-z]+)$/) {
                k = a[i]; sub(/=.*/, "", k); v = substr(a[i], length(k) + 2)
-               if (src == "u" && k == "DENSITY") continue
+               if (k == "DENSITY" && (src == "u" || nod)) continue
                val[p, k] = v; if (!((p, k) in has)) { has[p, k] = 1; keys[p] = keys[p] " " k } } }
          END { for (i = 1; i <= n; i++) { p = ord[i]; if (keys[p] == "") continue
                c = split(substr(keys[p], 2), ks, " "); out = ""

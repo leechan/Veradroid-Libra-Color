@@ -13,7 +13,7 @@ grep -q 'guessed=legacy' $B || fail "bootstrap: 3.x kernels not classified as le
 # (its confirm step and installer routing are checked in emulator-only-test.sh)
 grep -q 'imx41) echo "这台是老机型' $B || fail "bootstrap: PW4 / Oasis 3 not refused"
 grep -q 'legacy) \[ "${VD_LEGACY_TEST:-0}" = 1 \]' $B || fail "bootstrap: legacy installable without VD_LEGACY_TEST"
-grep -q '\[ "$MODEL" != legacy \] && \[ "$fwn" -lt 50[0-9]*000 \]' $B || fail "bootstrap: firmware gate not relaxed for legacy"
+grep -q '\[ "$MODEL" != legacy \] && \[ "$fwn" -lt "$fwmin" \]' $B || fail "bootstrap: firmware gate not relaxed for legacy"
 grep -q 'IMGFS=ext3' $B || fail "bootstrap: no ext3 system disk for 3.x"
 grep -q 'bootstrap-legacy.json' $B || fail "bootstrap: no legacy bundle meta"
 grep -q 'veradroid-pw6/kmod' $B || fail "bootstrap: kmod not copied"

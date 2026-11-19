@@ -228,6 +228,14 @@ public class HostService extends Service {
             f.delete();
             if (title == null || title.trim().length() == 0) return;
             notice(title.trim(), body.toString().trim());
+        } else if (name.equals("usb.ask")) {
+            // 插上了 USB 线（宿主 boot/lib/usb.sh 的 usb_ask）：问要不要切到 USB 传输
+            f.delete();
+            usbAsk();
+        } else if (name.equals("usb.gone")) {
+            // 线拔了：还开着的插线提示收起来
+            f.delete();
+            if (usbDialog != null) { try { usbDialog.dismiss(); } catch (Throwable ignored) { } usbDialog = null; }
         } else if (name.equals("lock.reset")) {
             f.delete();
             if (LockScreen.enabled(this)) { LockScreen.clear(this); VeraToast.show(this, "锁屏密码已清除"); }
@@ -270,6 +278,62 @@ public class HostService extends Service {
     private int noticeId = 7100;
     private android.app.Dialog noticeDialog;
     private android.widget.TextView noticeText;
+    private android.app.Dialog usbDialog;
+    /**
+     * Android 在前台时插上 USB 线：Kindle 的 USB（MTP / 大容量存储）这时停着，电脑上什么都不出现（不能让 Android 和电脑同时写
+     * 用户存储）。问一句要不要切到 USB 传输：切换 = 回到 Kindle（宿主 usbswitch，和“返回 Kindle”同一套），Kindle 接着进 USB 传输；
+     * 拔线后在书库点“VeraDroid 启动”回来。充电器也会触发（分不出来），所以有“不用”和“不再询问”。锁屏时不问。
+     */
+    private void usbAsk() {
+        if (LockScreen.showing()) return;
+        if (usbDialog != null && usbDialog.isShowing()) return;
+        try {
+            Context c = new android.view.ContextThemeWrapper(this, android.R.style.Theme_Holo_Light_NoActionBar);
+            final android.app.Dialog d = new android.app.Dialog(c);
+            d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+            android.widget.LinearLayout box = new android.widget.LinearLayout(c);
+            box.setOrientation(android.widget.LinearLayout.VERTICAL);
+            int p = Ui.dp(c, 20);
+            box.setPadding(p, p, p, p);
+            box.setBackground(Ui.frame(c, false));
+            android.widget.TextView t = Ui.text(c, "已连接电脑：要切换到 USB 传输吗？", 18, true);
+            t.setPadding(0, 0, 0, Ui.dp(c, 10));
+            box.addView(t);
+            android.widget.TextView m = Ui.text(c, "会退回 Kindle，电脑上就能看到 Kindle 盘；拔线后在书库点“VeraDroid 启动”，一键回到安卓。"
+                + "\n\n不想离开安卓：用“传书”（设置 → 传书，电脑浏览器打开网页传文件）或 adb。只是在充电就点“不用”。", 16, false);
+            m.setPadding(0, 0, 0, Ui.dp(c, 16));
+            box.addView(m);
+            android.widget.LinearLayout row = new android.widget.LinearLayout(c);
+            row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            android.widget.LinearLayout.LayoutParams w1 = new android.widget.LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            android.widget.LinearLayout.LayoutParams w2 = new android.widget.LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            android.widget.LinearLayout.LayoutParams w3 = new android.widget.LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            w2.leftMargin = Ui.dp(c, 8); w3.leftMargin = Ui.dp(c, 8);
+            row.addView(Ui.button(c, "不再询问", 15, false, new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { try { d.dismiss(); } catch (Throwable ignored) { } HostLink.cmd("usbnoask");
+                    VeraToast.show(HostService.this, "以后插线不再询问（设置 → 设备 里可以改回来）"); }
+            }), w1);
+            row.addView(Ui.button(c, "不用", 15, false, new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { try { d.dismiss(); } catch (Throwable ignored) { } }
+            }), w2);
+            row.addView(Ui.button(c, "切换", 15, true, new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { try { d.dismiss(); } catch (Throwable ignored) { } HostLink.cmd("usbswitch"); }
+            }), w3);
+            box.addView(row);
+            d.setContentView(box);
+            android.view.Window w = d.getWindow();
+            if (w != null) {
+                w.setType(android.view.WindowManager.LayoutParams.TYPE_SYSTEM_ALERT);
+                w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+                w.setWindowAnimations(0);
+                w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);   // 墨水屏上压暗 = 整屏闪两次
+            }
+            d.show();
+            if (w != null) w.setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.86), android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+            usbDialog = d;
+        } catch (Throwable e) { android.util.Log.w("VeraHome", "usb dialog: " + e); }
+    }
+
     private void notice(String title, String text) {
         try {
             android.app.Notification n = new android.app.Notification.Builder(this)

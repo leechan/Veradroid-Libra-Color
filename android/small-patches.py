@@ -296,6 +296,22 @@ PATCHES = [
      "    fd = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);\n"
      "    if (fd < 0) {\n        if (errno == EAFNOSUPPORT) return JNI_FALSE;\n    } else {\n        close(fd);\n    }\n"
      "    // This one below is problematic, will fail without proper permissions\n"),
+    # AlarmManager：7.1 的 zygote 不给 system_server CAP_WAKE_ALARM（8.0 才加），CLOCK_REALTIME_ALARM / CLOCK_BOOTTIME_ALARM 的
+    # timerfd_create 返回 EPERM，整个 timerfd 实现放弃，退回“Falling back to a handler”：闹钟按 uptime 的 Handler 消息计时、
+    # 唤醒和非唤醒共用一条消息（后排的顶掉前面的），TIME_TICK 晚几分钟到几小时（1.00 用户反馈“时间还是不对”，docs/host-settings.md 第 5 节“时钟”）。
+    # 没有这个权限时换成不要权限的 REALTIME / BOOTTIME（休眠归 Kindle 的 powerd，Android 不需要叫醒机器），
+    # epoll 也不加 EPOLLWAKEUP（Android 冻结时到期的定时器不在内核里挂着唤醒源）。宿主 container.sh 的 alarmfix 是同一个改法的二进制版。
+    ("frameworks/base/services/core/jni/com_android_server_AlarmManagerService.cpp",
+     "        fds[i] = timerfd_create(android_alarm_to_clockid[i], 0);\n        if (fds[i] < 0) {\n",
+     "        fds[i] = timerfd_create(android_alarm_to_clockid[i], 0);\n"
+     "        if (fds[i] < 0 && errno == EPERM) {   // VeraDroid: no CAP_WAKE_ALARM, use the clock without the wakeup\n"
+     "            if (android_alarm_to_clockid[i] == CLOCK_REALTIME_ALARM) fds[i] = timerfd_create(CLOCK_REALTIME, 0);\n"
+     "            else if (android_alarm_to_clockid[i] == CLOCK_BOOTTIME_ALARM) fds[i] = timerfd_create(CLOCK_BOOTTIME, 0);\n"
+     "        }\n"
+     "        if (fds[i] < 0) {\n"),
+    ("frameworks/base/services/core/jni/com_android_server_AlarmManagerService.cpp",
+     "        event.events = EPOLLIN | EPOLLWAKEUP;\n",
+     "        event.events = EPOLLIN;   // VeraDroid: no wakeup source (Android may be frozen when a timer expires)\n"),
 ]
 for patch in PATCHES:
     rel, old, new = patch[:3]

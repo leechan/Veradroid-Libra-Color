@@ -9,6 +9,7 @@
  * Keys (all integers; missing / 0 = Android's normal behaviour):
  *   OEC_DPI    display density for this app only: 1 = 320 x screen width / 1080 (what 多看 computes), 100..640 = that dpi.
  *              DENSITY=auto1080 / DENSITY=<n> (the host's older built-in key) means the same. Read once per process.
+ *              Also the process default density (DENSITY_DEVICE / Bitmap default), image property ro.vd.oec=2.
  *   OEC_FLING  1 = no fling animation: a fling jumps straight to where it would have stopped (OverScroller / Scroller)
  *   OEC_SMOOTH 1 = no smooth-scroll animation (startScroll with duration 0: smoothScrollBy / smoothScrollToPosition)
  *   OEC_PAGEKEY 1 = page keys act as volume keys, 2 = page keys become a swipe (x 50 %, y 80 -> 20 % / 20 -> 80 %, 600 ms)
@@ -226,6 +227,23 @@ public final class OecConfig {
     private static int scaleDp(int dp, int from, int to) {
         if (dp <= 0) return dp;   // UNDEFINED (0) stays
         return (int) ((long) dp * from / to);
+    }
+
+    /**
+     * ActivityThread.updateDefaultDensity: the process default density (DisplayMetrics.DENSITY_DEVICE, Bitmap's default
+     * density) is the app's dpi too, as it was with the global switch. Bitmaps made without a density (多看 draws its
+     * reading page into one) are otherwise 300 dpi and get scaled up by 376 / 300 when drawn on the app's canvas.
+     */
+    public static int defaultDensity(int dpi) {
+        if (sDpiRule <= 0 || dpi <= 0 || dpi == Configuration.DENSITY_DPI_UNDEFINED) return dpi;
+        if (sDpiResolved <= 0) {
+            try {   // resolves the auto rule from the real screen size (adjustDisplayInfo)
+                android.hardware.display.DisplayManagerGlobal.getInstance().getDisplayInfo(android.view.Display.DEFAULT_DISPLAY);
+            } catch (Throwable t) {
+                Log.w(TAG, "display info: " + t);
+            }
+        }
+        return sDpiResolved > 0 ? sDpiResolved : dpi;
     }
 
     /** DisplayManagerGlobal.getDisplayInfo: the app sees its own density in Display.getMetrics() too. */

@@ -4,7 +4,7 @@ the stub's wait sleeps like a PW6 panel). Frames are written into the shared buf
 hwcomposer.kindle does; the checks read the bridge's own refresh log (ctl/timing on).
 Checks: touch scroll mode (DU, or A2 with SCROLLWFM 1, during the drag, one REAGL FULL cleanup after, a drag without frames leaves the next page
 alone, style 2 holds everything until the end), page counting only after input (FLIPINPUT / FLIPCOUNT), FAST, FREEZE,
-the H hint, NEWWIN, GCN, and that unknown lines are ignored.
+the H hint, NEWWIN, GCN, the page-turn merge window (TURNHOLD), and that unknown lines are ignored.
 usage: run.py EPD_BINARY"""
 import os, re, subprocess, sys, tempfile, time
 
@@ -193,6 +193,31 @@ def main():
     m = b.mark(); b.send('NOSUCHCOMMAND 1', 'H', 'FREEZE x', 'FAST'); b.page(); time.sleep(0.8)
     r, _ = b.refreshes(m)
     check(r and b.p.poll() is None, 'unknown / malformed lines are ignored, frames still drawn')
+    b.close()
+
+    print('== page-turn merge window (TURNHOLD)')
+    gotp = lambda txt: [int(x) for x in re.findall(r'^\[(\d+)\] epd: got P', txt, re.M)]
+    def anim_turn(b, frames=5, gap=0.06):
+        for _ in range(frames): b.page(); time.sleep(gap)
+    b = Bridge(binary)
+    time.sleep(0.5); m = b.mark(); anim_turn(b); time.sleep(1.2)
+    r, _ = b.refreshes(m)
+    check(len(r) >= 2, f'TURNHOLD 0 (default): an animated turn whose first frame is a whole page is drawn more than once ({len(r)})')
+    b.send('TURNHOLD 150'); time.sleep(0.6)
+    m = b.mark(); anim_turn(b); time.sleep(1.2)
+    r, txt = b.refreshes(m); p = gotp(txt)
+    check(len(r) == 1, f'TURNHOLD 150: the same animated turn is one refresh ({len(r)})')
+    check(r and p and r[0]['t'] - p[-1] >= 140, f'TURNHOLD 150: drawn once the frames stopped for 150 ms ({r[0]["t"] - p[-1] if r and p else "-"} ms after the last frame)')
+    time.sleep(0.6); m = b.mark(); b.page(); time.sleep(0.8)
+    r, txt = b.refreshes(m); p = gotp(txt)
+    check(len(r) == 1 and p and r[0]['t'] - p[0] >= 140, f'TURNHOLD 150: a turn without animation waits the window ({r[0]["t"] - p[0] if r and p else "-"} ms)')
+    time.sleep(0.6); m = b.mark(); b.page(small=True); time.sleep(0.6)
+    r, txt = b.refreshes(m); p = gotp(txt)
+    check(r and p and r[0]['t'] - p[0] < 140, f'TURNHOLD 150: a small change is not held by it ({r[0]["t"] - p[0] if r and p else "-"} ms)')
+    b.send('TURNHOLD 0'); time.sleep(0.6)
+    m = b.mark(); b.page(); time.sleep(0.8)
+    r, txt = b.refreshes(m); p = gotp(txt)
+    check(len(r) == 1 and p and r[0]['t'] - p[0] < 140, f'TURNHOLD 0: a page goes out at once again ({r[0]["t"] - p[0] if r and p else "-"} ms)')
     b.close()
     print('FAILED: %d' % fails if fails else 'all passed')
     sys.exit(1 if fails else 0)

@@ -125,6 +125,7 @@ do_exit() {
             input_release
             wifi_ps_restore 2>/dev/null || true   # 回到 Kindle：Wi-Fi 省电交还 Kindle（WIFI_PS=off / auto 临时关掉的）
             type sleep_watch_stop >/dev/null 2>&1 && sleep_watch_stop
+            type usb_watch_stop >/dev/null 2>&1 && usb_watch_stop   # 回到 Kindle：插线由 Kindle 自己处理
             for f in sleep lipc watchdog; do kill $(cat $W/$f.pid 2>/dev/null) 2>/dev/null; done
             framework_start
             userstore_check freeze

@@ -17,6 +17,7 @@
 | 键 | 取值（默认） | 作用 | 界面建议 |
 |---|---|---|---|
 | `WIFI_PS` | `auto` \| `on` \| `off`（`auto`） | Wi-Fi 省电。`on` 一直保持 Kindle 的省电模式；`off` Android 运行时关掉省电（下载快、耗电多）；`auto` 平时省电，**传书开着**或 **Wi-Fi 上 ≥ 32 KB/s 持续收数据**（看门狗每 20 秒看一次网卡字节数）时临时关，空闲 1 分钟后恢复。回到 Kindle、屏保、停止时一律交还 Kindle | 设置 → Wi-Fi 与蓝牙：“Wi-Fi 省电：自动 / 始终省电 / 运行时关闭” |
+| `USB_ASK` | `1` \| `0`（`1`） | Android 在前台时插上 USB 线（`com.lab126.hal usbPlugIn`）：`1` 在 Android 里问“已连接电脑：要切换到 USB 传输吗？”，点“切换”= 返回 Kindle（有 MTP 的固件冻结 / 按 `RETURN_MODE`，USB 大容量存储的老固件完全退出），Kindle 接着进 USB 传输；`0` 不问。见 `boot/lib/usb.sh` | 设置 → 设备：“插上 USB 线时询问”；提示框里的“不再询问” |
 | `APP_COMPILE` | `auto` \| `speed` \| `off`（`auto`） | 应用预编译（第 3 节）。`off` = 不在后台编译，安装时恢复以前的做法（957 MB 机型安装时直接 speed） | 设置 → 应用：“自动优化新装的应用” 开关（off / auto） |
 | `TIME_12_24` | `auto` \| `12` \| `24`（`auto`） | Android 的 12 / 24 小时制（`settings put system time_12_24`）。`auto` = 跟 Kindle（第 5 节） | VeraHome 现有的 12 小时制开关改成三选一：“跟随 Kindle / 12 小时 / 24 小时”；桌面时钟读 Android 系统设置即可 |
 | `G_TWO_TAP_ACT` | 动作名（`clear`） | 双指轻点做什么（以前固定整屏刷新） | 设置 → 手势：和四角长按同一个动作选择列表 |
@@ -169,6 +170,21 @@ last=com.foo ok 37     # 上一个：包 结果(ok|fail) 秒数
   找规则完全相同的时区，结果缓存在 `$SYS/tzcache`，开机完成 / 下次解冻时换成准确的名字。
 - 冻结期间 Kindle 上改了时区：解冻后用 `service call alarm 3 s16 <时区>`（AlarmManager.setTimeZone）通知 Android，应用会收到 `TIMEZONE_CHANGED`。
 - 12 / 24：开机完成和每次解冻时读 `timeFormat`（`TIME_12_24=auto` 时），和上次写的不同才 `settings put system time_12_24`。
+
+**时钟（AlarmManager，1.00 用户反馈“时间还是不对”，fix/100-hotfix）**：Android 和 Kindle 共用内核时钟，时间本身不会错；
+错的是“什么时候更新显示”。7.1 的 AlarmManager 用 5 个 timerfd，其中 `CLOCK_REALTIME_ALARM` / `CLOCK_BOOTTIME_ALARM` 要
+`CAP_WAKE_ALARM`，7.1 的 zygote 不给 system_server（8.0 才加），`timerfd_create` 返回 EPERM，logcat 里是
+`AlarmManager: Failed to open alarm driver. Falling back to a handler.`。退回的 Handler 按 uptime 计时（休眠不算），唤醒 / 非唤醒闹钟
+共用一条消息、后排的顶掉前面的，`TIME_TICK` 晚几分钟到几小时（测试机实测：`dumpsys alarm` 里 TIME_TICK 过期 22 分钟没发，
+下一条唤醒闹钟在 10 小时后；另一台测试机过期 1 分多钟）。状态栏 / 阅读器里的时钟（多看、微信读书的页脚）、应用的定时任务都跟着停。
+- 宿主（`container.sh` 的 `alarmfix_*`，镜像修好前的办法）：开机前复制 `system/lib/libandroid_servers.so`，改两处再绑到原位：
+  时钟表里的两个 `*_ALARM` 换成 `CLOCK_REALTIME` / `CLOCK_BOOTTIME`（不叫醒 Kindle，休眠归 powerd；醒来后照样马上到期），
+  epoll 不加 `EPOLLWAKEUP`（`movt r5,#0x2000` → `nop.w`：冻结中到期的定时器不在内核里挂唤醒源）。两处原字节都对上才改
+  （1.00 的 pw6 64 位镜像和 32 位镜像偏移相同：表 154856、指令 52736），镜像里的文件不动（它和回退用的旧镜像是硬链接）。`ALARM_FIX=0` 关掉。
+  测试机实测：改后没有 `Falling back`，`system_server` 的 6 个 timerfd 都在 epoll 里（events 0x19，没有 EPOLLWAKEUP），TIME_TICK 每分钟一次。
+- 镜像（`android/small-patches.py`）：`timerfd_create` 得到 EPERM 时换成不要权限的时钟，epoll 不加 EPOLLWAKEUP；下次出镜像时带上。
+- 桌面（VeraHome）：主页时钟、状态栏除了按 uptime 排的分钟 tick，也收 `TIME_TICK` / `TIME_SET` / `TIMEZONE_CHANGED`（Kindle 睡醒、改时区后马上刷新）；
+  主页从应用回来时刷新时钟卡片（fix/home-clock-resume，1.00 的 perf/home-1core 之后它要等到下一个整分钟）。
 
 ## 6. 离线更新文件夹（H2，`boot/lib/localupdate.sh`）
 

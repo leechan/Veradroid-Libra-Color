@@ -46,7 +46,7 @@ PRODUCT_PROPERTY_OVERRIDES += \
     persist.sys.usb.config=none \
     debug.hwui.renderer=skia \
     ro.kernel.qemu=0 \
-    ro.vd.oec=1
+    ro.vd.oec=2
 
 # adbd only accepts computers whose key is in adb_keys (userdebug builds leave ro.adb.secure unset = any computer is
 # 'device'). Read-only, so it goes into default.prop, which adbd reads before anything can change it.

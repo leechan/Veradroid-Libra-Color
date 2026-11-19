@@ -2,8 +2,10 @@
 package com.veradroid.home;
 
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.os.BatteryManager;
@@ -40,6 +42,12 @@ public class StatusBarService extends Service {
         }
     };
 
+    /** 系统的分钟广播 / 改时间 / 改时区：马上刷新（Kindle 睡醒后 uptime 计时的 tick 还要再等最多一分钟）。 */
+    private final BroadcastReceiver timeReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) { handler.removeCallbacks(tick); tick.run(); }
+    };
+    private boolean timeReceiverOn;
+
     /** 时间只显示到分钟：在整分钟后一点点更新。以前固定每 2 分钟一次，时间最多慢 2 分钟（应用里看到 04:13，其实已经 04:14 多）。 */
     private static long toNextMinute() { return 60000 - System.currentTimeMillis() % 60000 + 300; }
 
@@ -55,6 +63,11 @@ public class StatusBarService extends Service {
         refreshNow();
         handler.removeCallbacks(tick);
         handler.postDelayed(tick, toNextMinute());
+        if (!timeReceiverOn) {
+            IntentFilter tf = new IntentFilter(Intent.ACTION_TIME_TICK);
+            tf.addAction(Intent.ACTION_TIME_CHANGED); tf.addAction(Intent.ACTION_TIMEZONE_CHANGED);
+            try { registerReceiver(timeReceiver, tf); timeReceiverOn = true; } catch (Throwable ignored) { }
+        }
         return START_STICKY;
     }
 
@@ -192,6 +205,7 @@ public class StatusBarService extends Service {
 
     @Override public void onDestroy() {
         handler.removeCallbacks(tick);
+        if (timeReceiverOn) { try { unregisterReceiver(timeReceiver); } catch (Throwable ignored) { } timeReceiverOn = false; }
         hide();
         super.onDestroy();
     }

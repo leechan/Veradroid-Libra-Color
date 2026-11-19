@@ -71,14 +71,24 @@ compile_done_filter() {
     [ -n "$1" ] && [ "$1" = "$(compile_mode)" ] && return 0
     return 1
 }
+# 这个安装记过几次某个结果（$CLOG 一行："包 目录 结果 过滤器 秒数 时间"）。只算 base.apk 写入之后的记录：卸载再装 / 更新后
+# 目录名常常不变（又是 <包>-1），以前这个安装之前的 timeout / capped / fail 记录照样算数，新装的应用就永远不编、一直解释执行
+# （测试机 2026-11-19：番茄免费小说 11-17 那次安装的 speed 超时记录挡住了 11-19 重新装的同名目录，冷启动 25-50 s、点开章节转圈几分钟、ANR）。
+# date -r 不支持时（时间为空）所有记录都算，和以前一样。
+compile_rec() { # pkg dir result
+    [ -f $CLOG ] || { echo 0; return 0; }
+    cr_s=$(date -r "$SYS/data/app/$2/base.apk" +%Y%m%d-%H%M%S 2>/dev/null)
+    awk -v p="$1" -v d="$2" -v r="$3" -v s="$cr_s" '$1 == p && $2 == d && $3 == r && $6 >= s { n++ } END { print n + 0 }' $CLOG
+}
 # 这个包要不要编（$2=force 时只要装着就编）
 compile_needed() { # pkg [force]
     app_dir "$1" >/dev/null || return 1
     [ "$2" = force ] && return 0
     compile_done_filter "$(odex_filter "$1")" && return 1
     # 同一个安装失败过两次就不再自动试（命令 compile <包> 仍然会强制编）
-    nf=$(grep -c "^$1 $(app_dir "$1") fail" $CLOG 2>/dev/null); [ "${nf:-0}" -ge 2 ] && return 1
-    grep -q "^$1 $(app_dir "$1") capped" $CLOG 2>/dev/null && return 1
+    cn_d=$(app_dir "$1")
+    [ "$(compile_rec "$1" "$cn_d" fail)" -ge 2 ] && return 1
+    [ "$(compile_rec "$1" "$cn_d" capped)" -gt 0 ] && return 1
     return 0
 }
 

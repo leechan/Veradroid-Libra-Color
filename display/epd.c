@@ -49,6 +49,9 @@
  *     ANIMHOLD <ms>           page-slide hold: a first frame that changes only a strip along a screen edge (a slide / cover page
  *                             animation starting) is held and merged with the frames that follow until none came for <ms>
  *                             (180; 0 = off), see anim_quiet_ms
+ *     TURNHOLD <ms>           page-turn merge window (per app, KFB_TURNHOLD; 0 = off, default): any first frame that changes a
+ *                             page (page_pct of the screen) is held the same way, until no frame came for <ms> (at most 1000
+ *                             after the first), see turn_quiet_ms
  *     SCROLL <0|1>            veradroid-input: a finger is dragging (1, sent once the finger moved past the touch slop) /
  *                             was lifted (0). See scroll_delay_ms
  *     SCROLLDELAY <ms>        touch scroll mode: DU while the finger drags (and the fling right after), one 16-gray FULL
@@ -342,6 +345,15 @@ static int hold_pct = 3;
    came for anim_quiet_ms (at most anim_max_ms after the first). Drawers and menus that slide in from an edge are merged
    the same way. Other first frames (a pressed button, a key) are not affected. */
 static int anim_quiet_ms = 180, anim_max_ms = 1000;
+/* Page-turn merge window (TURNHOLD <ms>, per app KFB_TURNHOLD; 0 = off). Like Onyx's per-app "animation duration"
+   debounce. A reader whose cover / slide animation already changes most of the page in its first frame (番茄免费小说
+   7.4.5 覆盖 on a PW6: the first frame 72 % of the screen, four more 55-85 ms apart) is not an edge strip, so each turn
+   used to be two full REAGL refreshes ~400 ms apart, the first one showing the half-covered page. With TURNHOLD a
+   first frame after a quiet moment that changes at least page_pct of the screen is held like a page-slide hold and
+   replaced by every frame that follows; the newest picture goes out once no frame came for turn_quiet_ms (at most
+   anim_max_ms after the first). Costs turn_quiet_ms on a turn without animation, so it is only set for apps that need it. */
+static int turn_quiet_ms = 0;
+static int slide_quiet_ms = 180;   /* the quiet window of the hold now running (anim_quiet_ms or turn_quiet_ms) */
 static long anim_t0 = 0;
 static int g_lead = 0;    /* set by the main loop: the frame being shown is the first after a quiet moment */
 static int edge_strip(int x0, int y0, int x1, int y1)
@@ -1148,7 +1160,7 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
             return 0;
         }
     }
-    if (may_hold && g_lead && anim_quiet_ms > 0 && mode == M_AUTO && !g_scroll) {    /* page-slide hold, see anim_quiet_ms */
+    if (may_hold && g_lead && (anim_quiet_ms > 0 || turn_quiet_ms > 0) && mode == M_AUTO && !g_scroll) {    /* page-slide hold, see anim_quiet_ms */
         int bx0 = cx0[0], by0 = cy0[0], bx1 = cx1[0], by1 = cy1[0];
         for (int i = 1; i < nc; i++) {
             if (cx0[i] < bx0) bx0 = cx0[i];
@@ -1156,7 +1168,9 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
             if (cx1[i] > bx1) bx1 = cx1[i];
             if (cy1[i] > by1) by1 = cy1[i];
         }
-        if (edge_strip(bx0, by0, bx1, by1)) return 4;
+        if (anim_quiet_ms > 0 && edge_strip(bx0, by0, bx1, by1)) { slide_quiet_ms = anim_quiet_ms; return 4; }
+        /* page-turn merge window, see turn_quiet_ms */
+        if (turn_quiet_ms > 0 && flip_total * 100 >= (long)W * H * page_pct) { slide_quiet_ms = turn_quiet_ms; return 4; }
     }
     if ((pace || (g_scroll && waiter_on)) && may_pace && mode != M_FULL) {
         long ov = 0, nowt = now_ms();
@@ -1897,6 +1911,14 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
                 int v;
                 if (sscanf(line + 8, "%d", &v) == 1 && v >= 0 && v <= 500) { anim_quiet_ms = v; if (!v && held_why == 5 && held_page >= 0) held_until = now_ms(); }
             }
+            else if (!strncmp(line, "TURNHOLD", 8)) {   /* TURNHOLD <ms>: page-turn merge window (0 = off), see turn_quiet_ms */
+                int v;
+                if (sscanf(line + 8, "%d", &v) == 1 && v >= 0 && v <= 1000) {
+                    turn_quiet_ms = v;
+                    if (!v && held_why == 5 && held_page >= 0 && slide_quiet_ms != anim_quiet_ms) held_until = now_ms();
+                    if (tlog) fprintf(stderr, "[%ld] epd: page-turn merge window %d ms\n", now_ms(), v);
+                }
+            }
             else if (!strncmp(line, "HOLD", 4)) {   /* HOLD <ms>: how long a small change waits for a following frame (0 = off) */
                 int v;
                 if (sscanf(line + 4, "%d", &v) == 1 && v >= 0 && v <= 300) hold_ms = v;
@@ -2043,7 +2065,7 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             if (held_page >= 0 && held_why == 5 && mode != M_FULL) {
                 /* page-slide hold: this newer picture replaces the held one, the quiet window starts again */
                 held_page = page;
-                held_until = nowt2 + anim_quiet_ms;
+                held_until = nowt2 + slide_quiet_ms;
                 if (held_until > anim_t0 + anim_max_ms) held_until = anim_t0 + anim_max_ms;
                 continue;
             }
@@ -2063,7 +2085,7 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             int r = show_page(fbmem, page, mode, mode == M_FULL, !was_hold && !was_paced, !(was_paced && nowt2 >= held_until));
             g_lead = 0;
             if (r && !was_hold && !was_paced) held_t0 = nowt2;
-            if (r == 4) { held_page = page; held_mode = mode; held_why = 5; anim_t0 = nowt2; held_until = nowt2 + anim_quiet_ms; }
+            if (r == 4) { held_page = page; held_mode = mode; held_why = 5; anim_t0 = nowt2; held_until = nowt2 + slide_quiet_ms; }
             if (r == 1) { held_page = page; held_mode = mode; held_why = 1; held_until = nowt2 + hold_ms; }
             if (r == 3) { held_page = page; held_mode = M_FULL; held_why = 3; flash_t0 = nowt2; held_until = nowt2 + flash_quiet_ms; }
             if (r && timing_flag && access(timing_flag, F_OK) == 0)

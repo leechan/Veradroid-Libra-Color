@@ -36,6 +36,9 @@ fw_services() {
         if [ ! -f /etc/upstart/framework.conf ]; then FW_MODE=keep
         elif [ ! -x "$VD/bin/vdkaf" ]; then
             t "fw: KINDLE_UI=stop wanted but bin/vdkaf is missing (the power key would stop working): keeping the framework"; FW_MODE=keep
+        elif [ ! -e /lib/ld-linux-armhf.so.3 ]; then
+            # bin/vdkaf 是 armhf 动态链接的；PW5 5.16.2.x 及更早的固件是软浮点（armel），它跑不起来（没有那个动态链接器）
+            t "fw: KINDLE_UI=stop wanted but this firmware is soft-float (armel) and bin/vdkaf is armhf: keeping the framework"; FW_MODE=keep
         elif [ "$(cat $SYS/vdkaf.bad 2>/dev/null)" = "$(vdkaf_id)" ]; then
             # 这个固件 + 这个 vdkaf 上次没能顶替成功（见 framework_stop 里的自检）：不再停框架，免得每次进来都白白重启它一遍
             t "fw: vdkaf did not work on this firmware last time ($SYS/vdkaf.bad): keeping the framework"; FW_MODE=keep

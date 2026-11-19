@@ -185,6 +185,7 @@ vd_in() {
 # 屏幕中间提示一行（启动 / 返回 / 错误），只在界面已暂停时用
 [ -f "$VD/boot/lib/storage.sh" ] && . "$VD/boot/lib/storage.sh"     # 系统盘大小调整 / 断电后的收尾
 [ -f "$VD/boot/lib/lock.sh" ] && . "$VD/boot/lib/lock.sh"           # 锁屏密码：屏保后上锁、USB 重置文件
+[ -f "$VD/boot/lib/usb.sh" ] && . "$VD/boot/lib/usb.sh"             # 插 USB 线时问要不要切换到 USB 传输（cmd usbswitch）
 [ -f "$VD/boot/lib/saver.sh" ] && . "$VD/boot/lib/saver.sh"         # 屏保挑选（桌面写的选择文件）
 case "$0" in */veradroid.sh) ST_START=1 ;; esac                    # 只有真正启动 Android 时才做“下次启动时扩容”
 splash() { [ -x "$FBINK" ] && "$FBINK" -q -c -m -M -t regular=$KFONT,px=${2:-44} "$1" 2>/dev/null; }

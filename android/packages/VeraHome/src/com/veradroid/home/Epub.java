@@ -33,13 +33,19 @@ final class Epub {
     static class Chapter {
         String title; String text; String entry;
         /** EPUB 里的 id → 在 text 里的位置；块级元素（p / li / aside……）的 id 还记下结束位置和标签名（注释正文用）。 */
-        Map<String, int[]> ids = java.util.Collections.emptyMap();   // {起, 止(-1 = 不知道), 是不是注释元素 1/0, 是不是块 1/0}
+        Map<String, int[]> ids = java.util.Collections.emptyMap();   // {起, 止(-1 = 不知道), 是不是注释元素 1/0, 是不是块 1/0, 是不是 h1~h6 1/0}
         List<Link> links = java.util.Collections.emptyList();
         /** 这个文件里的标题：{在 text 里的位置, 级别}；级别 1~6 = h1~h6，3 = class 带 title / chapter 的段落，PAT_* = “第X章”一类的短行。 */
         List<int[]> heads = java.util.Collections.emptyList();
     }
     /** 正文里的一个书内链接：text[start, end) 是链接文字，target = “章节文件#id” 或 “章节文件”。 */
-    static final class Link { int start, end; String target; boolean noteref, back; }
+    static final class Link {
+        int start, end; String target; boolean noteref, back;
+        /** 链接里是一张图（多看的注释号图标） */
+        boolean img;
+        /** 注释直接写在图片的 alt 里（QQ 阅读 / 微信读书的 &lt;img class="qqreader-footnote" alt="注释文字"&gt;、多看的同类写法）：弹出来就是它 */
+        String inline;
+    }
 
     /** 目录里的一条。chapter = chapters 里的下标，offset = 那个文件文字里的字符位置。 */
     static final class TocItem {
@@ -664,7 +670,7 @@ final class Epub {
         if (tags.isEmpty()) { c.text = stripHtml(s); return c; }
         String dir = entry.contains("/") ? entry.substring(0, entry.lastIndexOf('/') + 1) : "";
         List<String> idNames = new ArrayList<String>();
-        List<int[]> idInfo = new ArrayList<int[]>();             // {是注释 1/0, 是块 1/0}
+        List<int[]> idInfo = new ArrayList<int[]>();             // {是注释 1/0, 是块 1/0, 是标题 1/0}
         List<Link> links = new ArrayList<Link>();
         List<Object[]> headRaw = new ArrayList<Object[]>();     // {级别, 标题标签里的 HTML}
         java.util.Map<Integer, List<Integer>> closeAt = new java.util.HashMap<Integer, List<Integer>>();
@@ -695,7 +701,8 @@ final class Epub {
                     boolean note = "aside".equals(name) || type.contains("note") && !type.contains("noteref") && !type.contains("back")
                         && !type.contains("-ref") && !("a".equals(name) && attr(at, "href") != null);
                     boolean block = BLOCKS.contains(name);
-                    idNames.add(id); idInfo.add(new int[] { note ? 1 : 0, block ? 1 : 0 });
+                    boolean head = name.length() == 2 && name.charAt(0) == 'h' && name.charAt(1) >= '1' && name.charAt(1) <= '6';
+                    idNames.add(id); idInfo.add(new int[] { note ? 1 : 0, block ? 1 : 0, head ? 1 : 0 });
                     out.append(MK).append('I').append(n).append(MK_END);
                     if (block && !at.trim().endsWith("/")) {   // 找对应的闭合标签（同名的嵌套要数层数）
                         int depth = 0;
@@ -711,6 +718,24 @@ final class Epub {
                         }
                     }
                 }
+                if (("img".equals(name) || "image".equals(name)) && at.indexOf('=') >= 0) {
+                    if (open >= 0) links.get(open).img = true;
+                    String alt = attr(at, "alt");
+                    String ty = (String.valueOf(attr(at, "class")) + " " + String.valueOf(attr(at, "epub:type"))).toLowerCase(Locale.US);
+                    if (alt != null && ty.contains("note")) {
+                        alt = clean(htmlToText(alt));
+                        if (alt.length() >= 2) {
+                            if (open >= 0) { if (links.get(open).inline == null) links.get(open).inline = alt; }
+                            else {   // 不在链接里的注释图：自己就是一个注释号（点了弹 alt 里的字）
+                                Link k = new Link();
+                                k.target = entry; k.noteref = true; k.img = true; k.inline = alt;
+                                int ln = links.size();
+                                links.add(k);
+                                out.append(MK).append('L').append(ln).append(MK_END).append(MK).append('E').append(MK_END);
+                            }
+                        }
+                    }
+                }
                 String href = "a".equals(name) ? attr(at, "href") : null;
                 if (href != null && href.length() > 0 && !P_SCHEME.matcher(href).matches()) {
                     if (open >= 0) out.append(MK).append('E').append(MK_END);
@@ -723,6 +748,7 @@ final class Epub {
                     String type = (String.valueOf(attr(at, "epub:type")) + " " + String.valueOf(attr(at, "class")) + " " + String.valueOf(attr(at, "role"))).toLowerCase(Locale.US);
                     k.back = type.contains("back") || type.contains("return");   // backlink、footnote-back、doc-backlink、returnlink……
                     k.noteref = !k.back && (type.contains("noteref") || type.contains("footnote") || type.contains("endnote") || type.contains("-ref"));
+                    k.img = type.contains("note");   // 多看的 class="duokan-footnote"：链接里没有字也是注释号
                     open = links.size();
                     links.add(k);
                     out.append(MK).append('L').append(open).append(MK_END);
@@ -780,7 +806,7 @@ final class Epub {
         for (int i = 0; i < idNames.size(); i++) {
             if (idStart[i] < 0 || ids.containsKey(idNames.get(i))) continue;
             int st = Math.min(idStart[i], n), en = idEnd[i] < 0 ? -1 : Math.min(idEnd[i], n);
-            ids.put(idNames.get(i), new int[] { st, en, idInfo.get(i)[0], idInfo.get(i)[1] });
+            ids.put(idNames.get(i), new int[] { st, en, idInfo.get(i)[0], idInfo.get(i)[1], idInfo.get(i)[2] });
         }
         c.ids = ids;
         List<Link> kept = new ArrayList<Link>();
@@ -790,8 +816,9 @@ final class Epub {
             if (k.start < 0) continue;
             while (k.start < k.end && Character.isWhitespace(c.text.charAt(k.start))) k.start++;
             while (k.end > k.start && Character.isWhitespace(c.text.charAt(k.end - 1))) k.end--;
-            if (k.end <= k.start && !k.back && k.target.indexOf('#') > 0) {
+            if (k.end <= k.start && !k.back && (k.img || k.inline != null) && (k.target.indexOf('#') > 0 || k.inline != null)) {
                 // 没有字的链接：注释号是一张小图（多看格式 <a class="duokan-footnote"><img/></a> 很常见）。以前整个丢掉，这种注释根本点不开。
+                // 只有链接里真有图（或者 class 带 note）才这样挂：多看注释框里那个空的回链 <a href="#…-back"></a> 以前也挂到了正文最后一个字上
                 // 正文不能多出字（续读位置、书签都按字符位置记）：链接挂在它前面那个字上（行首就挂后面那个字），那个字画虚下划线、点了弹注释
                 int p = Math.min(k.start, n);
                 while (p > 0 && Character.isWhitespace(c.text.charAt(p - 1))) p--;
@@ -853,6 +880,123 @@ final class Epub {
             @Override public int compare(int[] x, int[] y) { return x[0] != y[0] ? (x[0] < y[0] ? -1 : 1) : 0; }
         });
         return hs;
+    }
+
+    // ------------------------------------------------------------------ 注释
+
+    /** 弹出来的注释：文字（最多 NOTE_MAX 字），more = 后面还有（弹框里出“全文”） */
+    static final class Note {
+        final String text; final boolean more;
+        Note(String text, boolean more) { this.text = text; this.more = more; }
+        @Override public String toString() { return (more ? "+" : "") + text; }
+    }
+    static final int NOTE_MAX = 1500;
+
+    /** 像注释号的链接文字：[1]、(2)、〔3〕、注1、[注]、①、¹、*、†、a…… */
+    private static final String NOTE_NUM = "(?:[0-9０-９]{1,3}|[a-zA-Z]|[*＊†‡§※]{1,3}|[①-⑳⑴-⒇㈠-㈩]|[¹²³⁴-⁹⁰]{1,3}|[ⅰ-ⅹⅠ-Ⅹ]|[一二三四五六七八九十]{1,3})";
+    private static final Pattern NOTE_MARK = Pattern.compile("^[\\[(（〔【<［⁽]?\\s*(?:(?:注|註|note|Note|NOTE)\\s*" + NOTE_NUM + "?|" + NOTE_NUM + ")\\s*[\\])）〕】>］⁾]?$");
+    /** 注释正文里一行开头的注释号（[5]、（5）、注5、5.）：没有元素边界时，下一条注释从这里开始 */
+    private static final Pattern NOTE_LEAD = Pattern.compile("^[ \\u3000\\t·]*(?:[\\[［(（〔【⁽]\\s*(?:注|註)?\\s*[0-9０-９]{1,3}\\s*[\\]］)）〕】⁾]|(?:注|註)\\s*[0-9０-９]{1,3}|[①-⑳⑴-⒇]|[0-9]{1,3}[.、．])");
+    /** 回链的字：↩ ↑ ^ 返回 / 回到正文…… */
+    private static final Pattern BACK_MARK = Pattern.compile("^[\\[(（〔【［]?\\s*(?:[↩↑⏎↵⤴⬆^︿]|返回|回到正文|返回正文|回正文|back|Back|return)[\\uFE0E\\uFE0F]?\\s*[\\])）〕】］]?$");
+
+    static boolean noteMark(String label) { return label != null && label.length() > 0 && label.length() <= 8 && NOTE_MARK.matcher(label).matches(); }
+
+    /** 这个位置前面（同一行里）只有空白、li 的“· ”或者开括号：是一行（一条注释）的开头 */
+    static boolean lineStart(String t, int pos) {
+        for (int i = Math.min(pos, t.length()) - 1; i >= 0; i--) {
+            char ch = t.charAt(i);
+            if (ch == '\n') return true;
+            if (ch != ' ' && ch != '　' && ch != '\t' && ch != '·' && "[［(（〔【⁽".indexOf(ch) < 0) return false;
+        }
+        return true;
+    }
+
+    /**
+     * 点了正文里的链接 k（链接的字 label），它指向 target 这一章里的 frag：是注释就返回注释的文字，不是注释（目录、回链、
+     * 指向正文中间的锚点）或者取不出字就返回 null——调用方直接跳过去，不弹中间那个框。
+     *
+     * 算注释：目标是 aside / epub:type 或 class 带 note 的元素（footnote、endnote、rearnote……），或者链接像个注释号
+     * （noteref、多看的注释图、[5] 这种字）而目标是一条注释的开头（一个块：p / li / div，或者一行开头的锚点）。
+     * 指向一段正文中间的锚点的是回链（注释里的 [5] 跳回正文），跳回去。注释直接写在图片 alt 里的弹 alt。
+     */
+    static Note note(Link k, String label, Chapter target, String frag) {
+        if (k == null || k.back) return null;
+        int[] info = target == null || frag == null || frag.length() == 0 ? null : target.ids.get(frag);
+        Note n = null;
+        if (info != null) {
+            boolean heading = info.length > 4 && info[4] == 1;
+            boolean entry = info[3] == 1 && !heading || lineStart(target.text, info[0]);
+            boolean marker = k.noteref || k.img || noteMark(label) || info[3] == 1 && !heading && label != null && label.length() <= 6;
+            if (info[2] == 1 || marker && entry) n = noteAt(target, info, label);
+        }
+        if ((n == null || n.text.length() == 0) && k.inline != null) n = new Note(k.inline.length() > NOTE_MAX ? k.inline.substring(0, NOTE_MAX) + "…" : k.inline, false);
+        return n == null || n.text.length() == 0 ? null : n;
+    }
+
+    /**
+     * 注释的文字：块级元素（aside / li / p / div）到它结束为止；目标是段落里的锚点（结束不知道）就到这一段结束（空一行）。
+     * 两种都在下一条注释开始的地方截住：后面一行开头的另一个锚点 / 注释号链接 / “[6]”一类的字（一串 div、只隔一个换行的
+     * 注释以前一下子带上后面几十条）。开头的回链（“[5]”、↩）和 li 的“· ”去掉，结尾的回链（↩、返回）也去掉。
+     */
+    static Note noteAt(Chapter c, int[] info, String label) {
+        if (c == null || info == null) return null;
+        String t = c.text;
+        int L = t.length();
+        int st = Math.max(0, Math.min(L, info[0]));
+        int en = info[1] > st ? Math.min(info[1], L) : -1;
+        if (en < 0) { en = t.indexOf("\n\n", st + 1); if (en < 0) en = L; }
+        int b = st;
+        while (b < en && (Character.isWhitespace(t.charAt(b)) || t.charAt(b) == '　' || t.charAt(b) == '·')) b++;
+        // 下一条注释：这一条第一行之后、一行开头的锚点 / 链接 / 注释号（li 的开头是“\n· ”：从第一个字算起）
+        int nl = t.indexOf('\n', b);
+        if (nl >= 0 && nl < en) {
+            int next = en;
+            for (int[] v : c.ids.values()) if (v[0] > nl && v[0] < next && lineStart(t, v[0])) next = v[0];
+            for (Link k : c.links) if (k.start > nl && k.start < next && lineStart(t, k.start) && noteMark(t.substring(k.start, k.end).trim())) next = k.start;
+            for (int i = nl; i >= 0 && i < next; i = t.indexOf('\n', i + 1)) {
+                Matcher m = NOTE_LEAD.matcher(t.substring(i + 1, Math.min(next, i + 24)));
+                if (m.lookingAt()) { next = i + 1; break; }
+            }
+            // 往回退到那一行的开头（“· ”、括号不留在上一条后面）
+            while (next > b && next < en && t.charAt(next - 1) != '\n') next--;
+            if (next > b) en = Math.min(en, next);
+        }
+        // 开头：空白、“· ”（上面已经跳过），然后是回链 / 注释号
+        st = b;
+        for (Link k : c.links) {
+            if (k.start > b || k.end <= b || k.end > en) continue;
+            String l = t.substring(k.start, k.end).trim();
+            if (k.back || noteMark(l) || BACK_MARK.matcher(l).matches() || l.equals(label)) { b = k.end; break; }
+        }
+        String lab = label == null ? "" : label.trim();
+        if (b == st || b < en && lineStart(t, b)) {
+            String rest = t.substring(b, Math.min(en, b + 24));
+            if (lab.length() > 0 && rest.startsWith(lab)) b += lab.length();
+            else if (noteMark(lab)) {
+                String core = lab.replaceAll("[\\[\\]()（）〔〕【】<>［］⁽⁾\\s]|注|註", "");
+                if (core.length() > 0) {
+                    Matcher m = Pattern.compile("^[\\[［(（〔【<⁽]?\\s*(?:注|註)?\\s*" + Pattern.quote(core) + "\\s*[\\]］)）〕】>⁾]?").matcher(rest);
+                    if (m.lookingAt() && m.end() > 0) b += m.end();
+                }
+            }
+        }
+        while (b < en && (Character.isWhitespace(t.charAt(b)) || "\u3000·.．、:：]］)）〕】⁾".indexOf(t.charAt(b)) >= 0)) b++;
+        // 结尾的回链
+        int e = en;
+        while (e > b && Character.isWhitespace(t.charAt(e - 1))) e--;
+        for (Link k : c.links) {
+            if (k.start < b || k.end > e || k.end < e - 1) continue;
+            String l = t.substring(k.start, k.end).trim();
+            if (k.back || BACK_MARK.matcher(l).matches()) { e = k.start; break; }
+        }
+        boolean more = e - b > NOTE_MAX;
+        if (more) e = b + NOTE_MAX;
+        if (e <= b) return new Note("", false);
+        String s = t.substring(b, e).trim();
+        if (s.startsWith("· ")) s = s.substring(2).trim();
+        if (more) s += "…";
+        return new Note(s, more);
     }
 
     static String stripHtml(String html) {

@@ -173,6 +173,8 @@ vd_where_notes() {
 
 你可能会用到的：
   screensaver/            屏保图片：把 jpg / png 放进来，在 Android 的 设置 → 屏保 里选
+  fonts/                  字体：就是 Android 里的 内部存储/Fonts，把 ttf / otf 放进来（字体商店装的也在这里）；
+                          升级、重装、卸载都会留着
   update/                 离线更新：把离线包原样放进来，下次点“VeraDroid 启动”时自动安装
   VeraDroid-Launch.sh     备用入口：书库里找不到“VeraDroid 启动”时，把它拷进 documents，在书库里点它；
                           启动一次以后，书库里的“VeraDroid 启动”会自动放回去
@@ -181,7 +183,7 @@ vd_where_notes() {
   backup/                 安装前自动做的备份，留着
   kindle-crash/           Kindle 自己的崩溃记录（从书库里挪出来的），可以删
 
-其余的（boot、bin、apps、fonts、state 等）是程序本身。
+其余的（boot、bin、apps、state 等）是程序本身。
 找不到书库入口，也可以用 KUAL 菜单：VeraDroid → 恢复书库入口。"
     mkdir -p "$vwn/screensaver" 2>/dev/null || return 0
     vd_note_put "$vwn/screensaver/把屏保图片放这里.txt" "把屏保图片（jpg / png）放在这个文件夹里。
@@ -192,6 +194,76 @@ Kindle 休眠时，VeraDroid 显示这里的图片。在 Android 的 设置 → 
     return 0
 }
 # END vd_where_notes
+# BEGIN vd_user_carry
+# 用户自己放进 veradroid/ 的文件（2026-11-19，KPW5 用户：“放到 veradroid/fonts 的字体，升级以后就没了”）：
+#   fonts/        Android 里的 内部存储/Fonts（容器里绑在 /data/media/0/Fonts 上），用户拷进来的字体、字体商店装的字体都在这里
+#   screensaver/  屏保图片      apps/  还没装的 APK（afterboot 装好才删）      kindle-crash/  从书库挪出来的 Kindle 崩溃转储
+# 整包安装把程序目录挪成 host.bak、卸载删程序：这几个文件夹里用户的文件要带到新程序目录 / 留到 backup/user-files。
+# 包里自带的文件名记在 state/bundled.<文件夹>（整包安装时写）：带过去时跳过旧包自带的（新包有自己的那份；新包去掉的也不复活）。
+# 目标里已有同名文件的不动（包里有的以包为准）。这一段在 bootstrap*.sh 和各机型 boot/lib/tidy.sh 里是同一份
+# （tests/user-files-test.sh 核对）。set -eu 下不能失败。
+VD_USER_DIRS="fonts screensaver apps kindle-crash"
+# vd_user_carry 从 到 "文件夹…" [mv]：$1/<d>/ 下（含子文件夹）用户的文件拷进 $2/<d>/；mv=mv 时挪过去（同一个盘，卸载留下的那份）。
+# 同一个文件系统上先试硬链接（不多占地方，host.bak 里的那份照样能回退），不行再拷。输出带过去的文件数。
+vd_user_carry() {
+    vuc_n=0
+    for vuc_d in $3; do
+        [ -d "$1/$vuc_d" ] || continue
+        vuc_c=$( ( cd "$1/$vuc_d" 2>/dev/null && find . 2>/dev/null ) | vd_user_carry1 "$1/$vuc_d" "$2/$vuc_d" \
+            "${VD_TOP:-/mnt/base-us}/veradroid/state/bundled.$vuc_d" "${4:-}" ) || vuc_c=0
+        vuc_n=$(( vuc_n + ${vuc_c:-0} ))
+    done
+    echo "$vuc_n"
+    return 0
+}
+# vd_user_carry1 从 到 包清单 [mv]：标准输入是 find 列出的相对路径；输出带过去的文件数
+vd_user_carry1() {
+    vuc_c=0
+    while IFS= read -r vuc_f; do
+        vuc_f=${vuc_f#./}
+        [ "$vuc_f" != . ] && [ -n "$vuc_f" ] || continue
+        if [ -d "$1/$vuc_f" ] && [ ! -L "$1/$vuc_f" ]; then continue; fi
+        if [ -e "$2/$vuc_f" ] || [ -L "$2/$vuc_f" ]; then continue; fi
+        if [ -f "$3" ] && grep -Fxq -- "$vuc_f" "$3" 2>/dev/null; then continue; fi
+        vuc_p=$2/$vuc_f; mkdir -p "${vuc_p%/*}" 2>/dev/null || continue
+        if [ "$4" = mv ]; then mv -f "$1/$vuc_f" "$vuc_p" 2>/dev/null || continue
+        else ln "$1/$vuc_f" "$vuc_p" 2>/dev/null || cp -a "$1/$vuc_f" "$vuc_p" 2>/dev/null || { rm -f "$vuc_p" 2>/dev/null; continue; }; fi
+        vuc_c=$((vuc_c + 1))
+    done
+    echo "$vuc_c"
+    return 0
+}
+# vd_bundled_save 包目录：记下包里自带的文件名（fonts/、screensaver/、apks/ → apps）。装完新程序、带完用户文件以后调。
+vd_bundled_save() {
+    vbs_s=${VD_TOP:-/mnt/base-us}/veradroid/state
+    mkdir -p "$vbs_s" 2>/dev/null || return 0
+    for vbs_d in fonts screensaver apps; do
+        vbs_p=$vbs_d; [ "$vbs_d" = apps ] && vbs_p=apks
+        if [ -d "$1/$vbs_p" ]; then
+            ( cd "$1/$vbs_p" 2>/dev/null && find . -type f 2>/dev/null | sed 's#^\./##' ) > "$vbs_s/bundled.$vbs_d.tmp" 2>/dev/null \
+                && mv -f "$vbs_s/bundled.$vbs_d.tmp" "$vbs_s/bundled.$vbs_d" 2>/dev/null || rm -f "$vbs_s/bundled.$vbs_d.tmp" 2>/dev/null || true
+        else rm -f "$vbs_s/bundled.$vbs_d" 2>/dev/null || true; fi
+    done
+    return 0
+}
+# vd_user_keep 程序目录：卸载前把用户的字体 / 屏保挪进 backup/user-files（重新安装时 vd_user_restore 放回去）
+vd_user_keep() {
+    vuk_b=${VD_TOP:-/mnt/base-us}/veradroid/backup/user-files
+    vuk_n=$(vd_user_carry "$1" "$vuk_b" "fonts screensaver" mv)
+    rmdir "$vuk_b"/* "$vuk_b" 2>/dev/null || true
+    echo "$vuk_n"
+    return 0
+}
+# vd_user_restore 程序目录：卸载时留下的 backup/user-files 放回去（同名的不覆盖），放完的空文件夹删掉，没放回去的留着
+vd_user_restore() {
+    vur_b=${VD_TOP:-/mnt/base-us}/veradroid/backup/user-files
+    [ -d "$vur_b" ] || { echo 0; return 0; }
+    vur_n=$(vd_user_carry "$vur_b" "$1" "fonts screensaver" mv)
+    find "$vur_b" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+    echo "$vur_n"
+    return 0
+}
+# END vd_user_carry
 # 程序目录里的备用启动入口 veradroid/VeraDroid-Launch.sh：标题改成备用的（整包安装和增量更新都调）
 vd_launch_backup() {
     [ -f "$VD/VeraDroid-Launch.sh" ] || return 0
@@ -1415,8 +1487,16 @@ fi
 FW=$(sed -n 's/.*Kindle[[:space:]]*\([0-9][0-9.]*\).*/\1/p' /etc/prettyversion.txt 2>/dev/null | head -1)
 if [ -n "$FW" ]; then
     fwn=$(printf '%s\n' "$FW" | awk -F. '{printf "%d%03d%03d", $1, $2, $3}')
-    if [ "$MODEL" != legacy ] && [ "$fwn" -lt 5017000 ] 2>/dev/null && [ "${VD_ALLOW_OLD_FW:-0}" != 1 ]; then
-        die "固件 $FW 太旧；VeraDroid 需要 5.17 或更新"
+    # PW5 停在 5.16.x 的用户（WinterBreak2 / SpiderCat / Nosebleed 越狱，升级就没了）：5.16 的内核和 5.17.1 是同一组
+    # （binder / uinput / tun 都编进内核，config 完全相同；没有 PID 命名空间 -> chroot 模式，和 5.17.1 一样），不需要外挂模块。
+    # 内核里真没有 binder 的话照样拒绝。
+    fwmin=5017000; fwmin_s=5.17
+    case "$MODEL" in pw5) fwmin=5016000; fwmin_s="5.16（PW5）" ;; esac
+    if [ "$MODEL" != legacy ] && [ "$fwn" -lt "$fwmin" ] 2>/dev/null && [ "${VD_ALLOW_OLD_FW:-0}" != 1 ]; then
+        die "固件 $FW 太旧；VeraDroid 需要 $fwmin_s 或更新"
+    fi
+    if [ "$fwn" -lt 5017000 ] 2>/dev/null && [ "$MODEL" = pw5 ] && ! grep -qw binder /proc/misc 2>/dev/null && [ ! -e /dev/binder ]; then
+        die "这台 Kindle 的内核（$(uname -r)）没有 binder，VeraDroid 不能运行；本机未改动"
     fi
 fi
 if [ "${VD_DRY_RUN:-0}" = "1" ]; then
@@ -2029,6 +2109,8 @@ install_recover() {
         vd_prog_move "$VD" "$SYS/host.failed.$st"
         vd_prog_move "$SYS/host.bak.$st" "$VD"
         vd_data_rescue "$SYS/host.bak.$st"; rm -rf "$SYS/host.bak.$st"
+        # 半截安装那段时间里用户放进新程序目录的字体 / 屏保也带回来（host.failed 下次安装会删）
+        vd_user_carry "$SYS/host.failed.$st" "$VD" "$VD_USER_DIRS" >/dev/null
         if [ -d "$SYS/rootfs.bak.$st" ]; then
             [ -e "$SYS/rootfs" ] && mv "$SYS/rootfs" "$SYS/rootfs.failed.$st"
             mv "$SYS/rootfs.bak.$st" "$SYS/rootfs"
@@ -2401,6 +2483,13 @@ vlog "space: need ${need_mb}M free ${free_mb}M (loop=$LOOP)"
 [ "${free_mb:-0}" -ge "$need_mb" ] || die "空间不够：安装需要约 ${need_mb} MB，现在只有 ${free_mb} MB。什么都没有删除"
 # 动任何东西（包括把程序目录挪成 host.bak）之前先查挂载：拒绝时设备要保持原样，“VeraDroid 启动”还能用
 guard_rm "$SYS/rootfs"
+# 1.00 / 0.8.11 及以前的整包安装不带 fonts/ 回来：用户的字体还在最近一份 host.bak 里（loop 机型开机后就删了，那就找不回来）。
+# 删旧备份之前，一次性（state/user-carry.v1）把那里的字体 / 屏保放回程序目录，下面整包安装再带进新程序目录。
+if [ ! -f "$VD_STATE/user-carry.v1" ]; then
+    uc_old=$(ls -dt "$SYS"/host.bak.* 2>/dev/null | head -n 1) || uc_old=
+    if [ -n "$uc_old" ] && [ -d "$uc_old" ] && [ -d "$VD" ]; then vlog "user files rescued from $uc_old: $(vd_user_carry "$uc_old" "$VD" "fonts screensaver")"; fi
+    mkdir -p "$VD_STATE" 2>/dev/null && : > "$VD_STATE/user-carry.v1" 2>/dev/null || true
+fi
 # 只保留最近一份旧系统 / 程序目录备份（不是用户数据）。删之前查挂载。
 for pat in rootfs.bak host.bak rootfs.failed host.failed; do
     for old in $(ls -dt "$SYS"/$pat.* 2>/dev/null); do
@@ -2455,16 +2544,13 @@ if [ -d "$BAK/ssh" ]; then cp -a "$BAK/ssh" "$VD/ssh" 2>/dev/null || vlog "ssh k
 for f in autoupdate network.conf debugboot; do
     [ -f "$BAK/$f" ] && [ ! -e "$VD/$f" ] && cp -a "$BAK/$f" "$VD/$f" 2>/dev/null || true
 done
-for d in screensaver apps kindle-crash; do
-    [ -d "$BAK/$d" ] || continue
-    mkdir -p "$VD/$d"
-    for f in "$BAK/$d"/*; do
-        [ -f "$f" ] || continue
-        [ -e "$VD/$d/${f##*/}" ] || [ -e "$TMP/veradroid-pw6/apks/${f##*/}" ] || cp -a "$f" "$VD/$d/" 2>/dev/null || true
-    done
-done
 mkdir -p "$VD/apps"
 cp "$TMP/veradroid-pw6/apks/"*.apk "$VD/apps/"
+# fonts/ screensaver/ apps/ kindle-crash/ 里用户的文件（含子文件夹）带进新程序目录：以前只带屏保 / apps / kindle-crash 顶层的文件，
+# fonts/ 整个留在 host.bak 里，下次安装就删了（vd_user_carry）。卸载时留下的 backup/user-files 也放回来。然后记下这个包自带哪些文件。
+vlog "user files carried from $BAK: $(vd_user_carry "$BAK" "$VD" "$VD_USER_DIRS")"
+vlog "user files restored from backup/user-files: $(vd_user_restore "$VD")"
+vd_bundled_save "$TMP/veradroid-pw6"
 # USB 打开 Kindle 盘时看到的说明：veradroid/说明.txt、veradroid/screensaver/把屏保图片放这里.txt（vd_where_notes）
 vd_where_notes
 # Stable identity lives outside $VD because $VD is moved to .bak on every

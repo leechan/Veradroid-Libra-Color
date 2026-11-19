@@ -109,6 +109,7 @@ start_helpers() {
     echo $! > $W/watchdog.pid
     sleep_watch &
     echo $! > $W/sleep.pid
+    type usb_watch_start >/dev/null 2>&1 && usb_watch_start   # 插 USB 线时问要不要切到 USB 传输（usb.sh）
     cmd_listen &
     echo $! > $W/cmd.pid
     jankrec_start      # 卡顿记录（JANKREC=1 才开）

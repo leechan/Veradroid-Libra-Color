@@ -126,6 +126,15 @@ public class HomeActivity extends Activity {
         }
     };
 
+    /**
+     * 系统的分钟广播 / 改时间 / 改时区：马上跑一次 tick。tick 自己按 uptime 排下一次，Kindle 真睡下去时 uptime 不走，
+     * 醒来后要再等最多一分钟；TIME_TICK 按开机时间（含休眠）到期，醒来就到（宿主 alarmfix 之后 AlarmManager 才按时发它）。
+     */
+    private final BroadcastReceiver timeReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) { if (resumed) { handler.removeCallbacks(tick); tick.run(); } }
+    };
+    private boolean timeReceiverOn;
+
     /** 这是盖在应用上面的单独设置页（SettingsActivity），不是桌面。 */
     boolean standalone;
 
@@ -329,7 +338,11 @@ public class HomeActivity extends Activity {
             // 从阅读器 / 应用回来：进度、时间在窗口重新画出来之前就同步改好，不留到之后再补一次
             if (libReady && Lib.refreshProgress(this) && libPage != null) { if (mainTab == TAB_LIB) libPage.refresh(); else libPage.refreshSoon(); }
             refreshStatus();
-            if (blocks != null && Blocks.on(this)) { blocks.dataChanged(); blocksWall(blocks.current()); }
+            if (blocks != null && Blocks.on(this)) {
+                blocks.dataChanged(); blocksWall(blocks.current());
+                // 时钟卡片的签名只到“日期”（perf/home-1core 只重搭数据变了的卡片），离开期间过的分钟要在这里补上，不然要等下一次整分钟
+                if (!inSettings) blocks.tickClock();
+            }
             // 自动更新选了“只提醒”而宿主发现了新版本：列出更新内容让用户选。上面刚让宿主重写状态（status），等它写完再看
             handler.removeCallbacks(updateNotice);
             handler.postDelayed(updateNotice, 2000);
@@ -337,6 +350,11 @@ public class HomeActivity extends Activity {
         if (libReady) Lib.scan(this, 20000);
         handler.removeCallbacks(tick);
         handler.postDelayed(tick, 60000 - System.currentTimeMillis() % 60000 + 200);
+        if (!timeReceiverOn) {
+            IntentFilter tf = new IntentFilter(Intent.ACTION_TIME_TICK);
+            tf.addAction(Intent.ACTION_TIME_CHANGED); tf.addAction(Intent.ACTION_TIMEZONE_CHANGED);
+            try { registerReceiver(timeReceiver, tf); timeReceiverOn = true; } catch (Throwable ignored) { }
+        }
         showUploadResult();
     }
 
@@ -357,6 +375,7 @@ public class HomeActivity extends Activity {
         if (Blocks.on(this) && !ownStart && !standalone) { leftForApp = true; BlocksCards.onLeaveHome(this); }
         ownStart = false;
         handler.removeCallbacks(tick);
+        if (timeReceiverOn) { try { unregisterReceiver(timeReceiver); } catch (Throwable ignored) { } timeReceiverOn = false; }
         if (!ReaderActivity.opening) {   // 打开自带阅读器时由阅读器在第一页画出来时放出状态栏
             StatusBarService.setSuppressed(false);
             StatusBarService.refresh(this);
@@ -2199,6 +2218,8 @@ public class HomeActivity extends Activity {
             section(list, "设备");
             localChoice(list, "后台保留应用", "前台以外最多留几个自己装的应用在后台，多出来的（最久没用的）在换应用 3 秒后停掉，省内存。应用长按 → 保持后台 的不算。",
                 Cleaner.LIMIT_KEY, Cleaner.LIMIT_L, 0, Cleaner.defaultLimit());
+            hostChoice(list, host, "插上 USB 线时询问", "Android 在前台时插上数据线：问要不要切到 USB 传输（退回 Kindle，电脑上就能看到 Kindle 盘）。"
+                + "只用充电器充电、不想被问就选“不询问”。", "USB_ASK", new String[] { "询问", "不询问" }, new String[] { "1", "0" }, "1");
             hostChoice(list, host, "回到 Kindle 的方式", "挂起：系统暂停在后台，再打开几秒就回到现在的界面，但 Kindle 可用内存会少一些。关闭：系统完全退出，内存全部还给 Kindle。", "RETURN_MODE", RETURN_L, RETURN_V, "freeze");
             action(list, "系统与性能", "Wi-Fi 省电、小内存模式、Kindle 界面怎么处置、应用预编译（进度和“全部优化”）。", "打开", new View.OnClickListener() {
                 @Override public void onClick(View v) { HostSettingsActivity.open(HomeActivity.this, "system"); }

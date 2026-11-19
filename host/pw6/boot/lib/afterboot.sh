@@ -233,6 +233,8 @@ shizuku_start() {
     if adb_sh "$sl" >/dev/null 2>&1; then t "shizuku: server started (root)"; else t "shizuku: start failed"; fi
 }
 
+# stop.sh 正在跑（它把自己的 pid 写在 /tmp/veradroid-stop.pid）：after_boot 不再往后台分新的子 shell
+ab_stopping() { ab_sp=$(cat /tmp/veradroid-stop.pid 2>/dev/null); [ -n "$ab_sp" ] && kill -0 "$ab_sp" 2>/dev/null; }
 after_boot() {
     # Re-assert binder before waiting — covers init races that hide the node.
     binder_repair 2>/dev/null || true
@@ -291,7 +293,7 @@ after_boot() {
         fi
     fi
     lmk_tune          # 运行时参数，不持久：每次开机都要做
-    type boot_block_apply >/dev/null 2>&1 && ( boot_block_apply ) &      # 第三方应用的开机自启（memkeep.sh，BOOT_BLOCK）
+    type boot_block_apply >/dev/null 2>&1 && ! ab_stopping && ( boot_block_apply ) &      # 第三方应用的开机自启（memkeep.sh，BOOT_BLOCK）
     trust_unlock      # 剪贴板可读（见 trust_unlock）
     # 默认桌面固定为 VeraHome（装了自带“桌面”入口的应用后，系统会让用户重新选）。cmd 走 binder，不起 JVM，约 0.1 秒。
     adb_sh 'cmd package set-home-activity com.veradroid.home/.HomeActivity' >/dev/null 2>&1
@@ -439,7 +441,14 @@ RDME
         t "after_boot: VeraIME enabled"
     fi
     [ -n "$AB_ONCE" ] && [ -n "$ABV" ] && echo "$ABV" > $ABM
-    ( sleep 90; home_aot ) </dev/null >>$LOG 2>&1 &
+    # sleep 自己不拿 $LOG：stop.sh 杀掉这个子 shell 以后，孤儿 sleep 还开着系统盘上的日志，系统盘卸不掉
+    # （模拟器 PW5 5.16.2.1.1：开机后 90 秒内停止，“after stop: USER STORE / USB NOT CLEAN ... holder=sleep 90”）
+    # 等的时候整个子 shell 都不拿 $LOG（它在系统盘上）；醒来时 Android 已经停了（或正在停）就什么都不做。
+    # stop.sh 只收拾它开始之前就在的进程：开机刚完成就退出时，after_boot 可能在 stop.sh 开始以后才分出这个子 shell，
+    # 以前它带着 >>$LOG 一直活着，系统盘卸不掉（PW5 5.16.2.1.1 模拟器 round49：重进后马上停止，holder=veradroid.sh home）。
+    ab_stopping || ( sleep 90 </dev/null >/dev/null 2>&1; ab_stopping && exit 0; [ -s $W/pid ] || exit 0
+                     { [ ! -f "$SYSTEM_IMG" ] || grep -q " $SYS " /proc/mounts; } || exit 0
+                     exec >>$LOG 2>&1; home_aot ) </dev/null >/dev/null 2>&1 &
     # 可选 DNS：settings.conf 里的 DNS_MODE 在开机后重新应用到 netd（DHCP 会把它改回自动）
     dns_apply
     # 12 / 24 小时制跟 Kindle（tz.sh；值没变就不写）

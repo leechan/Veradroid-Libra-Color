@@ -12,9 +12,13 @@ cd "$(dirname "$0")/.."
 fail() { echo "FAIL: $*"; exit 1; }
 L=cloud/static/bootstrap-legacy.sh; N=cloud/static/bootstrap.sh
 blk() { sed -n "/^# BEGIN $1\$/,/^# END $1\$/p" "$2"; }
+# bootstrap-legacy.sh is the legacy line's own release (docs/legacy-line.md): new-model-only lines (libvdshim.so, 1.02)
+# are left out of the comparison until the legacy installer has them too.
+NX='^             "\$SYS/rootfs/system/lib/libvdshim\.so" \\$'
+grep -q 'system/lib/libvdshim\.so' $L && NX='^$^'
 for b in vd_dl vd_parts; do
     [ -n "$(blk $b $L)" ] || [ -n "$(blk $b $N)" ] || fail "no installer has the $b block"
-    if [ -n "$(blk $b $L)" ] && [ -n "$(blk $b $N)" ]; then [ "$(blk $b $L)" = "$(blk $b $N)" ] || fail "$b block differs between $L and $N"; fi
+    if [ -n "$(blk $b $L)" ] && [ -n "$(blk $b $N)" ]; then [ "$(blk $b $L)" = "$(blk $b $N | grep -v -- "$NX")" ] || fail "$b block differs between $L and $N"; fi
 done
 sh -n $L || fail "syntax $L"; sh -n $N || fail "syntax $N"
 [ -n "$(blk vd_dl $L)" ] || L=$N      # 下面跑的是有这一块的那个安装器里的代码

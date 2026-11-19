@@ -50,7 +50,20 @@ display_prepare() {
     m=$(cat $SYS/model 2>/dev/null | tr -d '\r\n')
     [ -n "$m" ] && echo "$m" > $X/model
     hwc_prepare
+    vdshim_prepare
     chmod -R 777 $X
+}
+# ashmem 垫片（android/device/veradroid/kindle/shim/vdshim.c，init 给每个进程 LD_PRELOAD）也随宿主程序发（bin/libvdshim.so），
+# 开机前换掉镜像里的那份：镜像里的旧版对 ASHMEM_GET_PROT_MASK 一律回答 rwx，应用自带的 Chromium 内核（番茄小说的
+# libwebviewbytedance.so）把共享内存设成只读后检查不过，每次启动 SIGTRAP，应用随后进自己的“安全模式”
+# （用户诊断 PW6 5.17.1，2026-11-19）。先写 .new 再 mv：镜像里的文件和回退用的旧镜像是硬链接，不能原地改。
+vdshim_prepare() {
+    vs_dst=$R/system/lib/libvdshim.so
+    [ -f "$VD/bin/libvdshim.so" ] && [ -f "$vs_dst" ] || return 0
+    cmp -s "$VD/bin/libvdshim.so" "$vs_dst" && return 0
+    cp "$VD/bin/libvdshim.so" "$vs_dst.new" && chmod 644 "$vs_dst.new" && mv -f "$vs_dst.new" "$vs_dst" &&
+        t "ashmem: libvdshim.so installed" || { rm -f "$vs_dst.new"; t "ashmem: libvdshim.so not installed, image copy kept"; }
+    return 0
 }
 # 系统合成：hwcomposer.kindle.so 随宿主程序发（bin/），开机前装进系统的 /system/lib/hw；
 # 用不用由 $X/hwc.off 决定（模块自己在 SurfaceFlinger 打开它时看这个文件），所以装着也不影响 KFB_HWC=0 的机器。

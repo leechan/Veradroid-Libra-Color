@@ -308,10 +308,24 @@ final class TaskCards {
         @Override void bind(Map<String, String> m) {
             String state = m.get("state");
             long age = now() - num(m, "time", now());
-            boolean act = "running".equals(state);
-            showIf(act);
-            if (!act) return;
+            boolean run = "running".equals(state);
+            // 用户点了“立即优化”（宿主写 manual=1）还在等：也显示出来，写明在等什么，不让人以为没反应
+            boolean wait = !run && "1".equals(m.get("manual")) && ("waiting".equals(state) || "paused".equals(state));
+            showIf(run || wait);
+            if (!run && !wait) return;
             long i = num(m, "index", 0), n = num(m, "total", 0);
+            if (wait) {
+                String msg = m.get("msg");
+                set(head, "等待优化应用" + (n > 0 ? " · 还有 " + Math.max(1, n - i) : ""));
+                setCaps(caps, "Optimizing apps · waiting");
+                String code = m.get("code");
+                set(title, ("foreground".equals(code) || "running".equals(code)) ? label(getContext(), m.get("pkg")) : "");
+                set(pct, "");
+                bar.setValue(n > 0 ? (int) (i * 100 / n) : 0);
+                set(l1, msg != null && msg.length() > 0 ? msg : "条件满足后马上开始");
+                set(l2, ""); set(steps, ""); set(elapsed, "");
+                return;
+            }
             set(head, "正在优化应用" + (n > 0 ? " " + i + " / " + n : ""));
             setCaps(caps, "Optimizing apps");
             set(title, label(getContext(), m.get("pkg")));

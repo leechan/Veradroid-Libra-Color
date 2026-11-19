@@ -891,7 +891,7 @@ $('appBatchDel').onclick=function(){appDel(Object.keys(ASEL))};$('appBatchStop')
 $('compAll').onclick=function(){post('/api/app/compile',{pkg:'all'}).then(function(j){toast(j.ok?'所有还没优化的应用都排上了':(j.msg||'失败'),j.ok?'ok':'err');loadCompile()})};
 function loadCompile(){api('/api/compile').then(function(j){var was=COMP.state==='running'?COMP.pkg:null;COMP=j;var on=j.state&&j.state!=='idle';$('compCard').hidden=!on&&!j.last;
  var R={battery:'电量低',memory:'内存不够',frozen:'Android 冻结中',off:'已关闭'};
- var s=j.state==='running'?'<span class="badge acc"><span class="spin"></span>正在优化</span> '+esc(j.label||j.pkg||'')+(j.total?'（'+j.index+' / '+j.total+'）':''):j.state==='waiting'||j.state==='paused'?'<span class="badge warn">等待中</span> '+esc(j.msg||R[j.reason]||j.reason||''):'<span class="badge ok">空闲</span>';
+ var s=j.state==='running'?'<span class="badge acc"><span class="spin"></span>正在优化</span> '+esc(j.label||j.pkg||'')+(j.total?'（'+j.index+' / '+j.total+'）':''):j.state==='waiting'||j.state==='paused'?'<span class="badge warn">等待中</span> '+esc(j.msg||R[j.reason]||j.reason||''):'<span class="badge ok">空闲</span>'+(j.msg?' '+esc(j.msg):'');
  if(j.last){var l=j.last.split(' ');s+='<span class="sub"> · 上一个：'+esc(l[0])+' '+(l[1]==='ok'?'完成':'失败')+(l[2]?'，'+l[2]+' 秒':'')+'</span>'}
  setHTML('compSt',s+'<div class="sub" style="margin-top:6px">装好的应用会在后台自动编译成更快的版本（只在充电或电量充足、内存够的时候做）。</div>');
  if(cur==='apps'&&was&&was!==j.pkg)renderApps()}).catch(function(){})}

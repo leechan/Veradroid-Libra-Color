@@ -172,7 +172,7 @@ vd_where_notes() {
     vd_note_put "$vwn/说明.txt" "VeraDroid 程序文件夹（不要删、不要改名；书和 Android 的数据不在这里）
 
 你可能会用到的：
-  screensaver/            屏保图片：把 jpg / png 放进来，在 Android 的 设置 → 屏保 里选
+  screensaver/            屏保图片：把 jpg / png / webp / bmp / gif 放进来，在 Android 的 设置 → 屏保 里选
   fonts/                  字体：就是 Android 里的 内部存储/Fonts，把 ttf / otf 放进来（字体商店装的也在这里）；
                           升级、重装、卸载都会留着
   update/                 离线更新：把离线包原样放进来，下次点“VeraDroid 启动”时自动安装
@@ -186,9 +186,11 @@ vd_where_notes() {
 其余的（boot、bin、apps、state 等）是程序本身。
 找不到书库入口，也可以用 KUAL 菜单：VeraDroid → 恢复书库入口。"
     mkdir -p "$vwn/screensaver" 2>/dev/null || return 0
-    vd_note_put "$vwn/screensaver/把屏保图片放这里.txt" "把屏保图片（jpg / png）放在这个文件夹里。
+    vd_note_put "$vwn/screensaver/把屏保图片放这里.txt" "把屏保图片（jpg / png / webp / bmp / gif，扩展名大小写都行）放在这个文件夹里。
 Kindle 休眠时，VeraDroid 显示这里的图片。在 Android 的 设置 → 屏保 里可以选“轮换全部图片”或只用其中一张。
-竖图、和屏幕差不多大最好；单张不要超过 8 MB。default.png 是自带的图，不算。
+竖图、和屏幕差不多大最好；单张不要超过 32 MB。default.png 是自带的图，不算。
+打开一次 设置 → 屏保，桌面会把图转成适合这块屏的灰度图（webp 要转过才能用）；页面上会写哪张用不了、为什么。
+手机拍的 HEIC 照片用不了，请先转成 JPG。不要放进 Kindle 盘根目录的 screensaver 或 linkss 文件夹：VeraDroid 不读那里。
 
 图片也可以放在 Android 的 内部存储/Screensaver 文件夹（传书网页的“文件”里能上传，屏保页的“从内部存储导入…”也会放到那里）。"
     return 0
@@ -1910,6 +1912,7 @@ vd_parts_keep_pristine() {
     for f in "$SYS"/rootfs/system/priv-app/VeraHome/VeraHome.apk "$SYS"/rootfs/system/priv-app/VeraHome/oat/*/* \
              "$SYS"/rootfs/system/app/VeraIME/VeraIME.apk "$SYS"/rootfs/system/app/VeraIME/oat/*/* \
              "$SYS/rootfs/system/lib/libandroid_runtime.so" "$SYS/rootfs/system/bin/netd" "$SYS/rootfs/system/lib/hw/hwcomposer.kindle.so" \
+             "$SYS/rootfs/system/lib/libvdshim.so" \
              "$SYS/rootfs/system/build.prop" "$SYS/rootfs/init.kindle.rc"; do
         [ -f "$f" ] || continue
         s=$(sha256sum "$f" 2>/dev/null | cut -c1-64); [ -n "$s" ] || continue

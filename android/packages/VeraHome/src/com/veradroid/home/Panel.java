@@ -107,8 +107,8 @@ final class Panel {
 
     // 第一屏的圆形开关（设置里可以自己挑 3 到 6 个、排顺序，键 quick）：id -> 开关
     private final java.util.Map<String, Round> quick = new java.util.LinkedHashMap<String, Round>();
-    static final String[] QUICK_ID = { "wifi", "bt", "invert", "clear", "settings", "clean", "xfer", "shot", "kindle", "anim", "switch", "restart", "stop", "lightf" };
-    static final String[] QUICK_NAME = { "Wi-Fi", "蓝牙", "反色", "清残影", "全部设置", "清后台", "传书", "截图", "回 Kindle", "翻页动画", "切换应用", "重启", "关机", "浅色过滤" };
+    static final String[] QUICK_ID = { "wifi", "bt", "invert", "clear", "settings", "clean", "xfer", "shot", "kindle", "anim", "switch", "restart", "stop", "lightf", "home" };
+    static final String[] QUICK_NAME = { "Wi-Fi", "蓝牙", "反色", "清残影", "全部设置", "清后台", "传书", "截图", "回 Kindle", "翻页动画", "切换应用", "重启", "关机", "浅色过滤", "回桌面" };
     /** 浅色过滤（宿主 KFB_LIGHTF）：比阈值浅的颜色变纯白（epd.c build_lut）；深色加深（KFB_DARKEN）：其余部分再压深一档 */
     static final String[] LIGHTF_L = { "关", "弱", "中", "强" };
     static final String[] LIGHTF_V = { "0", "1", "2", "3" };
@@ -508,6 +508,7 @@ final class Panel {
         if ("xfer".equals(id)) return Icons.Kind.UPLOAD;
         if ("shot".equals(id)) return Icons.Kind.CAMERA;
         if ("kindle".equals(id)) return Icons.Kind.EXIT;
+        if ("home".equals(id)) return Icons.Kind.HOME;
         if ("clean".equals(id)) return Icons.Kind.CLEAN;
         if ("anim".equals(id)) return Icons.Kind.SWITCH;
         if ("lightf".equals(id)) return Icons.Kind.EYE;
@@ -529,6 +530,7 @@ final class Panel {
         else if ("xfer".equals(id)) toggleXfer();
         else if ("shot".equals(id)) screenshot();
         else if ("kindle".equals(id)) { HostLink.cmd("exit"); finish(); }
+        else if ("home".equals(id)) openHome(false);
         else if ("anim".equals(id)) toggleAnim();
         else if ("lightf".equals(id)) { lightfOn = lightfOn > 0 ? 0 : lightfLast; HostLink.settings("KFB_LIGHTF=" + lightfOn + "\n"); paintToggles(); }
         else if ("settings".equals(id)) { finish(); SettingsActivity.open(ctx); }   // 盖在当前应用上面，返回回到它
@@ -552,10 +554,13 @@ final class Panel {
         finish();
     }
 
-    /** 蓝牙归 Kindle 管（Android 里没有蓝牙服务）：点开“蓝牙翻页器”页，开关、配对都在那里。 */
+    /** 蓝牙归 Kindle 管（Android 里没有蓝牙服务）。点一下只是开关（和 Wi-Fi 方块一样，用户反馈 PW6 1.01：点了进设置页不符合直觉），
+     *  命令经宿主开关 Kindle 的蓝牙（bt.sh 的 enable / disable，打开最多约 15 秒）；配对、按键映射在长按打开的“蓝牙翻页器”页里。 */
     private void toggleBt() {
-        finish();
-        BluetoothActivity.open(ctx);
+        btOn = btOn == 1 ? 0 : 1;
+        HostLink.cmd(btOn == 1 ? "bt enable" : "bt disable");
+        paintToggles();
+        VeraToast.show(ctx, btOn == 1 ? "正在打开蓝牙…（长按进入配对）" : "正在关闭蓝牙…");
     }
 
     private void toggleAnim() {

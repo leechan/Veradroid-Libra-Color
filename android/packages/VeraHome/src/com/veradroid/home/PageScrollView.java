@@ -83,9 +83,24 @@ class PageScrollView extends ScrollView {
     private int layoutGen, stopsGen = -1, stopsPad, stopsH;
     private java.util.List<Integer> stopsCache;
     @Override protected void onLayout(boolean changed, int l, int t, int r, int b) {
-        super.onLayout(changed, l, t, r, b);
+        inLayout = true;
+        try { super.onLayout(changed, l, t, r, b); } finally { inLayout = false; }
         layoutGen++;
+        // 内容变了（设置页“应用预编译”那一行状态字变长 / 变短）时 ScrollView 自己会挪滚动位置（夹到新的底边、或者让刚点过的按钮
+        // 离开上边的渐隐区），翻好的页就错开半行，页顶露出上一条的下半截（测试机 VeraHome 88：点“立即优化”以后）。翻页翻到哪就停在哪。
+        if (getChildCount() > 0 && pageY >= 0 && getScrollY() != pageY) {
+            int max = Math.max(0, getChildAt(0).getHeight() - getHeight());
+            int y = Math.min(pageY, max);
+            if (y != getScrollY()) super.scrollTo(0, y);
+        }
     }
+
+    /** 页面上的控件拿到焦点 / 要求显示某块区域时不自动滚：这里只按整页翻（自动滚会停在两页之间）。 */
+    @Override protected int computeScrollDeltaToGetChildRectOnScreen(android.graphics.Rect rect) { return 0; }
+
+    /** 最后一次翻页（或回到顶）停的位置；排版以后照样停在这里。 */
+    private int pageY = 0;
+    private boolean inLayout;   // ScrollView 排版时自己调的 scrollTo（夹底边、滚到焦点）不算翻页
 
     private java.util.List<Integer> stops() {
         if (stopsCache != null && stopsGen == layoutGen && stopsPad == tailPad && stopsH == getHeight()) return stopsCache;
@@ -217,6 +232,7 @@ class PageScrollView extends ScrollView {
 
     @Override public void scrollTo(int x, int y) {
         super.scrollTo(x, y);
+        if (!inLayout) pageY = getScrollY();
         if (y == 0 && tailPad > 0 && getChildCount() > 0) {
             android.view.View ch = getChildAt(0);
             ch.setPadding(ch.getPaddingLeft(), ch.getPaddingTop(), ch.getPaddingRight(), ch.getPaddingBottom() - tailPad);

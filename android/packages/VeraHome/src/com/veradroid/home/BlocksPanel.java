@@ -257,10 +257,17 @@ final class BlocksPanel {
         appBar.setVisibility(View.GONE);
         body.addView(appBar, Blocks.gap(ctx, 12));
 
-        // 回到 Kindle
-        body.addView(Blocks.button(ctx, "回到 Kindle", false, new View.OnClickListener() {
+        // 回到桌面 | 回到 Kindle：在任何应用里下拉面板都能一下回到 VeraDroid 桌面
+        LinearLayout go = new LinearLayout(ctx);
+        go.addView(Blocks.button(ctx, "回到桌面", false, new View.OnClickListener() {
+            @Override public void onClick(View v) { goHome(); }
+        }), Blocks.weight(1));
+        LinearLayout.LayoutParams kp = Blocks.weight(1);
+        kp.leftMargin = dp(8);
+        go.addView(Blocks.button(ctx, "回到 Kindle", false, new View.OnClickListener() {
             @Override public void onClick(View v) { HostLink.cmd("exit"); finish(); }
-        }), Blocks.gap(ctx, 12));
+        }), kp);
+        body.addView(go, Blocks.gap(ctx, 12));
 
         // 通知：有才显示
         notesBox = group("通知");
@@ -408,6 +415,7 @@ final class BlocksPanel {
         if ("xfer".equals(id)) return Icons.Kind.UPLOAD;
         if ("shot".equals(id)) return Icons.Kind.CAMERA;
         if ("kindle".equals(id)) return Icons.Kind.EXIT;
+        if ("home".equals(id)) return Icons.Kind.HOME;
         if ("clean".equals(id)) return Icons.Kind.CLEAN;
         if ("anim".equals(id)) return Icons.Kind.SWIPE;
         if ("lightf".equals(id)) return Icons.Kind.EYE;
@@ -435,6 +443,7 @@ final class BlocksPanel {
         }
         else if ("shot".equals(id)) { finish(); handler.postDelayed(new Runnable() { @Override public void run() { HostLink.cmd("screenshot"); } }, 1200); }
         else if ("kindle".equals(id)) { HostLink.cmd("exit"); finish(); }
+        else if ("home".equals(id)) goHome();
         else if ("anim".equals(id)) { animOn = animOn > 0 ? 0 : animLast; HostLink.settings("KFB_ANIM_MODE=" + animOn + "\n"); paintTiles(); }
         else if ("lightf".equals(id)) { lightfOn = lightfOn > 0 ? 0 : Panel.lightfLast; HostLink.settings("KFB_LIGHTF=" + lightfOn + "\n"); paintTiles(); }
         else if ("settings".equals(id)) {
@@ -445,6 +454,12 @@ final class BlocksPanel {
         else if ("restart".equals(id)) { HostLink.cmd("restart"); finish(); }
         else if ("stop".equals(id)) HostLink.cmd("stop");
         else if ("clean".equals(id)) { String prev = Cleaner.previousApp(ctx); finish(); Panel.cleanNow(ctx, prev); }
+    }
+
+    /** 回到 VeraDroid 桌面（和经典面板的“桌面”一样）：先收起面板再开桌面。 */
+    private void goHome() {
+        finish();
+        start(HomeActivity.homeIntent(ctx));
     }
 
     private void start(Intent i) {

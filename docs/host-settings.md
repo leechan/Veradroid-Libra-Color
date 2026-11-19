@@ -98,6 +98,26 @@ dex2oat 自带 9.5 分钟看门狗（nice 19 下大应用会被它杀掉，模�
 - dex2oat 线程：充电 + 空闲才用系统默认（PW6 两线程，峰值 378 MB）；其余一律 1 线程（峰值约 67 MB）。`COMPILE_THREADS` 可强制。
 - 空闲时内存 10 分钟都不够：工作进程先停但队列保留，30 分钟后看门狗再起（以前是整个队列丢掉，到下次开机 / 装应用才再排）。
 - 屏保时 Android 冻着编不了：不为编译解冻、也不推迟屏保，醒来接着编。
+- **立即优化（手动开始，2026-11-19）**：设置 → 系统与性能 → 应用预编译的“立即优化”、长按应用 / 传书网页的“优化”都走 `compile all|<包>`，
+  记 `$W/compile.manual`（这一批编完或 `COMPILE_MANUAL_S`=7200 秒后失效）。手动时不等“几分钟不碰屏幕”（needidle）、不按“在用”的
+  400 MB 门槛（用空闲的 180 / 120 MB），排着的应用在后台跑着就马上 `am kill`（不等 10 分钟），结束不了的 1 GB 机型过
+  `COMPILE_MANUAL_RUNWAIT_S`（30）秒照样编，512 MB 机型等它退出并提示去“切换应用”里划掉。保留：电量 < 20 % 不编、前台应用不编、
+  冻结不编、给安装让路、超时；编着时在用且可用内存 < `COMPILE_MANUAL_ABORT_MB`（100 / `_LOW` 60）就停掉、手动到此为止、等空闲。
+  命令收到马上写状态（什么都不用编时 `state=idle code=nothing msg=所有应用都已经优化好了`，以前桌面一直停在“已排队，正在开始…”）；
+  `all` 也排上 dumpsys 说编好的代码不能用的包（stale）；在等的工作进程被 `$W/compile.wake` 叫醒，马上按新条件重写状态。
+  状态每行都有 `code=`（starting / nothing / install / frozen / battery / busy / memory / running / foreground / aot / done）、`time=`，手动时 `manual=1`。
+- **特别大的应用（2026-11-19）**：apk 里 classes*.dex 合计 ≥ `COMPILE_BIG_DEX_MB`（120；番茄免费小说 7.4.5 = 243 MB，
+  微信读书 67 MB、多看 / 豆瓣 44 MB），或者这个包（任何一次安装）speed 超时过：不编 speed。有 JIT 档案（用过）编 speed-profile，没有
+  就留着安装时的 odex（interpret-only，不再为它重编一遍）；speed-profile 也超时过的只要 interpret-only。超时记录只挡超时的那个过滤器。
+  前台有别的应用（不是桌面）时不开始（`code=large`），编着 / 补编着有应用到了前台就停（busy，等空闲）。测试机实测番茄：安装时 Android
+  自己的 interpret-only dex2oat 峰值 678 MB（这一步不归宿主管）；之后宿主不排队；用过一次以后 speed-profile 272 s、dex2oat 峰值
+  765 MB（RSS + 交换），桌面在前台时做，常驻的微信读书没被杀。
+- 后台跑着、`am kill` 结束不了的排队应用：手动和自动一样，请过结束以后 `COMPILE_RUNWAIT_S`（30）秒照样编（1 GB 机型）；
+  512 MB 机型等它退出，提示去“切换应用”划掉。自动时什么时候请它结束照旧（空闲 + `COMPILE_RUNNING_WAIT_S`）。
+- 预读（`APP_PREFAULT`）：开机完成后看门狗第一轮就做（不等编译的一分钟）；可用内存 < 400 MB 时不记成做完，之后每轮再看，每个 odex 读过记在
+  `$W/prefault.d/`（stop.sh 清掉）。测试机实测（1.01，停 Android + 清页缓存模拟一次更新，再开机后第一次打开微信读书，am_activity_launch_time）：
+  开机 150 s 后打开：预读过 4.9 / 4.9 s，没预读 7.3 / 7.5 s；开机 30 s 后打开：新的（看门狗第一轮就预读）5.8 / 6.1 s，1.01（60 s 后才预读）6.4 / 7.0 s。
+  页缓存热的时候 4.5–4.8 s，清掉页缓存 9–10 s。另一台测试机升级到 1.01 后第一次打开（开机 47 s，预读因内存跳过）7.5 s。
 - 过滤器仍是 speed。speed-profile 在 7.1 上只编 JIT 记下的热点方法，更新后刚启动的应用还没有档案，编出来接近 interpret-only；
   阅读类应用 speed 的翻页 / 打开书实测更好。编得久 / 占内存的代价由上面的调度挡住。
 
@@ -386,8 +406,25 @@ PW5 / KT5 / KT6 / Scribe（`host/k49`）。PW6（`host/pw6`）没有镜像，And
   按钮“用 Kindle 自带的”“轮换全部图片”；点一张 = 只用这一张；“从内部存储导入…”把一张图复制进 `/sdcard/Screensaver/` 并选上。
 - 选择文件 `/sdcard/Screensaver/.vd-saver`（宿主 `$SYS/data/media/0/Screensaver/.vd-saver`）：`mode=kindle|rotate|one`，`one` 时 `file=sd/<文件名>` 或 `file=vd/<文件名>`。
   宿主只认文件名（不含 `/`、不以 `.` 开头），文件不在了退回轮换。**没有这个文件 = 以前的做法**（有用户图就轮换，没有就 Kindle 自带），老用户不变。
-- Android 看不到 `veradroid/screensaver/`：页面打开时发 `saver list`，宿主把那里的图（每张 ≤ 8 MB，最多 60 张）和一张 Kindle 自带屏保图（`.kindle-preview.png`）拷到 `/dev/kfb/saver/`（tmpfs），
+- Android 看不到 `veradroid/screensaver/`：页面打开时发 `saver list`，宿主把那里的图（每张 ≤ 32 MB、合计 ≤ 96 MB，最多 60 张，`cp -p` 保留修改时间）和一张 Kindle 自带屏保图（`.kindle-preview.png`）拷到 `/dev/kfb/saver/`（tmpfs），
+  另写 `.skipped`（太大没拷的：文件名、字节数）、`.panel`（fbink 的 `viewWidth viewHeight`）、`.elsewhere`（Kindle 盘上 `screensaver`、`linkss/screensavers` 等 VeraDroid 不读的文件夹里有几张图），
   写 `ctl/saver.listed`；页面关掉发 `saver done` 删掉。
+
+### 格式（分支 `fix/saver-formats`，2026-11-19，用户问“屏保一定要 png 格式吗”）
+
+- 以前宿主和桌面都只认扩展名 `png / jpg / jpeg`（大小写都行），别的格式放进去不报错也不显示；页面上只写“jpg / png”。
+- 宿主的 fbink（新机型 `host/*/bin/fbink` v1.25.0-543，老机型包里的 v1.25.0，都是 `IMAGE=1`，stb_image）认 **JPEG（含渐进式）/ PNG / BMP / GIF（第一帧）/ TGA / PNM**；
+  不认 WEBP、HEIC、AVIF、TIFF。没有带图片支持的 fbink 时退回的 `eips -g` 只认 PNG。
+- 现在：
+  - 两个文件夹里扩展名 `png jpg jpeg jpe jfif bmp gif webp heic heif avif tif tiff`（不分大小写，`saver_is_img` / `SaverFormat.EXTS`）都列出来；格式看文件头（`saver_kind` / `SaverFormat.sniff`），不看扩展名。
+  - 桌面打开屏保页（和“从内部存储导入…”）时，把每张图转成这块屏用的 8 位灰度 PNG（`SaverImage.convert`：BitmapFactory 解码，大图先 inSampleSize 粗缩，
+    按 `.panel` 的面板大小按比例缩放，JPEG 的 EXIF 方向转正，透明 PNG 保留透明 = 照旧叠在当前页上，其余铺白底），放在 `Screensaver/.vd-cache/sd-<名字>.png` / `vd-<名字>.png`，
+    旁边 `.src` = 原图 `stat -c '%s %Y'`。原图删了，转好的那张下次打开页面时删掉。
+  - 进屏保时（`saver_resolve`）：`.src` 对得上就画转好的那张；没转过就画原图（fbink 认的格式）；webp / heic 之类没转过的跳过、写日志 `screensaver: skipped … (webp: …)`。
+    轮到的图用不了或 fbink 画不出来（坏图）换下一张，最多试 8 张，都不行用 Kindle 自带的 `bg_ss*.png` / `default.png`，不会留在原来的画面上。
+  - 页面上用不了的图格子里写“用不了 + 原因”，点它弹出原因（HEIC：请先转成 JPG；坏图；太大 > 32 MB），不会被选上；放错文件夹（Kindle 盘的 `screensaver` / `linkss`、
+    Android 里小写的 `screensaver`）时页面上写在哪、有几张。
+- 测试：`tests/saver-formats-test.sh`（宿主函数 + 假 fbink 轮换 10 次 + `saver list`；JVM 测 SaverFormat 的文件头、缩放、PNG 编码）。
 
 ## 11. 单手模式、崩溃上传先问
 

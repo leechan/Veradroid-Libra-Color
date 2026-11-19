@@ -45,11 +45,11 @@ public class ScreensaverActivity extends Activity {
     private TextView modeText, foundText, pageLabel;
     /** 三个放图的地方，和宿主写进两个文件夹的“把屏保图片放这里.txt”说的一样。 */
     static final String WHERE =
-            "图片（jpg / png，竖图最好）放在这三个地方都行：\n"
+            "图片（jpg / png / webp / bmp / gif，大小写都行，竖图最好）放在这三个地方都行：\n"
           + "· USB 连电脑：Kindle 盘 → veradroid → screensaver 文件夹\n"
           + "· Android 里：内部存储 → Screensaver 文件夹（下面的“从内部存储导入…”也放到这里）\n"
           + "· 传书网页：“文件” → Screensaver 文件夹 → 上传\n"
-          + "放好后回到这一页就能看到。";
+          + "放好后回到这一页就能看到（打开这一页时会把图转成适合这块屏的灰度图）。手机的 HEIC 照片请先转成 JPG。";
     private Blocks.Pager pager;
     private int pageNo;
     private String mode, file;   // 当前选择
@@ -59,8 +59,12 @@ public class ScreensaverActivity extends Activity {
         final String key;   // "kindle" | "sd/名字" | "vd/名字"
         final File f;       // 缩略图来源（Kindle 自带的预览可能没有）
         final String label;
+        volatile String why;   // 用不了的原因（null = 能用 / 还没查）
         Item(String key, File f, String label) { this.key = key; this.f = f; this.label = label; }
     }
+    private volatile String urgent;   // 刚选中的那张：转换线程先转它
+    private int nSd, nVd;
+    private String elsewhere = "";
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -125,10 +129,13 @@ public class ScreensaverActivity extends Activity {
         HostLink.cmd("saver list");
         handler.postDelayed(new Runnable() {
             int n = 0;
+            boolean shown;
             @Override public void run() {
                 if (isFinishing()) return;
-                if (new File(HostLink.CTL + "saver.listed").exists() || ++n > 20) { load(); return; }
-                handler.postDelayed(this, 200);
+                if (new File(HostLink.CTL + "saver.listed").exists()) { load(); return; }
+                // 4 秒还没拷完（图多、图大）：先显示 Android 里的图，拷完再整页重读一次（最多再等 40 秒）
+                if (++n >= 20 && !shown) { shown = true; load(); }
+                if (n < 220) handler.postDelayed(this, 200);
             }
         }, 200);
     }
@@ -142,10 +149,8 @@ public class ScreensaverActivity extends Activity {
     private int dp(int v) { return Ui.dp(this, v); }
     private LinearLayout.LayoutParams weight() { return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1); }
 
-    private static boolean isImage(String n) {
-        String s = n.toLowerCase(java.util.Locale.ROOT);
-        return !s.startsWith(".") && (s.endsWith(".png") || s.endsWith(".jpg") || s.endsWith(".jpeg"));
-    }
+    /** 屏保图的扩展名：png / jpg / jpeg / webp / bmp / gif / heic……（SaverFormat.EXTS，不分大小写；heic 之类会标“用不了”并说原因）。 */
+    private static boolean isImage(String n) { return SaverFormat.isCandidate(n); }
 
     private static List<File> images(String dir) {
         List<File> out = new ArrayList<File>();
@@ -160,14 +165,97 @@ public class ScreensaverActivity extends Activity {
         items.clear();
         File kp = new File(VD_DIR, ".kindle-preview.png");
         items.add(new Item("kindle", kp.isFile() ? kp : null, "Kindle 自带"));
-        int nSd = 0, nVd = 0;
+        nSd = 0; nVd = 0;
         for (File f : images(SD_DIR)) { items.add(new Item("sd/" + f.getName(), f, f.getName())); nSd++; }
         for (File f : images(VD_DIR)) { items.add(new Item("vd/" + f.getName(), f, f.getName() + "（USB）")); nVd++; }
+        // 宿主没拷过来的（太大）：也列出来，说为什么用不了
+        for (String[] l : tsv(new File(VD_DIR, ".skipped"))) {
+            if (l.length < 2 || !isImage(l[0])) continue;
+            Item it = new Item("vd/" + l[0], null, l[0] + "（USB）");
+            long mb = 0; try { mb = Long.parseLong(l[1]) >> 20; } catch (NumberFormatException e) { }
+            it.why = "太大（" + mb + " MB）：请缩小到 32 MB 以内再放进 veradroid/screensaver";
+            items.add(it); nVd++;
+        }
+        elsewhere = elsewhere();
         if (mode == null) mode = items.size() > 1 ? "rotate" : "kindle";   // 没选过：宿主照旧做法，有用户图就轮换
         foundText.setText(found(nSd, nVd));
         pageNo = 0;
         showMode();
-        renderPage();
+        prepare();
+    }
+
+    private static List<String[]> tsv(File f) {
+        List<String[]> out = new ArrayList<String[]>();
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(new FileInputStream(f), "UTF-8"));
+            try { String l; while ((l = r.readLine()) != null && out.size() < 200) if (l.length() > 0) out.add(l.split("\t")); } finally { r.close(); }
+        } catch (Exception e) { }
+        return out;
+    }
+
+    /** 放错地方的图：Kindle 盘上的 screensaver、linkss/screensavers（宿主数好写在 .elsewhere），Android 里小写的 screensaver 之类。 */
+    private String elsewhere() {
+        StringBuilder b = new StringBuilder();
+        for (String[] l : tsv(new File(VD_DIR, ".elsewhere"))) if (l.length >= 2) b.append(b.length() > 0 ? "、" : "").append("Kindle 盘的 ").append(l[0]).append("（").append(l[1]).append(" 张）");
+        File[] top = new File("/data/media/0").listFiles();
+        if (top != null) for (File d : top) {
+            String n = d.getName();
+            if (!d.isDirectory() || n.equals("Screensaver") || !n.toLowerCase(java.util.Locale.ROOT).startsWith("screensaver")) continue;
+            int c = images(d.getPath()).size();
+            if (c > 0) b.append(b.length() > 0 ? "、" : "").append("内部存储的 ").append(n).append("（").append(c).append(" 张）");
+        }
+        return b.length() == 0 ? "" : "\n另外在 " + b + " 里有图片，但屏保不读那里：请移到上面说的文件夹（注意大小写：Screensaver / screensaver）。";
+    }
+
+    /**
+     * 后台：先快速查一遍每张能不能用（文件头、尺寸），再显示第一页；然后逐张转成灰度 PNG（SaverImage.convert，没变的跳过）。
+     * 转换失败的标上原因；在当前页上的话重画这一页。
+     */
+    private volatile int prepGen;   // 重读时作废上一轮的检查 / 转换线程
+
+    private void prepare() {
+        final int myPrep = ++prepGen;
+        final List<Item> its = new ArrayList<Item>(items);
+        final boolean vdListed = new File(HostLink.CTL + "saver.listed").exists();
+        new Thread(new Runnable() {
+            @Override public void run() {
+                for (Item it : its) if (it.f != null && it.why == null && !it.key.equals("kindle")) it.why = SaverImage.check(it.f);
+                handler.post(new Runnable() { @Override public void run() { if (!isFinishing() && myPrep == prepGen) { showFound(); renderPage(); } } });
+                if (myPrep != prepGen) return;
+                java.util.Set<String> keys = new java.util.HashSet<String>();
+                for (Item it : its) keys.add(it.key);
+                SaverImage.prune(keys, vdListed);
+                int[] p = SaverImage.panel(ScreensaverActivity.this);
+                for (int i = 0; i < its.size() && !isFinishing() && myPrep == prepGen; i++) {
+                    String u = urgent;
+                    if (u != null) { urgent = null; for (Item it : its) if (it.key.equals(u)) convertOne(it, p); }
+                    convertOne(its.get(i), p);
+                }
+                String u = urgent;
+                if (u != null) { urgent = null; for (Item it : its) if (it.key.equals(u)) convertOne(it, p); }
+            }
+        }, "saver-convert").start();
+    }
+
+    private void convertOne(final Item it, int[] p) {
+        if (it.f == null || it.why != null || it.key.equals("kindle")) return;
+        final String why = SaverImage.convert(it.key, it.f, p[0], p[1]);
+        if (why == null) return;
+        it.why = why;
+        handler.post(new Runnable() {
+            @Override public void run() {
+                if (isFinishing()) return;
+                showFound();
+                int idx = items.indexOf(it);
+                if (idx >= pageNo * PER && idx < (pageNo + 1) * PER) renderPage();
+            }
+        });
+    }
+
+    private void showFound() {
+        int bad = 0;
+        for (Item it : items) if (it.why != null) bad++;
+        foundText.setText(found(nSd, nVd) + (bad > 0 ? "其中 " + bad + " 张用不了（格子上写着原因）。" : "") + elsewhere);
     }
 
     /** “找到 N 张你的图片”：分开说两个文件夹各几张，一张都没有时说下一步做什么。 */
@@ -201,6 +289,7 @@ public class ScreensaverActivity extends Activity {
             if (!tmp.renameTo(new File(SEL))) throw new java.io.IOException("rename");
             new File(SEL).setReadable(true, false);
             mode = m; file = f;
+            if (f != null) urgent = f;   // 宿主画不了原图（webp 之类）时要靠转好的那张：先转它
         } catch (Exception e) {
             VeraToast.show(this, "没能保存选择：" + e.getMessage());
             return;
@@ -264,7 +353,11 @@ public class ScreensaverActivity extends Activity {
             bg.setStroke(sel ? dp(4) : 2, Color.BLACK);
             cell.setBackground(bg);
             cell.setPadding(dp(4), dp(4), dp(4), dp(4));
-            if (bm[i] != null) {
+            if (it.why != null) {
+                TextView bad = Ui.text(this, "用不了\n" + shortWhy(it.why), 15, true);
+                bad.setGravity(Gravity.CENTER);
+                cell.addView(bad, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+            } else if (bm[i] != null) {
                 ImageView iv = new ImageView(this);
                 iv.setImageBitmap(bm[i]);
                 iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
@@ -274,7 +367,7 @@ public class ScreensaverActivity extends Activity {
                 none.setGravity(Gravity.CENTER);
                 cell.addView(none, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
             }
-            TextView name = Ui.text(this, (sel ? "[当前] " : "") + it.label, 13, sel);
+            TextView name = Ui.text(this, (sel ? "[当前] " : it.why != null ? "[用不了] " : "") + it.label, 13, sel);
             name.setSingleLine(true);
             name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
             name.setGravity(Gravity.CENTER);
@@ -282,6 +375,12 @@ public class ScreensaverActivity extends Activity {
             cell.setClickable(true);
             cell.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) {
+                    if (it.why != null) {
+                        new VeraDialog.Builder(ScreensaverActivity.this).title("这张图用不了")
+                            .message(it.label + "\n\n" + it.why + "\n\n能用的格式：JPG、PNG、WEBP、BMP、GIF（扩展名大小写都行）。")
+                            .positive("知道了", null).show();
+                        return;
+                    }
                     if (it.key.equals("kindle")) choose("kindle", null); else choose("one", it.key);
                 }
             });
@@ -289,9 +388,16 @@ public class ScreensaverActivity extends Activity {
         }
     }
 
+    /** 格子里放得下的短原因（冒号前那半句）。 */
+    static String shortWhy(String why) {
+        int c = why.indexOf('：');
+        String s = c > 0 ? why.substring(0, c) : why;
+        return s.length() > 18 ? s.substring(0, 18) + "…" : s;
+    }
+
     /** 灰度、按格子大小缩小；坏图 / 太大的图返回 null。 */
     static Bitmap thumb(File f, int w, int h) {
-        if (f == null || !f.isFile() || f.length() > 16L * 1024 * 1024) return null;
+        if (f == null || !f.isFile() || f.length() > SaverImage.MAX_BYTES) return null;
         try {
             BitmapFactory.Options o = new BitmapFactory.Options();
             o.inJustDecodeBounds = true;
@@ -302,7 +408,8 @@ public class ScreensaverActivity extends Activity {
             o = new BitmapFactory.Options();
             o.inSampleSize = s;
             o.inPreferredConfig = Bitmap.Config.RGB_565;
-            return BitmapFactory.decodeFile(f.getPath(), o);
+            Bitmap bm = BitmapFactory.decodeFile(f.getPath(), o);
+            return bm == null ? null : SaverImage.upright(bm, f);   // 照片的 EXIF 方向（和转好的屏保图一样）
         } catch (Throwable t) {
             return null;
         }
@@ -320,7 +427,7 @@ public class ScreensaverActivity extends Activity {
                         if (isFinishing()) return;
                         if (imgs.isEmpty()) {
                             new VeraDialog.Builder(ScreensaverActivity.this).title("导入屏保图片")
-                                .message("没有找到 jpg / png 图片。用传书网页上传到内部存储，或用 USB 把图片放进 Kindle 的 veradroid/screensaver 文件夹。")
+                                .message("没有找到 jpg / png / webp / bmp / gif 图片。用传书网页上传到内部存储，或用 USB 把图片放进 Kindle 的 veradroid/screensaver 文件夹。")
                                 .positive("知道了", null).show();
                             return;
                         }
@@ -344,7 +451,9 @@ public class ScreensaverActivity extends Activity {
         new Thread(new Runnable() {
             @Override public void run() {
                 String err = null, nm = null;
-                try {
+                String bad = SaverImage.check(src);
+                if (bad != null) err = bad;
+                else try {
                     File dir = new File(SD_DIR);
                     dir.mkdirs();
                     nm = src.getName().replaceAll("[^A-Za-z0-9._\\-\\u4e00-\\u9fa5]", "_");
@@ -357,6 +466,9 @@ public class ScreensaverActivity extends Activity {
                         while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
                     } finally { in.close(); out.close(); }
                     dst.setReadable(true, false);
+                    int[] pn = SaverImage.panel(ScreensaverActivity.this);
+                    String why = SaverImage.convert("sd/" + nm, dst, pn[0], pn[1]);
+                    if (why != null) { dst.delete(); err = why; }
                 } catch (Exception e) { err = String.valueOf(e.getMessage()); }
                 final String e = err, name = nm;
                 handler.post(new Runnable() {

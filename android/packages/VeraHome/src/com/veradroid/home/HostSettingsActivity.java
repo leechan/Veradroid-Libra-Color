@@ -204,14 +204,15 @@ public class HostSettingsActivity extends Activity {
         stepper("Android 运行时 Kindle 界面", "只暂停：回 Kindle 最快；冻结：再把 Kindle 的后台程序冻住；停掉：腾出最多内存，回 Kindle 约一分钟。自动：小内存模式用“停掉”，否则“冻结”。下次启动 Android 生效。",
             "KINDLE_UI", new String[] { "自动", "只暂停", "冻结", "停掉" }, new String[] { "auto", "keep", "freeze", "stop" }, "auto", null);
         section("应用预编译");
-        stepper("自动优化新装的应用", "装好后在后台把应用编译成机器码，打开更快（微信读书冷启动约快一倍）。电量低、内存不够、Android 冻结时自动暂停。",
+        stepper("自动优化新装的应用", "装好后在后台把应用编译成机器码，打开更快（微信读书冷启动约快一倍）。自动优化等你 5 分钟不碰屏幕才开始；"
+            + "点下面的“立即优化”马上开始。电量低、内存不够、应用在前台、Android 冻结时都会先等。",
             "APP_COMPILE", new String[] { "开", "关" }, new String[] { "auto", "off" }, "auto", null);
         compileView = Ui.text(this, "", 17, false);
         compileView.setPadding(0, dp(6), 0, dp(6));
         list.addView(compileView);
         LinearLayout r = new LinearLayout(this);
-        r.addView(Ui.button(this, "全部优化", 17, true, new View.OnClickListener() {
-            @Override public void onClick(View v) { HostLink.cmd("compile all"); compileView.setText("已排队，正在开始…"); }
+        r.addView(Ui.button(this, "立即优化", 17, true, new View.OnClickListener() {
+            @Override public void onClick(View v) { HostLink.cmd("compile all"); compileView.setText("已收到，正在检查要优化的应用…"); }
         }), weight());
         list.addView(r);
         showCompile();
@@ -248,11 +249,21 @@ public class HostSettingsActivity extends Activity {
         if (st == null) s = "状态：还没有记录（开机 1 分钟后开始检查）";
         else if (st.equals("running")) s = "正在优化 " + appName(String.valueOf(m.get("pkg"))) + "（" + m.get("index") + " / " + m.get("total") + "）";
         else if (st.equals("waiting") || st.equals("paused")) {
-            String r = m.get("reason"), msg = m.get("msg"), why = "battery".equals(r) ? "电量低" : "memory".equals(r) ? "内存不够" : "frozen".equals(r) ? "Android 冻结中" : "off".equals(r) ? "已关闭" : String.valueOf(r);
-            // 宿主给了现成的一句话（前台应用等它离开前台 / 用户在用时等空闲）就直接用
-            if (msg != null && msg.length() > 0) s = "暂停：" + ("foreground".equals(m.get("code")) && m.get("pkg") != null ? appName(m.get("pkg")) + " 在前台，" : "") + msg;
-            else s = "暂停：" + why + "，条件满足后继续";
-        } else s = "空闲：没有要优化的应用";
+            String r = m.get("reason"), msg = m.get("msg"), code = m.get("code"), pkg = m.get("pkg");
+            String why = "battery".equals(r) ? "电量低" : "memory".equals(r) ? "内存不够" : "frozen".equals(r) ? "Android 冻结中" : "off".equals(r) ? "已关闭" : String.valueOf(r);
+            // 等的是哪个应用（前台 / 还在后台跑）写上名字
+            String who = pkg != null && ("foreground".equals(code) || "running".equals(code)) ? appName(pkg) + (("foreground".equals(code)) ? " 在前台，" : " ") : "";
+            String head = "starting".equals(code) ? "" : st.equals("paused") ? "暂停：" : "等待：";
+            // 宿主给了现成的一句话（等什么、什么时候开始）就直接用
+            if (msg != null && msg.length() > 0) s = head + who + msg;
+            else s = head + why + "，条件满足后继续";
+            if ("1".equals(m.get("manual")) && !"starting".equals(code)) s = "已按“立即优化”。" + s;
+            long n = HostLink.num(m, "total", 0);
+            if (n > 0) s += "\n还有 " + Math.max(1, n - HostLink.num(m, "index", 0)) + " 个应用要优化";
+        } else {
+            String msg = m.get("msg");
+            s = msg != null && msg.length() > 0 ? msg : "空闲：没有要优化的应用";
+        }
         String last = m.get("last");
         if (last != null && last.length() > 0) {
             String[] a = last.split(" ");

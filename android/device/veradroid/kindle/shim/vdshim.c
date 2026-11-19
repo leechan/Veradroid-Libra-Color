@@ -9,6 +9,13 @@
  *
  * Regions received from another process (binder fd passing) are recognised by their memfd name.
  * Pin/unpin (purgeable memory) always succeed with "not purged". Written for VeraDroid; Apache-2.0.
+ *
+ * The protection mask (ASHMEM_SET/GET_PROT_MASK) belongs to the region, not to the fd: Chromium makes a region
+ * read-only (ReadOnlySharedMemoryRegion) and the process that receives it checks GET_PROT_MASK has no PROT_WRITE,
+ * else CHECK-fails ("...has a wrong protection mask: it is not read-only but it should be", SIGTRAP). 番茄小说's own
+ * WebView (libwebviewbytedance.so) died that way on every start, and the app then showed its own safe mode.
+ * The mask is kept in the region's file mode, which every process holding the fd sees: S_ISVTX marks "mask set",
+ * the "other" rwx bits are PROT_READ / PROT_WRITE / PROT_EXEC (memfd's default 0777 without S_ISVTX = rwx, as before).
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -29,9 +36,15 @@
 
 #define ASHMEM_TYPE 0x77
 #define MAXFD 8192
+#define VD_PROT_ALL 7          /* PROT_READ | PROT_WRITE | PROT_EXEC */
+#define VD_MASK_SET 01000      /* S_ISVTX on the region's file: the low 3 mode bits hold its prot mask */
+/* version tag the host tests look for in the shipped binary */
+__attribute__((used)) static const char vd_shim_tag[] = "vdshim: ashmem prot masks in the file mode";
 
 /* one bit per fd: this fd is one of our fake ashmem regions */
 static unsigned char fakefd[MAXFD / 8];
+/* prot mask per fd, only for regions whose file mode we may not change (owned by another uid): 0 = not recorded */
+static unsigned char fdprot[MAXFD];
 static inline int is_fake(int fd) { return fd >= 0 && fd < MAXFD && (fakefd[fd >> 3] >> (fd & 7)) & 1; }
 static inline void set_fake(int fd, int on)
 {
@@ -115,27 +128,33 @@ int __openat_2(int dirfd, const char *path, int flags) { return do_openat(dirfd,
 int close(int fd)
 {
     set_fake(fd, 0);
+    if (fd >= 0 && fd < MAXFD) fdprot[fd] = 0;
     return (int)syscall(__NR_close, fd);
+}
+
+static void copy_prot(int from, int to)
+{
+    if (to >= 0 && to < MAXFD) fdprot[to] = (from >= 0 && from < MAXFD) ? fdprot[from] : 0;
 }
 
 int dup(int fd)
 {
     int n = (int)syscall(__NR_dup, fd);
-    if (n >= 0 && is_fake(fd)) set_fake(n, 1);
+    if (n >= 0) { set_fake(n, is_fake(fd)); copy_prot(fd, n); }
     return n;
 }
 
 int dup2(int fd, int fd2)
 {
     int n = (int)syscall(__NR_dup2, fd, fd2);
-    if (n >= 0 && n != fd) set_fake(n, is_fake(fd));
+    if (n >= 0 && n != fd) { set_fake(n, is_fake(fd)); copy_prot(fd, n); }
     return n;
 }
 
 int dup3(int fd, int fd2, int flags)
 {
     int n = (int)syscall(__NR_dup3, fd, fd2, flags);
-    if (n >= 0) set_fake(n, is_fake(fd));
+    if (n >= 0) { set_fake(n, is_fake(fd)); copy_prot(fd, n); }
     return n;
 }
 
@@ -203,6 +222,34 @@ static void get_name(int fd, char *out)
     strcpy(out, "dev/ashmem");
 }
 
+/* ASHMEM_GET_PROT_MASK: from the region's file mode (see the top), else what this process recorded, else rwx */
+static int get_prot(int fd)
+{
+    struct stat st;
+    if (fd >= 0 && fd < MAXFD && fdprot[fd]) return fdprot[fd] & VD_PROT_ALL;
+    if (fstat(fd, &st) < 0) return -1;
+    if (st.st_mode & VD_MASK_SET) return (int)(st.st_mode & VD_PROT_ALL);
+    return VD_PROT_ALL;
+}
+
+/* ASHMEM_SET_PROT_MASK: like the driver, a mask can only lose bits (EINVAL otherwise). Kept in the file mode so the
+ * processes the fd is sent to see it; if this process may not chmod the region, only this process remembers it. */
+static int set_prot(int fd, unsigned long prot)
+{
+    struct stat st;
+    int cur = get_prot(fd);
+    if (cur < 0) return -1;
+    if ((prot & ~(unsigned long)VD_PROT_ALL) || (prot & ~(unsigned long)cur)) { errno = EINVAL; return -1; }
+    if (fstat(fd, &st) < 0) return -1;
+    mode_t m = (st.st_mode & 0770) | VD_MASK_SET | (mode_t)prot;
+    if ((int)syscall(__NR_fchmod, fd, m) == 0) {
+        if (fd < MAXFD) fdprot[fd] = 0;
+        return 0;
+    }
+    if (fd < MAXFD) { fdprot[fd] = (unsigned char)(0x80 | prot); return 0; }
+    return -1;
+}
+
 int ioctl(int fd, int req, ...)
 {
     va_list ap;
@@ -215,8 +262,8 @@ int ioctl(int fd, int req, ...)
         case 2: if (arg) get_name(fd, (char *)arg); return 0; /* GET_NAME */
         case 3: return (int)syscall(__NR_ftruncate, fd, (long)(size_t)arg) < 0 ? -1 : 0;   /* SET_SIZE */
         case 4: { struct stat st; if (fstat(fd, &st) < 0) return -1; return (int)st.st_size; }   /* GET_SIZE */
-        case 5: return 0;                                   /* SET_PROT_MASK */
-        case 6: return 7;                                   /* GET_PROT_MASK: rwx */
+        case 5: return set_prot(fd, (unsigned long)(size_t)arg);   /* SET_PROT_MASK */
+        case 6: return get_prot(fd);                        /* GET_PROT_MASK */
         case 7: return 0;                                   /* PIN */
         case 8: return 0;                                   /* UNPIN */
         case 9: return 0;                                   /* GET_PIN_STATUS: ASHMEM_IS_PINNED */

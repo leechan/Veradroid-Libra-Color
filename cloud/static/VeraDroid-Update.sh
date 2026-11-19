@@ -6,6 +6,21 @@
 trap '' PIPE   # 书库启动器把输出管道给 fbink；fbink 缺失/崩溃时管道断开，不能让 SIGPIPE 杀掉脚本
 PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH   # 系统自带的 curl/tar 优先：越狱工具或插件装的 curl 可能没有根证书（HTTPS 全部失败）
 BASE=https://veradroid.wenjin.jp
-eips 1 2 "VeraDroid: 正在检查更新..." 2>/dev/null
-B=/tmp/vd-bootstrap.sh; curl -fsSL "$BASE/bootstrap.sh" -o "$B" && sh "$B"; rm -f "$B"
-eips 1 2 "VeraDroid: 更新完成" 2>/dev/null
+# eips 只有 ASCII 字形：以前这里的中文提示画不出来，下载失败时屏幕上什么都没有。安装器（bootstrap.sh）自己会画中文进度和错误。
+# 整个脚本包在 { } 里：安装过程中这个文件可能被改写，sh 先读完再执行。
+{
+LOG=/mnt/us/veradroid/logs/install.log; mkdir -p /mnt/us/veradroid/logs 2>/dev/null
+echo "==== $(date) update entry tapped" >> "$LOG" 2>/dev/null
+eips 1 2 "VeraDroid: checking for updates...                " >/dev/null 2>&1
+B=/tmp/vd-bootstrap.sh
+if curl -fsSL --retry 3 --connect-timeout 20 "$BASE/bootstrap.sh?t=$(date +%s)" -o "$B"; then
+    sh "$B"; rc=$?; rm -f "$B"; echo "update: bootstrap rc=$rc" >> "$LOG" 2>/dev/null
+    [ "$rc" = 0 ] && eips 1 2 "VeraDroid: update finished                        " >/dev/null 2>&1 \
+        || { eips 1 2 "VeraDroid: update failed (code $rc)               " >/dev/null 2>&1; eips 1 4 "log: veradroid/logs/install.log" >/dev/null 2>&1; sleep 10; }
+else
+    rc=$?; rm -f "$B"; echo "update: download of bootstrap.sh failed (curl $rc)" >> "$LOG" 2>/dev/null
+    eips 1 2 "VeraDroid: cannot reach the server (curl $rc)     " >/dev/null 2>&1
+    eips 1 4 "Check Wi-Fi, or tap VeraDroid.sh for details." >/dev/null 2>&1; sleep 10
+fi
+exit 0
+}

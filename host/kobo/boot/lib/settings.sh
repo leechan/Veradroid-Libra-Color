@@ -101,6 +101,7 @@ settings_defaults() {
     BUILTIN_ASHMEM=0
     BUILTIN_ZRAM=0
     BUILTIN_FUSE=0
+    FORCE_KOBO_SDCARD=0
     FB_MTK=0
     FB_COLOR=0
     FB_DEPTH_LOCK=0
@@ -170,6 +171,12 @@ settings_load() {
     PKG_NAME=${PKG_NAME:-Veradroid-${MODEL_ID}}
     kobo_light_init
     [ -f "$SYS/settings.conf" ] && . "$SYS/settings.conf"
+    # Libra Colour: keep the CPU boosted through the ~200 ms color animation
+    # and do not clamp the idle ceiling below 1.5 GHz.
+    if [ "$MODEL_ID" = libracolour ]; then
+        case "$BOOST_MS" in ''|*[!0-9]*) BOOST_MS=400 ;; *) [ "$BOOST_MS" -lt 400 ] && BOOST_MS=400 ;; esac
+        case "$IDLE_CAP_KHZ" in ''|*[!0-9]*) IDLE_CAP_KHZ=1500000 ;; *) [ "$IDLE_CAP_KHZ" -lt 1500000 ] && IDLE_CAP_KHZ=1500000 ;; esac
+    fi
     [ -f "$VD/settings.test" ] && . "$VD/settings.test"
     for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SCROLLDU KFB_IMG KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN KFB_GCN KFB_NEWWIN KFB_ECLIPSE KFB_DARKCRUSH KFB_HEAVY_FLASH KFB_IMG_DITHER; do
         eval "GLOB_$k=\$$k"

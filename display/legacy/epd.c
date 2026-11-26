@@ -369,6 +369,8 @@ static unsigned long n_err = 0;    /* refreshes the driver refused (logged, neve
 static int g_cfa = 0;         /* Colorsoft (MTK + CFA color panel, 32bpp): we send the refresh ourselves with EPDC_FLAG_SKIP_CFA */
 static int last_swipe_dir = 0;
 static int g_color = 0;       /* MTK color panel (Colorsoft): REAGL is GLRC16 there (GLR16 without SKIP_CFA logs an error per update) */
+static unsigned long n_color_sent = 0, n_gray_sent = 0;
+static long long ms_color_sent = 0, ms_gray_sent = 0;
 static int color_no_anim = 0; /* inside kobo_wipe_rgba: do not start another animation */
 static int skip_cfa = 0;      /* --skip-cfa 1: experimental, off by default. On the cs-5192 emulator it removed the per-REAGL dmesg
                                  error but small refreshes took ~160 ms instead of ~60 ms (emulated MDP; real panel unknown) */
@@ -528,6 +530,7 @@ static int maybe_animate(FBInkConfig *c, int w, int h, int flash)
     if (one && od >= 0) {
         if (os < 4) os = 4;
         if (os > 16) os = 16;
+        if (g_color && os > 6) os = 6;     /* color panels: keep the familiar 6-strip motion */
         if (w < os * 16 || h < os * 16) return 0;
         int d1 = rot_dir(od);
         last_swipe_dir = d1; swipe_steps = os;
@@ -539,6 +542,7 @@ static int maybe_animate(FBInkConfig *c, int w, int h, int flash)
     int st = anim_steps;
     if (st < 4) st = 4;
     if (st > 16) st = 16;
+    if (g_color && st > 6) st = 6;
     if (w < st * 16 || h < st * 16) return 0;
     swipe_steps = st;
     int dir = anim_dir;
@@ -609,6 +613,7 @@ static int kobo_wipe_y8(const uint8_t *buf, int x, int y, int w, int h, int dir,
     long step_ms = 180L / (steps - 1);
     if (step_ms < 14) step_ms = 14;
     if (step_ms > 30) step_ms = 30;
+    if (g_color && step_ms > 20) step_ms = 20;   /* 6 strips, tighter cadence */
     struct timespec pause = { 0, step_ms * 1000000L };
 
     if (dir == 2 || dir == 3) {
@@ -878,8 +883,9 @@ static int rgba_row_has_color(const uint8_t *rgba, int y, int w)
 }
 static int rgba_region_has_color(const uint8_t *rgba, int x, int y, int w, int h)
 {
-    for (int j = 0; j < h; j += 2)
-        for (int i = 0; i < w; i += 2) {
+    int step = ((long)w * h > (long)W * H / 4) ? 4 : 2;
+    for (int j = 0; j < h; j += step)
+        for (int i = 0; i < w; i += step) {
             const uint8_t *p = rgba + ((size_t)(y + j) * W + x + i) * 4;
             int mx = p[0], mn = p[0];
             if (p[1] > mx) mx = p[1]; else if (p[1] < mn) mn = p[1];
@@ -1429,8 +1435,16 @@ static int push_y8(const uint8_t *buf, int x, int y, int w, int h, int mode)
     /* flash=1 only for the GC16 / GCK16 full refresh that really flashes (REAGL / GLKW16 do not flash) */
     int fl = c.is_flashing && (c.wfm_mode == WFM_GC16 || c.wfm_mode == WFM_GCK16);
     if (fl && rc >= 0) n_flash++;
+    long long dt = now_ms() - t0;
+    if (rc >= 0) {
+        n_gray_sent++;
+        ms_gray_sent += dt;
+        if (((n_color_sent + n_gray_sent) % 100) == 0)
+            fprintf(stderr, "epd: stats color=%lu/%lldms gray=%lu/%lldms\n",
+                    n_color_sent, ms_color_sent, n_gray_sent, ms_gray_sent);
+    }
     fprintf(stderr, "[%lld] epd: %dx%d+%d+%d mode=%d wfm=%d full=%d flash=%d anim=%d -> %d (%lld ms)%s\n", t0, w, h, x, y, mode, c.wfm_mode,
-            c.is_flashing, fl, anim, rc, now_ms() - t0, fl ? " FLASH" : "");
+            c.is_flashing, fl, anim, rc, dt, fl ? " FLASH" : "");
     if (rc >= 0) {
         n_sent++;
         /* sent while an earlier refresh of the same pixels is still running on the panel: the driver merges the two
@@ -1486,7 +1500,10 @@ static int push_y8(const uint8_t *buf, int x, int y, int w, int h, int mode)
 static int push_color(const uint8_t *buf, int x, int y, int w, int h, int mode)
 {
     FBInkConfig c = cfg;
-    c.ignore_alpha = true;   /* Android's composited page is opaque; ignore alpha, keep RGB */
+    /* Pass 4-channel RGBA straight through: ignore_alpha would make FBInk do a
+       4->3 component conversion (an extra full-region allocation + copy) on
+       every color update. Android's composed surface is opaque anyway. */
+    c.ignore_alpha = false;
     c.dithering_mode = HWD_PASSTHROUGH;
     c.no_refresh = false;
     c.cfa_mode = CFA_DEFAULT;
@@ -1515,6 +1532,15 @@ static int push_color(const uint8_t *buf, int x, int y, int w, int h, int mode)
         gc.is_flashing = false;
         int grc = gbuf ? kobo_wipe_y8(gbuf, x, y, w, h, last_swipe_dir, swipe_steps, gc) : -1;
         free(gtmp);
+        if (grc >= 0 && rgba_region_has_color(cur_rgba, x, y, w, h)) {
+            /* The strip animation is a fast gray pass. On a color image page the
+               app does not always post another color frame (notably when going
+               backwards), so repaint the same region in color immediately. */
+            int saved = color_no_anim;
+            color_no_anim = 1;
+            push_color(buf, x, y, w, h, M_AUTO);
+            color_no_anim = saved;
+        }
         return grc;
     }
     /* Do not flash for ordinary color updates. The previous FULL mode made
@@ -1522,9 +1548,17 @@ static int push_color(const uint8_t *buf, int x, int y, int w, int h, int mode)
        request a full update via M_CLEAN below. */
     c.is_flashing = (mode == M_FULL || mode == M_CLEAN);
     int rc = fbink_print_raw_data(fbfd, (unsigned char *)buf, w, h, (size_t)w * h * 4, (short)x, (short)y, &c);
-    if (rc >= 0) busy_add(x, y, w, h, t0);
+    long long dt = now_ms() - t0;
+    if (rc >= 0) {
+        busy_add(x, y, w, h, t0);
+        n_color_sent++;
+        ms_color_sent += dt;
+        if (((n_color_sent + n_gray_sent) % 100) == 0)
+            fprintf(stderr, "epd: stats color=%lu/%lldms gray=%lu/%lldms\n",
+                    n_color_sent, ms_color_sent, n_gray_sent, ms_gray_sent);
+    }
     fprintf(stderr, "[%lld] epd: color %dx%d+%d+%d wfm=%s full=%d -> %d (%lld ms)\n",
-            t0, w, h, x, y, large ? "GCC16" : "GLRC16", c.is_flashing, rc, now_ms() - t0);
+            t0, w, h, x, y, large ? "GCC16" : "GLRC16", c.is_flashing, rc, dt);
     return rc;
 }
 
@@ -1543,6 +1577,7 @@ static int kobo_wipe_rgba(int x, int y, int w, int h, int dir, int steps)
     long step_ms = 180L / (steps - 1);
     if (step_ms < 14) step_ms = 14;
     if (step_ms > 30) step_ms = 30;
+    if (g_color && step_ms > 20) step_ms = 20;   /* 6 strips, tighter cadence */
     struct timespec pause = { 0, step_ms * 1000000L };
 
     if (dir == 2 || dir == 3) {
@@ -1735,10 +1770,17 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
         if (g_rot) {
             rgba_to_rgba_rot(pg, 0, 0, g_rot == 180 ? VW : LW, LH, cur_rgba);
         } else {
-            /* Always keep the whole RGBA frame current: the page-turn cleanup
-               after the strip animation repaints a full region, and a partially
-               updated RGBA buffer would briefly show the previous page there. */
-            rgba_copy_region(pg, W * 4, 0, 0, W, H, cur_rgba);
+            int cy0 = fy0 < 0 ? 0 : fy0;
+            int cy1 = fy1 > H ? H : fy1;
+            if (cy1 < cy0) cy1 = cy0;
+            /* Only large dirty bands can be promoted to a full-screen update;
+               keep the whole RGBA frame current for those. Small UI updates
+               copy just their rows (the full frame is 8.5 MB). */
+            if (force_full || anim_next || once_dir >= 0 || (cy1 - cy0) * 100 >= H * 40) {
+                rgba_copy_region(pg, W * 4, 0, 0, W, H, cur_rgba);
+            } else if (cy1 > cy0) {
+                rgba_copy_region(pg, W * 4, 0, cy0, W, cy1 - cy0, cur_rgba + (size_t)cy0 * W * 4);
+            }
         }
         /* Color waveforms are FULL updates. During a page-turn animation the app
            posts many full frames; sending them all back-to-back makes the panel

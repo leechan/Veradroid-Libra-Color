@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Initialize or upgrade the ext4 system image (veradroid-sys.img) on Kobo Libra 2
+# Initialize or upgrade the ext4 system image (veradroid-sys.img) on Kobo
 # from a clean VeraDroid legacy rootfs.tar.gz + scrubbed user0 seed.
 #
 # Usage:
@@ -109,7 +109,8 @@ if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$ROOTFS_TAR" | awk '{print $1}' > "$MP/rootfs.sha256" 2>/dev/null || true
 fi
 
-echo "libra2" > "$MP/model"
+MODEL=$( [ -f "$VD/boot/lib/kobo.sh" ] && { . "$VD/boot/lib/kobo.sh"; kobo_model; } || echo libra2 )
+echo "$MODEL" > "$MP/model"
 [ -f "$VD/VERSION" ] && cp "$VD/VERSION" "$MP/version" 2>/dev/null || true
 echo "[init-sysimg] done! $(df -h "$MP" | tail -1)"
 sync

@@ -1,11 +1,11 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# VeraDroid for Kobo Libra 2 (N418) — CLI / SSH Installer & Upgrader.
+# VeraDroid for Kobo (Libra 2 N418 / Libra Colour N428) — CLI / SSH Installer & Upgrader.
 # Automatically detects Fresh Install vs Incremental Upgrade, and configures
 # both NickelMenu and KOReader entry points.
 #
-# Usage (run on Kobo Libra 2 via SSH):
-#   sh /mnt/onboard/.adds/Veradroid-Libra2/install.sh [options]
+# Usage (run on the Kobo via SSH):
+#   sh /mnt/onboard/.adds/<package>/install.sh [options]
 # Options:
 #   --auto            Install NickelMenu & KOReader entries if present (default)
 #   --both            Install both NickelMenu & KOReader entries unconditionally
@@ -16,6 +16,18 @@
 set -eu
 
 VD=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PKG_NAME=${VD##*/}
+MODEL=unknown
+case "$PKG_NAME" in
+    Veradroid-*) ;;
+    *)
+        _m=libra2
+        [ -f "$VD/boot/lib/kobo.sh" ] && { . "$VD/boot/lib/kobo.sh"; _m=$(kobo_model); }
+        case "$_m" in
+            libracolour) PKG_NAME=Veradroid-LibraColour ;;
+            *)           PKG_NAME=Veradroid-Libra2 ;;
+        esac ;;
+esac
 NM_DIR=/mnt/onboard/.adds/nm
 KO_DIR=/mnt/onboard/.adds/koreader
 KO_PLUGINS=$KO_DIR/plugins
@@ -32,21 +44,32 @@ while [ $# -gt 0 ]; do
         --size-mb)     SIZE_MB=${2:?missing size}; shift ;;
         --force-fresh) FORCE_FRESH=1 ;;
         -h|--help)
-            sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) echo "install.sh: unknown option: $1" >&2; exit 2 ;;
     esac
     shift
 done
 
-echo "=== VeraDroid for Kobo Libra 2 Installer ==="
+echo "=== VeraDroid for Kobo Installer ==="
 echo "Install dir: $VD"
+echo "Package:     $PKG_NAME"
 echo "Version:     $(cat "$VD/VERSION" 2>/dev/null || echo unknown)"
+[ -f "$VD/boot/lib/kobo.sh" ] && {
+    . "$VD/boot/lib/kobo.sh"
+    MODEL=$(kobo_model)
+    echo "Device:      $(kobo_model_name) (${MODEL})"
+    if [ ! -f "$VD/models/$MODEL.conf" ]; then
+        echo "ERROR: this package has no profile for $MODEL ($(kobo_model_name))." >&2
+        echo "       Use the matching full.zip for your model." >&2
+        exit 1
+    fi
+}
 
 # 1. Verify kernel compatibility
 KREL=$(uname -r)
 if [ ! -f "$VD/kmod/$KREL/binder_linux.ko" ]; then
-    echo "ERROR: Unsupported Kobo kernel: $KREL" >&2
+    echo "ERROR: Unsupported Kobo kernel: $KREL (model $MODEL)" >&2
     echo "Supported kernels bundled in $VD/kmod/:" >&2
     ls -1 "$VD/kmod/" >&2 || true
     exit 1
@@ -81,17 +104,17 @@ case "$ENTRY_MODE" in
         ;;
 esac
 
-if [ "$inst_nm" = 1 ] && [ -f "$VD/nm/Veradroid-Libra2" ]; then
+if [ "$inst_nm" = 1 ] && [ -f "$VD/nm/$PKG_NAME" ]; then
     mkdir -p "$NM_DIR"
-    cp -f "$VD/nm/Veradroid-Libra2" "$NM_DIR/Veradroid-Libra2"
-    echo "Entry OK:    NickelMenu -> $NM_DIR/Veradroid-Libra2"
+    cp -f "$VD/nm/$PKG_NAME" "$NM_DIR/$PKG_NAME"
+    echo "Entry OK:    NickelMenu -> $NM_DIR/$PKG_NAME"
 fi
 
-if [ "$inst_ko" = 1 ] && [ -d "$VD/koplugin/Veradroid-Libra2.koplugin" ]; then
+if [ "$inst_ko" = 1 ] && [ -d "$VD/koplugin/$PKG_NAME.koplugin" ]; then
     mkdir -p "$KO_PLUGINS"
-    rm -rf "$KO_PLUGINS/Veradroid-Libra2.koplugin"
-    cp -a "$VD/koplugin/Veradroid-Libra2.koplugin" "$KO_PLUGINS/"
-    echo "Entry OK:    KOReader   -> $KO_PLUGINS/Veradroid-Libra2.koplugin"
+    rm -rf "$KO_PLUGINS/$PKG_NAME.koplugin"
+    cp -a "$VD/koplugin/$PKG_NAME.koplugin" "$KO_PLUGINS/"
+    echo "Entry OK:    KOReader   -> $KO_PLUGINS/$PKG_NAME.koplugin"
 fi
 
 # 5. Fresh install vs Incremental upgrade

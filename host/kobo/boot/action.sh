@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Gesture & hardware-key action handler for VeraDroid on Kobo Libra 2.
+# Gesture & hardware-key action handler for VeraDroid on Kobo.
 # Called by veradroid-input: sh action.sh <action> [arg]
 
 VD=${VD:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -15,6 +15,8 @@ if [ "$1" != poke ]; then
     echo "[$(date +%T)] action $1 $2" >> "$AL"
 fi
 [ -f "$SYS/settings.conf" ] && . "$SYS/settings.conf"
+_m=$(kobo_model); [ -f "$VD/models/$_m.conf" ] && . "$VD/models/$_m.conf"
+kobo_light_init
 
 send() { kill -0 "$(cat "$W/cmd.pid" 2>/dev/null)" 2>/dev/null || return 0; ( echo "$1" > "$X/ctl/cmd" ) & }
 power_send() { [ -p "$W/power.fifo" ] && ( echo "$1" > "$W/power.fifo" ) & }

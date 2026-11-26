@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Input front end for Kobo Libra 2:
+# Input front end for Kobo (Libra 2 / Libra Colour):
 #   - Grabs Elan Touchscreen (MT-B, raw 1680x1264 -> --swap-xy -> 1264x1680)
 #   - Grabs gpio-keys (193 upper page, 194 lower page, 116 power button)
 #   - Exposes virtual uinput devices veradroid-touch and veradroid-keys to Android
@@ -20,8 +20,15 @@ input_start() { input_touch_start || return 1; bt_start; return 0; }
 input_touch_start() {
     REAL=$(input_find 'Elan Touchscreen|elan|touch|cyttsp|goodix|fts_ts')
     [ -n "$REAL" ] || { t "input: no touch screen found"; return 1; }
-    HW_KEYS=$(input_find '"gpio-keys"')
-    t "input: real touch=$REAL hw_keys=${HW_KEYS:-none}"
+    HW_KEYS=$(input_find "\"${PAGE_KEYS:-gpio-keys}\"")
+    [ -z "$HW_KEYS" ] && HW_KEYS=$(input_find 'gpio[-_]keys')
+    PWR_KEYS=
+    if [ -n "${POWER_KEY_DEV:-}" ]; then
+        PWR_KEYS=$(input_find "\"${POWER_KEY_DEV}\"")
+        [ -z "$PWR_KEYS" ] && PWR_KEYS=$(input_find 'pwrkey|bd7182[78]')
+        [ -n "$PWR_KEYS" ] && [ "$PWR_KEYS" = "$HW_KEYS" ] && PWR_KEYS=
+    fi
+    t "input: real touch=$REAL page_keys=${HW_KEYS:-none} power_keys=${PWR_KEYS:-none}"
 
     [ -x "$VD/bin/veradroid-input" ] || {
         t "input: veradroid-input missing, raw passthrough $REAL"
@@ -41,6 +48,7 @@ input_touch_start() {
     [ "${TOUCH_FLIP_X:-0}" = 1 ] && extra="$extra --flip-x"
     [ "${TOUCH_FLIP_Y:-0}" = 1 ] && extra="$extra --flip-y"
     [ -n "$HW_KEYS" ] && extra="$extra --keydev $HW_KEYS --key-map ${PAGE_KEYS_MAP:-volume}"
+    [ -n "$PWR_KEYS" ] && extra="$extra --keydev2 $PWR_KEYS"
     [ "${PAGE_KEYS_SWAP:-0}" = 1 ] && extra="$extra --key-swap"
 
     "$VD/bin/veradroid-input" "$REAL" "$W/input.log" "$VD/boot/action.sh" \

@@ -84,7 +84,8 @@
  *   still down then goes nowhere.
  * Usage: veradroid-input <touch-event-dev> <log-file> <action-script> [--gconf FILE] [--fg FILE] [--w 1272] [--h 1696] [--edge 60] [--window 50]
  *                        [--corner 160] [--corner-ms 2000] [--edge-hold 60] [--edge-swipe 80] [--edge-back 0|1] [--no-gestures]
- *                        [--rotate 0|90|180|270] [--proto b|a|st]
+ *                        [--rotate 0|90|180|270] [--proto b|a|st] [--swap-xy] [--flip-x] [--flip-y]
+ *                        [--keydev /dev/input/eventN] [--keydev2 /dev/input/eventM] [--key-map volume|page]
  * Build (armhf, static): arm-linux-gnueabihf-gcc -O2 -static vinput.c -o veradroid-input
  */
 #define _GNU_SOURCE
@@ -164,8 +165,8 @@ static long long gyro_since = 0;                          /* monotonic ms when g
 #define MSC_RAW_LANDSCAPE_RIGHT 0x19
 #define MSC_RAW_LANDSCAPE_LEFT  0x1a
 static int SWAP_XY = 0, FLIP_X = 0, FLIP_Y = 0;          /* raw touchscreen axis transform (e.g. Kobo Libra 2 Elan: --swap-xy) */
-static const char *KEYDEV = NULL, *SLEEP_FLAG = NULL;    /* optional hardware key device (Kobo gpio-keys) + sleep gate */
-static int keyfd = -1, KEY_SWAP = 0, KEY_SWAP_CLI = 0, KEY_MAP_PAGE = 0;   /* KEY_MAP_PAGE: 0 = volume keys (default), 1 = page keys */
+static const char *KEYDEV = NULL, *KEYDEV2 = NULL, *SLEEP_FLAG = NULL;    /* optional hardware key devices (Kobo gpio-keys + separate PMIC power key) + sleep gate */
+static int keyfd = -1, keyfd2 = -1, KEY_SWAP = 0, KEY_SWAP_CLI = 0, KEY_MAP_PAGE = 0;   /* KEY_MAP_PAGE: 0 = volume keys (default), 1 = page keys */
 static char KEY_NEXT_LONG[32] = "clear", KEY_PREV_LONG[32] = "back";       /* physical page-key long-press actions */
 static int KEY_LONG_MS = 500;
 struct pk_state { int active; int code; long long t0; int fired; };
@@ -1920,11 +1921,11 @@ static void pk_check(void)
     }
 }
 
-static void keydev_read(void)
+static void keydev_read_fd(int *fdp, const char *tag)
 {
     struct input_event ev;
     for (;;) {
-        ssize_t n = read(keyfd, &ev, sizeof(ev));
+        ssize_t n = read(*fdp, &ev, sizeof(ev));
         if (n == (ssize_t)sizeof(ev)) {
             if (paused) continue;
             if (ev.type == EV_MSC && ev.code == MSC_RAW) {
@@ -1939,7 +1940,7 @@ static void keydev_read(void)
             if (ev.type == EV_KEY && ev.code == KEY_POWER) {
                 /* Trigger sleep/wake toggle on release so long-press hardware power-off still works */
                 if (ev.value == 0) {
-                    logf_("hw key: KEY_POWER release -> action power");
+                    logf_("hw key (%s): KEY_POWER release -> action power", tag);
                     action("power", NULL);
                 }
                 continue;
@@ -1947,10 +1948,10 @@ static void keydev_read(void)
             if (ev.type == EV_KEY && ev.code == KEY_F1) {
                 /* Kobo magnetic SleepCover (Hall sensor): press (1) = cover closed -> sleep, release (0) = opened -> wake */
                 if (ev.value == 1) {
-                    logf_("hw key: KEY_F1 (Hall cover closed) -> action sleep");
+                    logf_("hw key (%s): KEY_F1 (Hall cover closed) -> action sleep", tag);
                     action("sleep", NULL);
                 } else if (ev.value == 0) {
-                    logf_("hw key: KEY_F1 (Hall cover opened) -> action wake");
+                    logf_("hw key (%s): KEY_F1 (Hall cover opened) -> action wake", tag);
                     action("wake", NULL);
                 }
                 continue;
@@ -1983,11 +1984,14 @@ static void keydev_read(void)
             continue;
         }
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) return;
-        logf_("keydev gone (%s), hardware keys off", n < 0 ? strerror(errno) : "eof");
-        close(keyfd); keyfd = -1;
+        logf_("%s gone (%s), hardware keys off", tag, n < 0 ? strerror(errno) : "eof");
+        close(*fdp); *fdp = -1;
         return;
     }
 }
+
+static void keydev_read(void)  { keydev_read_fd(&keyfd, "keydev"); }
+static void keydev2_read(void) { keydev_read_fd(&keyfd2, "keydev2"); }
 
 int main(int argc, char **argv)
 {
@@ -2015,6 +2019,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--flip-x")) FLIP_X = 1;
         else if (!strcmp(argv[i], "--flip-y")) FLIP_Y = 1;
         else if (!strcmp(argv[i], "--keydev") && i + 1 < argc) KEYDEV = argv[++i];
+        else if (!strcmp(argv[i], "--keydev2") && i + 1 < argc) KEYDEV2 = argv[++i];
         else if (!strcmp(argv[i], "--key-swap")) { KEY_SWAP = KEY_SWAP_CLI = 1; }
         else if (!strcmp(argv[i], "--key-map") && i + 1 < argc) { KEY_MAP_PAGE = !strcmp(argv[++i], "page"); }
         else if (!strcmp(argv[i], "--sleep-flag") && i + 1 < argc) SLEEP_FLAG = argv[++i];
@@ -2080,6 +2085,11 @@ int main(int argc, char **argv)
         if (keyfd < 0) fprintf(stderr, "keydev %s: %s\n", KEYDEV, strerror(errno));
         else if (ioctl(keyfd, EVIOCGRAB, 1) < 0) perror("EVIOCGRAB keydev");
     }
+    if (KEYDEV2 && KEYDEV2[0]) {
+        keyfd2 = open(KEYDEV2, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (keyfd2 < 0) fprintf(stderr, "keydev2 %s: %s\n", KEYDEV2, strerror(errno));
+        else if (ioctl(keyfd2, EVIOCGRAB, 1) < 0) perror("EVIOCGRAB keydev2");
+    }
     slots_reset();
     {
         struct input_absinfo ai;
@@ -2104,13 +2114,13 @@ int main(int argc, char **argv)
             idle_cap_end();
             fl_timeout_wake();
             gyro_want = -1;
-            if (!paused) { release_android(1, "released to the Kindle"); ioctl(tfd, EVIOCGRAB, 0); if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 0); if (keyfd >= 0) ioctl(keyfd, EVIOCGRAB, 0); paused = 1; md = IDLE; nheld = 0; nf = 0; slots_reset(); memset(as_, 0, sizeof(as_)); st_btn = 0; logf_("released"); }
+            if (!paused) { release_android(1, "released to the Kindle"); ioctl(tfd, EVIOCGRAB, 0); if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 0); if (keyfd >= 0) ioctl(keyfd, EVIOCGRAB, 0); if (keyfd2 >= 0) ioctl(keyfd2, EVIOCGRAB, 0); paused = 1; md = IDLE; nheld = 0; nf = 0; slots_reset(); memset(as_, 0, sizeof(as_)); st_btn = 0; logf_("released"); }
         }
         if (want_grab) {
             want_grab = 0;
             gyro_want = -1;
             if (paused) {
-                ioctl(tfd, EVIOCGRAB, 1); if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 1); if (keyfd >= 0) ioctl(keyfd, EVIOCGRAB, 1); paused = 0; md = IDLE; nheld = 0; nf = 0; slots_reset(); memset(as_, 0, sizeof(as_)); st_btn = 0;
+                ioctl(tfd, EVIOCGRAB, 1); if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 1); if (keyfd >= 0) ioctl(keyfd, EVIOCGRAB, 1); if (keyfd2 >= 0) ioctl(keyfd2, EVIOCGRAB, 1); paused = 0; md = IDLE; nheld = 0; nf = 0; slots_reset(); memset(as_, 0, sizeof(as_)); st_btn = 0;
                 struct input_absinfo ai;
                 if (src_proto == PROTO_B && ioctl(tfd, EVIOCGABS(ABS_MT_SLOT), &ai) == 0 && ai.value >= 0 && ai.value < MAXSLOT) hw_slot = cur_slot = ai.value;
                 release_android(1, "grabbed again");
@@ -2141,7 +2151,7 @@ int main(int argc, char **argv)
         }
         gyro_check();
         pk_check();
-        struct pollfd pf[4] = { { tfd, POLLIN, 0 }, { ifd, POLLIN, 0 }, { tapfd, POLLIN, 0 }, { keyfd, POLLIN, 0 } };
+        struct pollfd pf[5] = { { tfd, POLLIN, 0 }, { ifd, POLLIN, 0 }, { tapfd, POLLIN, 0 }, { keyfd, POLLIN, 0 }, { keyfd2, POLLIN, 0 } };
         /* Exact deadline poll timeout: eliminates 100 Hz wakeups during touch hold and removes jitter */
         int pto = -1;
         long long dl = -1;
@@ -2182,10 +2192,14 @@ int main(int argc, char **argv)
                 if (pto < 0 || left < pto) pto = (int)(left > 60000 ? 60000 : left);
             }
         }
-        int pr = poll(pf, 4, pto);   /* a negative fd is skipped by poll */
+        int pr = poll(pf, 5, pto);   /* a negative fd is skipped by poll */
         if (pr > 0 && keyfd >= 0 && (pf[3].revents & (POLLIN | POLLERR | POLLHUP))) {
             keydev_read();
-            if (!(pf[0].revents & POLLIN) && !(ifd >= 0 && (pf[1].revents & POLLIN)) && !(tapfd >= 0 && (pf[2].revents & POLLIN))) continue;
+            if (!(pf[0].revents & POLLIN) && !(ifd >= 0 && (pf[1].revents & POLLIN)) && !(tapfd >= 0 && (pf[2].revents & POLLIN)) && !(keyfd2 >= 0 && (pf[4].revents & POLLIN))) continue;
+        }
+        if (pr > 0 && keyfd2 >= 0 && (pf[4].revents & (POLLIN | POLLERR | POLLHUP))) {
+            keydev2_read();
+            if (!(pf[0].revents & POLLIN) && !(ifd >= 0 && (pf[1].revents & POLLIN)) && !(tapfd >= 0 && (pf[2].revents & POLLIN)) && !(keyfd >= 0 && (pf[3].revents & POLLIN))) continue;
         }
         if (pr > 0 && tapfd >= 0 && (pf[2].revents & (POLLIN | POLLERR | POLLHUP))) {
             tap_read();
@@ -2304,6 +2318,7 @@ int main(int argc, char **argv)
     ioctl(tfd, EVIOCGRAB, 0);
     if (tapfd >= 0) ioctl(tapfd, EVIOCGRAB, 0);
     if (keyfd >= 0) ioctl(keyfd, EVIOCGRAB, 0);
+    if (keyfd2 >= 0) ioctl(keyfd2, EVIOCGRAB, 0);
     ioctl(ufd, UI_DEV_DESTROY);
     if (kfd >= 0) ioctl(kfd, UI_DEV_DESTROY);
     logf_("boost: %lu times, scroll hints: %lu, idle thaws: %lu, compacted: %lu, dz_taps: %lu, dz_drops: %lu", n_boost, n_scroll, n_thaw, n_compact, n_dz_taps, n_dz_drops);

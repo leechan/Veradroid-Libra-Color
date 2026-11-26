@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Common definitions for VeraDroid on Kobo Libra 2.
+# Common definitions for VeraDroid on Kobo (Libra 2 / Libra Colour).
 PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH
 
 VD=${VD:-/mnt/onboard/.adds/Veradroid-Libra2}
@@ -156,6 +156,28 @@ done
 t() { echo "[$(date +%H:%M:%S) up=$(cut -d' ' -f1 /proc/uptime)] $*"; }
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; }
 log_release() { :; }
+
+# FAT fsck on /mnt/onboard renames a directory entry it cannot reattach to
+# FSCKnnnn.000 (seen on a Libra Colour after an unsafe USB unplug: the
+# veradroid-input binary became FSCK0000.000). Restore any such file when its
+# SHA-256 matches the pristine package manifest, before the boot path checks
+# for display/input binaries.
+vd_restore_fsck() {
+    [ -f "$VD/SHA256SUMS" ] || return 0
+    command -v sha256sum >/dev/null 2>&1 || return 0
+    find "$VD" -maxdepth 3 -name 'FSCK*.000' 2>/dev/null | while IFS= read -r f; do
+        h=$(sha256sum "$f" 2>/dev/null | awk '{print $1}')
+        [ -n "$h" ] || continue
+        rel=$(awk -v h="$h" '$1 == h { print $2; exit }' "$VD/SHA256SUMS" 2>/dev/null)
+        case "$rel" in ''|/*|*..*) continue ;; esac
+        mkdir -p "$VD/${rel%/*}" 2>/dev/null || true
+        if mv -f "$f" "$VD/$rel" 2>/dev/null; then
+            case "$rel" in bin/*) chmod 755 "$VD/$rel" 2>/dev/null || true ;; *) chmod 644 "$VD/$rel" 2>/dev/null || true ;; esac
+            t "restore: ${rel##*/} recovered from ${f##*/} (FAT fsck rename)"
+        fi
+    done
+    return 0
+}
 
 vd_timeout() {
     vt_s=$1; shift

@@ -142,6 +142,7 @@ static uint8_t lut[256];
 static uint8_t dither = 3;   /* 0 off, anything else on: the MTK / EPDC hardware has one algorithm per output depth (see the header) */
 static volatile sig_atomic_t quit = 0;
 static uint8_t *cur_y8 = NULL, *prev_y8 = NULL;   /* what we want / what is on the panel */
+static uint8_t *cur_rgba = NULL;                  /* panel-space RGBA for color panels (W*H*4) */
 static int prev_valid = 0, last_page = 0;
 static int LW = 1272, LH = 1696; /* logical (Android) size: W x H, or H x VW for 90 / 270 */
 /* page 2 = <dir of shm>/fb2, a third picture that only hwcomposer.kindle writes (frames with a dim layer: SurfaceFlinger
@@ -368,6 +369,7 @@ static unsigned long n_err = 0;    /* refreshes the driver refused (logged, neve
 static int g_cfa = 0;         /* Colorsoft (MTK + CFA color panel, 32bpp): we send the refresh ourselves with EPDC_FLAG_SKIP_CFA */
 static int last_swipe_dir = 0;
 static int g_color = 0;       /* MTK color panel (Colorsoft): REAGL is GLRC16 there (GLR16 without SKIP_CFA logs an error per update) */
+static int color_no_anim = 0; /* inside kobo_wipe_rgba: do not start another animation */
 static int skip_cfa = 0;      /* --skip-cfa 1: experimental, off by default. On the cs-5192 emulator it removed the per-REAGL dmesg
                                  error but small refreshes took ~160 ms instead of ~60 ms (emulated MDP; real panel unknown) */
 #ifdef FBINK_FOR_KOBO
@@ -611,15 +613,18 @@ static int kobo_wipe_y8(const uint8_t *buf, int x, int y, int w, int h, int dir,
 
     if (dir == 2 || dir == 3) {
         /* Vertical strips sweeping right->left (dir=2) or left->right (dir=3) */
-        int max_sw = (w / steps) + 32;
+        int max_sw = (w / steps) + 64;
         uint8_t *scratch = malloc((size_t)max_sw * (size_t)h);
         if (!scratch) return -1;
         int rc = 0;
+        int ov = g_color ? 16 : 0;
         for (int i = 0; i < steps; i++) {
             int s = (dir == 2) ? (steps - 1 - i) : i;
             int sx0 = (s == 0) ? 0 : ((w * s / steps) & ~15);
             int sx1 = (s + 1 == steps) ? w : ((w * (s + 1) / steps) & ~15);
-            int sw = sx1 - sx0;
+            int ox0 = sx0 > ov ? sx0 - ov : 0;
+            int ox1 = sx1 + ov < w ? sx1 + ov : w;
+            int sw = ox1 - ox0;
             if (sw <= 0) continue;
             if (sw > max_sw) {
                 uint8_t *ns = realloc(scratch, (size_t)sw * (size_t)h);
@@ -627,8 +632,8 @@ static int kobo_wipe_y8(const uint8_t *buf, int x, int y, int w, int h, int dir,
                 scratch = ns; max_sw = sw;
             }
             for (int row = 0; row < h; row++)
-                memcpy(scratch + (size_t)row * (size_t)sw, buf + (size_t)row * (size_t)w + sx0, (size_t)sw);
-            if (fbink_print_raw_data(fbfd, scratch, sw, h, (size_t)sw * (size_t)h, (short)(x + sx0), (short)y, &c) < 0) {
+                memcpy(scratch + (size_t)row * (size_t)sw, buf + (size_t)row * (size_t)w + ox0, (size_t)sw);
+            if (fbink_print_raw_data(fbfd, scratch, sw, h, (size_t)sw * (size_t)h, (short)(x + ox0), (short)y, &c) < 0) {
                 rc = -1; break;
             }
             if (i + 1 < steps) nanosleep(&pause, NULL);
@@ -637,14 +642,17 @@ static int kobo_wipe_y8(const uint8_t *buf, int x, int y, int w, int h, int dir,
         return rc;
     } else {
         /* Horizontal strips sweeping bottom->top (dir=1) or top->bottom (dir=0): contiguous rows, zero copy */
+        int ov = g_color ? 16 : 0;
         for (int i = 0; i < steps; i++) {
             int s = (dir == 1) ? (steps - 1 - i) : i;
             int sy0 = (s == 0) ? 0 : ((h * s / steps) & ~15);
             int sy1 = (s + 1 == steps) ? h : ((h * (s + 1) / steps) & ~15);
-            int sh = sy1 - sy0;
+            int oy0 = sy0 > ov ? sy0 - ov : 0;
+            int oy1 = sy1 + ov < h ? sy1 + ov : h;
+            int sh = oy1 - oy0;
             if (sh <= 0) continue;
-            if (fbink_print_raw_data(fbfd, (unsigned char *)(buf + (size_t)sy0 * (size_t)w), w, sh,
-                                     (size_t)w * (size_t)sh, (short)x, (short)(y + sy0), &c) < 0)
+            if (fbink_print_raw_data(fbfd, (unsigned char *)(buf + (size_t)oy0 * (size_t)w), w, sh,
+                                     (size_t)w * (size_t)sh, (short)x, (short)(y + oy0), &c) < 0)
                 return -1;
             if (i + 1 < steps) nanosleep(&pause, NULL);
         }
@@ -846,6 +854,67 @@ static void rgba_to_y8_rot(const uint8_t *src, int x, int y, int w, int h, uint8
     }
 }
 
+/* copy an RGBA rectangle (stride bytes per row) into a packed RGBA buffer (w*4 per row) */
+static void rgba_copy_region(const uint8_t *src, int stride, int x, int y, int w, int h, uint8_t *dst)
+{
+    for (int j = 0; j < h; j++)
+        memcpy(dst + (size_t)j * w * 4, src + (size_t)(y + j) * stride + (size_t)x * 4, (size_t)w * 4);
+}
+
+/* Does this region carry actual chroma (a color cover / highlight) or is it
+   just black/gray text and UI? Kaleido 3 color output is much slower, so only
+   regions with color use the CFA waveforms. */
+#define COLOR_CHROMA_MIN 10
+static int rgba_row_has_color(const uint8_t *rgba, int y, int w)
+{
+    const uint8_t *p = rgba + (size_t)y * w * 4;
+    for (int i = 0; i < w; i += 2, p += 8) {
+        int mx = p[0], mn = p[0];
+        if (p[1] > mx) mx = p[1]; else if (p[1] < mn) mn = p[1];
+        if (p[2] > mx) mx = p[2]; else if (p[2] < mn) mn = p[2];
+        if (mx - mn >= COLOR_CHROMA_MIN) return 1;
+    }
+    return 0;
+}
+static int rgba_region_has_color(const uint8_t *rgba, int x, int y, int w, int h)
+{
+    for (int j = 0; j < h; j += 2)
+        for (int i = 0; i < w; i += 2) {
+            const uint8_t *p = rgba + ((size_t)(y + j) * W + x + i) * 4;
+            int mx = p[0], mn = p[0];
+            if (p[1] > mx) mx = p[1]; else if (p[1] < mn) mn = p[1];
+            if (p[2] > mx) mx = p[2]; else if (p[2] < mn) mn = p[2];
+            if (mx - mn >= COLOR_CHROMA_MIN) return 1;
+        }
+    return 0;
+}
+
+/* RGBA counterpart of rgba_to_y8_rot: logical rectangle -> panel-space RGBA picture (W x H, stride W*4). */
+static void rgba_to_rgba_rot(const uint8_t *src, int x, int y, int w, int h, uint8_t *dst)
+{
+    const int stride = LW * 4;
+    if (g_rot == 180) {
+        for (int j = 0; j < h; j++) {
+            const uint8_t *p = src + (size_t)(y + j) * stride + (size_t)x * 4;
+            uint8_t *o = dst + ((size_t)(H - 1 - (y + j)) * W + (VW - 1 - x)) * 4;
+            for (int i = 0; i < w; i++, p += 4, o -= 4) memcpy(o, p, 4);
+        }
+        return;
+    }
+    for (int j0 = 0; j0 < h; j0 += 16) {
+        int j1 = j0 + 16 < h ? j0 + 16 : h;
+        for (int i = 0; i < w; i++) {
+            int lx = x + i;
+            for (int j = j0; j < j1; j++) {
+                int ly = y + j;
+                const uint8_t *p = src + (size_t)ly * stride + (size_t)lx * 4;
+                size_t o = g_rot == 90 ? (size_t)lx * W + (VW - 1 - ly) : (size_t)(H - 1 - lx) * W + ly;
+                memcpy(dst + o * 4, p, 4);
+            }
+        }
+    }
+}
+
 /* ---- which parts of the panel are still refreshing ----
    Every refresh we send is remembered with its marker; a thread waits for the driver to report it done
    (MXCFB_WAIT_FOR_UPDATE_COMPLETE, the same call for hwtcon and mxc_epdc) and wakes the main loop through a pipe.
@@ -967,6 +1036,8 @@ static void set_wfm(FBInkConfig *c, int mode, WFM_MODE_INDEX_T auto_wfm)
     if (c->wfm_mode == WFM_AUTO) c->dithering_mode = HWD_PASSTHROUGH;
 }
 static void push_region(int x0, int y0, int x1, int y1, int mode);
+static int push_color(const uint8_t *buf, int x, int y, int w, int h, int mode);
+static int kobo_wipe_rgba(int x, int y, int w, int h, int dir, int steps);
 
 static int push(const uint8_t *rgba, int x, int y, int w, int h, int mode)
 {
@@ -978,6 +1049,7 @@ static int push(const uint8_t *rgba, int x, int y, int w, int h, int mode)
         if (y + h > LH) h = LH - y;
         if (g_rot == 180 && x + w > VW) w = VW - x;
         if (w <= 0 || h <= 0 || !cur_y8) return 0;
+        if (g_color && cur_rgba) rgba_to_rgba_rot(rgba, x, y, w, h, cur_rgba);
         rgba_to_y8_rot(rgba, x, y, w, h, cur_y8);
         int px, py, pw, ph;
         rot_rect(x, y, w, h, &px, &py, &pw, &ph);
@@ -995,6 +1067,27 @@ static int push(const uint8_t *rgba, int x, int y, int w, int h, int mode)
     if (x + w > W) w = W - x;
     if (y + h > H) h = H - y;
     if (w <= 0 || h <= 0) return 0;
+
+    if (g_color && cur_rgba) {
+        rgba_copy_region(rgba, W * 4, x, y, w, h, cur_rgba + ((size_t)y * W + x) * 4);
+        if (rgba_region_has_color(cur_rgba, x, y, w, h)) {
+            static uint8_t *reg_rgba = NULL;
+            static size_t reg_rgba_cap = 0;
+            const uint8_t *cbuf = cur_rgba + (size_t)y * W * 4;
+            if (w != W) {
+                size_t need = (size_t)w * h * 4;
+                if (need > reg_rgba_cap) {
+                    uint8_t *nb = realloc(reg_rgba, need);
+                    if (!nb) return -1;
+                    reg_rgba = nb; reg_rgba_cap = need;
+                }
+                for (int j = 0; j < h; j++)
+                    memcpy(reg_rgba + (size_t)j * w * 4, cur_rgba + ((size_t)(y + j) * W + x) * 4, (size_t)w * 4);
+                cbuf = reg_rgba;
+            }
+            return push_color(cbuf, x, y, w, h, mode);
+        }
+    }
 
     uint8_t *buf = malloc((size_t)w * h);
     if (!buf) return -1;
@@ -1056,17 +1149,17 @@ static int open_fb(void)
     FBInkState st;
     fbink_get_state(&cfg, &st);
 #ifdef FBINK_FOR_KOBO
-    g_is_mtk = 0;
+    g_is_mtk = st.is_mtk;
     g_cfa = 0;
-    g_color = 0;
+    g_color = st.is_mtk && st.has_color_panel;
     if (st.has_eclipse_wfm &&
         access("/sys/class/graphics/fb0/waveform_mode_gck16", F_OK) == 0 &&
         access("/sys/class/graphics/fb0/waveform_mode_glkw16", F_OK) == 0) {
         g_has_eclipse = 1;
     }
     build_dark_lut();
-    fprintf(stderr, "epd: kobo eclipse=%d (en=%d) dark_crush=%d heavy_flash=%d\n",
-            g_has_eclipse, g_eclipse_en, g_dark_crush, g_heavy_flash_en);
+    fprintf(stderr, "epd: kobo eclipse=%d (en=%d) dark_crush=%d heavy_flash=%d color=%d\n",
+            g_has_eclipse, g_eclipse_en, g_dark_crush, g_heavy_flash_en, g_color);
 #else
     g_is_mtk = st.is_mtk;
     /* Oasis 2 / Oasis 3 (FBInk platform "Zelda", i.MX7D EPDC + PxP): any HW dithering request (ordered, quant 7 for
@@ -1387,6 +1480,112 @@ static int push_y8(const uint8_t *buf, int x, int y, int w, int h, int mode)
     return rc;
 }
 
+/* Send a color region. Kaleido 3 needs a CFA waveform: GCC16 for image content,
+   GLRC16 for small color highlights on text. Both must be paired with a FULL
+   update (FBInk's hwtcon backend handles the CFA flags). */
+static int push_color(const uint8_t *buf, int x, int y, int w, int h, int mode)
+{
+    FBInkConfig c = cfg;
+    c.ignore_alpha = true;   /* Android's composited page is opaque; ignore alpha, keep RGB */
+    c.dithering_mode = HWD_PASSTHROUGH;
+    c.no_refresh = false;
+    c.cfa_mode = CFA_DEFAULT;
+    long long t0 = now_ms();
+    int large = mode == M_FULL || (long)w * h >= (long)W * H * 40 / 100;
+    c.wfm_mode = large ? WFM_GCC16 : WFM_GLRC16;
+    if (!color_no_anim && mode != M_CLEAN && maybe_animate(&c, w, h, mode == M_FULL)) {
+        /* Keep the familiar strip animation, but animate with the gray picture
+           and then repaint the whole region in color. Animating with gray
+           strips alone left vertical seams of the old colored page; the
+           final full-region color pass cleans them without a flash. */
+        uint8_t *gtmp = NULL;
+        const uint8_t *gbuf = cur_y8 ? cur_y8 + (size_t)y * W : NULL;
+        if (gbuf && w != W) {
+            gtmp = malloc((size_t)w * h);
+            if (gtmp) {
+                for (int j = 0; j < h; j++)
+                    memcpy(gtmp + (size_t)j * w, cur_y8 + (size_t)(y + j) * W + x, (size_t)w);
+                gbuf = gtmp;
+            }
+        }
+        FBInkConfig gc = cfg;
+        gc.dithering_mode = HWD_PASSTHROUGH;
+        gc.ignore_alpha = true;
+        gc.wfm_mode = WFM_DU;
+        gc.is_flashing = false;
+        int grc = gbuf ? kobo_wipe_y8(gbuf, x, y, w, h, last_swipe_dir, swipe_steps, gc) : -1;
+        free(gtmp);
+        return grc;
+    }
+    /* Do not flash for ordinary color updates. The previous FULL mode made
+       every cover tile / page turn flash. Explicit cleanup paths can still
+       request a full update via M_CLEAN below. */
+    c.is_flashing = (mode == M_FULL || mode == M_CLEAN);
+    int rc = fbink_print_raw_data(fbfd, (unsigned char *)buf, w, h, (size_t)w * h * 4, (short)x, (short)y, &c);
+    if (rc >= 0) busy_add(x, y, w, h, t0);
+    fprintf(stderr, "[%lld] epd: color %dx%d+%d+%d wfm=%s full=%d -> %d (%lld ms)\n",
+            t0, w, h, x, y, large ? "GCC16" : "GLRC16", c.is_flashing, rc, now_ms() - t0);
+    return rc;
+}
+
+/* Color page-turn animation: the same disjoint strip wipe as kobo_wipe_y8,
+   but the strips come from the RGBA picture and are sent with the color
+   waveform. Using the gray strip animation on a color panel left vertical
+   seams of the old colored page behind. */
+static int kobo_wipe_rgba(int x, int y, int w, int h, int dir, int steps)
+{
+    if (!cur_rgba) return -1;
+    if (steps < 4) steps = 4;
+    if (steps > 16) steps = 16;
+    int old = color_no_anim;
+    color_no_anim = 1;
+    int rc = 0;
+    long step_ms = 180L / (steps - 1);
+    if (step_ms < 14) step_ms = 14;
+    if (step_ms > 30) step_ms = 30;
+    struct timespec pause = { 0, step_ms * 1000000L };
+
+    if (dir == 2 || dir == 3) {
+        int max_sw = w / steps + 48;
+        uint8_t *scratch = malloc((size_t)max_sw * (size_t)h * 4);
+        if (!scratch) { color_no_anim = old; return -1; }
+        for (int i = 0; i < steps; i++) {
+            int s = (dir == 2) ? (steps - 1 - i) : i;
+            int sx0 = (s == 0) ? 0 : ((w * s / steps) & ~15);
+            int sx1 = (s + 1 == steps) ? w : ((w * (s + 1) / steps) & ~15);
+            int ox0 = sx0 > 16 ? sx0 - 16 : 0;
+            int ox1 = sx1 + 16 < w ? sx1 + 16 : w;
+            int sw = ox1 - ox0;
+            if (sw <= 0) continue;
+            if (sw > max_sw) {
+                uint8_t *ns = realloc(scratch, (size_t)sw * (size_t)h * 4);
+                if (!ns) { rc = -1; break; }
+                scratch = ns; max_sw = sw;
+            }
+            for (int row = 0; row < h; row++)
+                memcpy(scratch + (size_t)row * sw * 4,
+                       cur_rgba + ((size_t)(y + row) * W + x + ox0) * 4, (size_t)sw * 4);
+            if (push_color(scratch, x + ox0, y, sw, h, M_AUTO) < 0) { rc = -1; break; }
+            if (i + 1 < steps) nanosleep(&pause, NULL);
+        }
+        free(scratch);
+    } else {
+        for (int i = 0; i < steps; i++) {
+            int s = (dir == 1) ? (steps - 1 - i) : i;
+            int sy0 = (s == 0) ? 0 : ((h * s / steps) & ~15);
+            int sy1 = (s + 1 == steps) ? h : ((h * (s + 1) / steps) & ~15);
+            int oy0 = sy0 > 16 ? sy0 - 16 : 0;
+            int oy1 = sy1 + 16 < h ? sy1 + 16 : h;
+            int sh = oy1 - oy0;
+            if (sh <= 0) continue;
+            if (push_color(cur_rgba + ((size_t)(y + oy0) * W + x) * 4, x, y + oy0, w, sh, M_AUTO) < 0) { rc = -1; break; }
+            if (i + 1 < steps) nanosleep(&pause, NULL);
+        }
+    }
+    color_no_anim = old;
+    return rc;
+}
+
 /* copy a rectangle of the wanted picture, send it, remember it as what is on the panel */
 static void push_region(int x0, int y0, int x1, int y1, int mode)
 {
@@ -1414,6 +1613,37 @@ static void push_region(int x0, int y0, int x1, int y1, int mode)
         if (y0 + 8 <= H) y1 = y0 + 8;
         else { y0 = H > 8 ? H - 8 : 0; y1 = H; }
         h = y1 - y0;
+    }
+    if (g_color && cur_rgba) {
+        /* Color partial updates: overlap neighbours by 16px so CFA/tile
+           boundaries cannot leave a 1px vertical seam of the old page. */
+        if (x0 > 0) x0 = (x0 > 16 ? x0 - 16 : 0) & ~15;
+        x1 = (x1 + 16 + 15) & ~15;
+        if (x1 > W) x1 = W;
+        w = x1 - x0;
+        if (w <= 0) return;
+    }
+    if (g_color && cur_rgba && rgba_region_has_color(cur_rgba, x0, y0, w, h)) {
+        static uint8_t *reg_rgba = NULL;
+        static size_t reg_rgba_cap = 0;
+        const uint8_t *cbuf = cur_rgba + (size_t)y0 * W * 4;
+        if (w != W) {
+            size_t need = (size_t)w * h * 4;
+            if (need > reg_rgba_cap) {
+                uint8_t *nb = realloc(reg_rgba, need);
+                if (!nb) return;
+                reg_rgba = nb; reg_rgba_cap = need;
+            }
+            for (int j = 0; j < h; j++)
+                memcpy(reg_rgba + (size_t)j * w * 4, cur_rgba + ((size_t)(y0 + j) * W + x0) * 4, (size_t)w * 4);
+            cbuf = reg_rgba;
+        }
+        if (push_color(cbuf, x0, y0, w, h, mode) >= 0) {
+            for (int j = 0; j < h; j++)
+                memcpy(prev_y8 + (size_t)(y0 + j) * W + x0, cur_y8 + (size_t)(y0 + j) * W + x0, (size_t)w);
+            prev_valid = 1;
+        }
+        return;
     }
     static uint8_t *reg_buf = NULL;
     static size_t reg_cap = 0;
@@ -1497,7 +1727,27 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
 {
     long long tc0 = now_ms();
     last_page = page;
-    int fast_scroll = (mode == M_AUTO && scroll_active(tc0) && !force_full && prev_valid && !g_rot);
+    int color_panel = 0;
+#ifdef FBINK_FOR_KOBO
+    color_panel = (g_color && cur_rgba);
+    if (color_panel) {
+        const uint8_t *pg = page_at(shm, page, (size_t)(g_rot ? LW * LH * 4 : W * H * 4));
+        if (g_rot) {
+            rgba_to_rgba_rot(pg, 0, 0, g_rot == 180 ? VW : LW, LH, cur_rgba);
+        } else {
+            /* Always keep the whole RGBA frame current: the page-turn cleanup
+               after the strip animation repaints a full region, and a partially
+               updated RGBA buffer would briefly show the previous page there. */
+            rgba_copy_region(pg, W * 4, 0, 0, W, H, cur_rgba);
+        }
+        /* Color waveforms are FULL updates. During a page-turn animation the app
+           posts many full frames; sending them all back-to-back makes the panel
+           queue them (several hundred ms of perceived lag). Let the in-flight
+           refresh finish and draw the latest frame instead. */
+        if (may_pace && prev_valid && busy_any(now_ms())) return 2;
+    }
+#endif
+    int fast_scroll = (mode == M_AUTO && scroll_active(tc0) && !force_full && prev_valid && !g_rot && !color_panel);
     if (!fast_scroll && scroll_raw_y8) {
         /* First non-scroll frame after raw scroll: re-convert whole frame with full LUT + lightf_pass */
         scroll_raw_y8 = 0;
@@ -1556,24 +1806,33 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
     clock_gettime(CLOCK_MONOTONIC, &td0);
     for (int y = fy0; y < fy1; y++) {
         const uint8_t *a = cur_y8 + (size_t)y * W, *b = prev_y8 + (size_t)y * W;
-        if (!memcmp(a, b, W)) continue;
+        int y8same = !memcmp(a, b, W);
+        int color_only = 0;
+        if (y8same) {
+            /* A pixel can change hue without changing luma (color cover / highlight).
+               If the row is gray, the old quick skip still applies. */
+            if (!(color_panel && rgba_row_has_color(cur_rgba, y, W))) continue;
+            color_only = 1;
+        }
         int xa = 0, xb = W - 1;
-        while (xa + 4 <= W) {
-            uint32_t va, vb;
-            memcpy(&va, a + xa, sizeof(va));
-            memcpy(&vb, b + xa, sizeof(vb));
-            if (va != vb) break;
-            xa += 4;
+        if (!color_only) {
+            while (xa + 4 <= W) {
+                uint32_t va, vb;
+                memcpy(&va, a + xa, sizeof(va));
+                memcpy(&vb, b + xa, sizeof(vb));
+                if (va != vb) break;
+                xa += 4;
+            }
+            while (xa < W && a[xa] == b[xa]) xa++;
+            while (xb >= xa + 4) {
+                uint32_t va, vb;
+                memcpy(&va, a + xb - 3, sizeof(va));
+                memcpy(&vb, b + xb - 3, sizeof(vb));
+                if (va != vb) break;
+                xb -= 4;
+            }
+            while (xb > xa && a[xb] == b[xb]) xb--;
         }
-        while (xa < W && a[xa] == b[xa]) xa++;
-        while (xb >= xa + 4) {
-            uint32_t va, vb;
-            memcpy(&va, a + xb - 3, sizeof(va));
-            memcpy(&vb, b + xb - 3, sizeof(vb));
-            if (va != vb) break;
-            xb -= 4;
-        }
-        while (xb > xa && a[xb] == b[xb]) xb--;
         if (g_tolerant && !fast_scroll && row_sig(a, b, xa, xb + 1, y)) {
             if (ns > 0 && y - sy1[ns - 1] <= CLGAP) {
                 sy1[ns - 1] = y + 1;
@@ -2132,6 +2391,15 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
     cur_y8 = malloc((size_t)W * H);
     prev_y8 = malloc((size_t)W * H);
     if (!cur_y8 || !prev_y8) return 1;
+    if (g_color) {
+        cur_rgba = malloc((size_t)W * H * 4);
+        if (cur_rgba) {
+            memset(cur_rgba, 0xff, (size_t)W * H * 4);
+        } else {
+            fprintf(stderr, "epd: color panel detected but RGBA buffer allocation failed; falling back to gray\n");
+            g_color = 0;
+        }
+    }
     if (g_rot) memset(cur_y8, 0xff, (size_t)W * H);   /* rotated: columns >= VW are never written */
     uint8_t *fbmem = mmap(NULL, (size_t)W * H * 4 * 2, PROT_READ, MAP_SHARED, sfd, 0);
     if (fbmem == MAP_FAILED) { perror("epd: mmap shm"); return 1; }
@@ -2294,6 +2562,8 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
                     if (!g_rot) {
                         rgba_to_y8_opaque(page_at(fbmem, last_page, (size_t)W * H * 4), W * 4, 0, 0, W, H, cur_y8);
                         lightf_pass(cur_y8, W, W, H, 0, H);
+                        if (g_color && cur_rgba)
+                            rgba_copy_region(page_at(fbmem, last_page, (size_t)W * H * 4), W * 4, 0, 0, W, H, cur_rgba);
 #ifdef FBINK_FOR_KOBO
                         if (g_dark_page && g_dark_crush > 0) kobo_polish_dark_y8(cur_y8, (size_t)W * H);
 #endif

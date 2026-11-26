@@ -1,19 +1,19 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build clean, privacy-scrubbed release packages for Veradroid-Libra2 (Kobo Libra 2 / N418):
-#   1. Veradroid-Libra2-<ver>-full.zip     (Fresh install; also safe over existing install)
-#   2. Veradroid-Libra2-<ver>-upgrade.zip  (Incremental upgrade; preserves all /data & settings)
+# Build clean, privacy-scrubbed release packages for Veradroid on Kobo:
+#   KOBO_MODEL=libra2      -> Veradroid-Libra2-<ver>-{full,upgrade}.zip      (N418)
+#   KOBO_MODEL=libracolour -> Veradroid-LibraColour-<ver>-{full,upgrade}.zip (N428)
 #
-# Install path on Kobo: /mnt/onboard/.adds/Veradroid-Libra2
+# Install path on Kobo: /mnt/onboard/.adds/<package>
 # Dual entry points:
-#   - NickelMenu: /mnt/onboard/.adds/nm/Veradroid-Libra2
-#   - KOReader:   /mnt/onboard/.adds/koreader/plugins/Veradroid-Libra2.koplugin/
+#   - NickelMenu: /mnt/onboard/.adds/nm/<package>
+#   - KOReader:   /mnt/onboard/.adds/koreader/plugins/<package>.koplugin/
 #
 # Usage:
+#   KOBO_MODEL=libracolour \
 #   BIN_DIR=build/kobo-bin \
 #   EXTRA_BIN_DIR=/path/to/extra-bins \
 #   LEGACY_DIR=/path/to/veradroid-pw6 \
-#   KMOD_DIR=/path/to/Koboweread/kernels \
 #   sh tools/kobo/build-release.sh [OUT_DIR]
 set -eu
 
@@ -24,9 +24,32 @@ OUT_DIR=${1:-$TOP/dist}
 BIN_DIR=${BIN_DIR:-$TOP/build/kobo-bin}
 EXTRA_BIN_DIR=${EXTRA_BIN_DIR:-}
 LEGACY_DIR=${LEGACY_DIR:-}
-KMOD_DIR=${KMOD_DIR:-}
+KOBO_MODEL=${KOBO_MODEL:-libra2}
 
-PKG_NAME=Veradroid-Libra2
+case "$KOBO_MODEL" in
+    libra2)
+        PKG_NAME=Veradroid-Libra2
+        MODEL_NAME="Kobo Libra 2"
+        MODEL_CODE=N418
+        PRODUCT_ID=veradroid-kobo-libra2
+        KMOD_KERS="4.1.15-00868-g58a2758be07 4.1.15-00838-g349fbf5767c"
+        FW_TEXT="4.38.23852 / 4.34.20097"
+        KMOD_TEXT="Kobo 4.1.15 kernel modules"
+        ;;
+    libracolour)
+        PKG_NAME=Veradroid-LibraColour
+        MODEL_NAME="Kobo Libra Colour"
+        MODEL_CODE=N428
+        PRODUCT_ID=veradroid-kobo-libracolour
+        KMOD_KERS="4.9.77"
+        FW_TEXT="4.42.23303 (kernel 4.9.77)"
+        KMOD_TEXT="Kobo 4.9.77 kernel modules (protocol-7 binder32)"
+        ;;
+    *)
+        echo "build-release: KOBO_MODEL must be libra2 or libracolour (got $KOBO_MODEL)" >&2
+        exit 2 ;;
+esac
+KMOD_DIR=${KMOD_DIR:-$TOP/host/kobo/kmod}
 RAW_VER=$(head -1 "$TOP/host/kobo/VERSION" | tr -d '\r\n')
 VER=$(printf '%s' "$RAW_VER" | sed 's/-.*//')
 [ -n "$VER" ] || { echo "build-release: cannot read version from host/kobo/VERSION" >&2; exit 2; }
@@ -36,8 +59,17 @@ BUILD_DATE=$(date '+%Y-%m-%d')
     echo "build-release: set LEGACY_DIR to clean legacy bundle containing rootfs.tar.gz" >&2
     exit 2
 }
-[ -n "$KMOD_DIR" ] && [ -d "$KMOD_DIR/4.1.15-00868-g58a2758be07" ] || {
-    echo "build-release: set KMOD_DIR to directory containing Kobo 4.1.15 kernel modules" >&2
+[ -n "$KMOD_DIR" ] && [ -d "$KMOD_DIR" ] || {
+    echo "build-release: set KMOD_DIR to the directory containing $KMOD_TEXT" >&2
+    exit 2
+}
+missing_kmod=
+for kver in $KMOD_KERS; do
+    [ -d "$KMOD_DIR/$kver" ] || missing_kmod="$missing_kmod $kver"
+done
+[ -z "$missing_kmod" ] || {
+    echo "build-release: missing kernel modules for:$missing_kmod" >&2
+    echo "               (expected under $KMOD_DIR; run tools/kobo/fetch-libra-colour-kmod.sh for N428)" >&2
     exit 2
 }
 
@@ -88,6 +120,21 @@ for b in $REQ_BINS; do
     printf '  OK  %-28s <- %s\n' "$b" "$p"
 done
 
+if [ "$KOBO_MODEL" = libracolour ]; then
+    EPD=$(find_bin veradroid-epd) || true
+    if [ -n "$EPD" ] && ! strings "$EPD" 2>/dev/null | grep -Eq 'Libra ?Colour|LibraColour|N428|monza'; then
+        echo "  WARN veradroid-epd does not look like it was built against FBInk with" >&2
+        echo "       Kobo Libra Colour support. The panel will not refresh on N428;" >&2
+        echo "       rebuild it with FBInk >= 1.25.0-544 (tools/kobo/build-kobo-bin.sh)." >&2
+    fi
+    FB=$(find_bin fbink) || true
+    if [ -n "$FB" ] && ! strings "$FB" 2>/dev/null | grep -Eq 'Libra ?Colour|LibraColour|N428|monza'; then
+        echo "  WARN fbink does not look like it knows the Libra Colour (N428)." >&2
+        echo "       Build FBInk >= 1.25.0-544 with FBINK_FOR_KOBO; an older FBInk prints" >&2
+        echo "       'Unidentified Kobo device code' and the panel will not refresh." >&2
+    fi
+fi
+
 for s in "$TOP"/host/kobo/install.sh "$TOP"/host/kobo/boot/*.sh "$TOP"/host/kobo/boot/lib/*.sh \
          "$TOP"/tools/kobo/weread-speed-profile.sh "$TOP"/tools/kobo/compile-boot-nodebug.sh; do
     [ -f "$s" ] || continue
@@ -109,7 +156,10 @@ stage_common() {
     cp -a "$TOP/host/kobo/boot/." "$vd/boot/"
     cp "$TOP/tools/kobo/weread-speed-profile.sh" "$vd/boot/weread-speed-profile.sh"
     cp "$TOP/tools/kobo/compile-boot-nodebug.sh" "$vd/boot/compile-boot-nodebug.sh"
-    cp -a "$TOP/host/kobo/models/." "$vd/models/"
+    [ -d "$TOP/diagnostics/kobo" ] && cp -a "$TOP/diagnostics/kobo" "$vd/diagnostics"
+    # Ship only this model's profile: installing the wrong package then fails
+    # loudly in install.sh instead of silently booting with wrong hardware paths.
+    cp "$TOP/host/kobo/models/$KOBO_MODEL.conf" "$vd/models/"
     cp -a "$TOP/host/kobo/koplugin/${PKG_NAME}.koplugin" "$vd/koplugin/"
     cp "$TOP/host/kobo/nm/${PKG_NAME}" "$vd/nm/${PKG_NAME}"
 
@@ -123,26 +173,30 @@ stage_common() {
         cp "$p" "$vd/bin/$b"
     done
 
-    # Kernel modules (both verified Kobo Libra 2 firmware kernels)
-    for kver in 4.1.15-00868-g58a2758be07 4.1.15-00838-g349fbf5767c; do
+    # Kernel modules for this model's verified firmware kernel(s)
+    for kver in $KMOD_KERS; do
         if [ -d "$KMOD_DIR/$kver" ]; then
             mkdir -p "$vd/kmod/$kver"
             cp "$KMOD_DIR/$kver"/*.ko "$vd/kmod/$kver/"
+            for mf in SHA256SUMS README.md firmware; do
+                [ -f "$KMOD_DIR/$kver/$mf" ] && cp "$KMOD_DIR/$kver/$mf" "$vd/kmod/$kver/"
+            done
         fi
     done
 
     # update/ README
-    cat > "$vd/update/README.txt" <<'EOF'
-Veradroid-Libra2 — 离线升级目录
+    cat > "$vd/update/README.txt" <<EOF
+${PKG_NAME} — 离线升级目录
 
-将增量升级包（Veradroid-Libra2-<版本>-upgrade.zip）放入本目录，
+将增量升级包（${PKG_NAME}-<版本>-upgrade.zip）放入本目录，
 然后通过以下任一方式即可自动完成升级（保留全部已安装应用、书籍与设置）：
-  1. 在 NickelMenu 中点击「Veradroid-Libra2 检查更新」或直接启动 Veradroid-Libra2；
-  2. 在 KOReader 中点击「工具 → Veradroid-Libra2 → 应用离线升级包」或直接启动 Veradroid-Libra2。
+  1. 在 NickelMenu 中点击「${PKG_NAME} 检查更新」或直接启动 ${PKG_NAME}；
+  2. 在 KOReader 中点击「工具 → ${PKG_NAME} → 应用离线升级包」或直接启动 ${PKG_NAME}。
 EOF
 
     # Permissions
     chmod 755 "$vd/install.sh" "$vd/boot/"*.sh "$vd/boot/lib/localupdate.sh"
+    [ -d "$vd/diagnostics" ] && chmod 755 "$vd/diagnostics"/*.sh 2>/dev/null || true
     chmod 755 "$vd/bin/veradroid-epd" "$vd/bin/veradroid-input" "$vd/bin/pivot_init" \
               "$vd/bin/vdlmk" "$vd/bin/vdloopdio" "$vd/bin/vdmkswap" "$vd/bin/vdnocap" \
               "$vd/bin/vdsqueeze" "$vd/bin/e2fsck" "$vd/bin/mke2fs" "$vd/bin/resize2fs" \
@@ -151,17 +205,28 @@ EOF
               "$vd/bin/kobo-weread-opt.jar" "$vd/bin/ethernet-service-wifi.jar"
 
     # Root README for end users (ASCII filename avoids Windows/BusyBox unzip mojibake)
+    MODEL_NOTE=
+    if [ "$KOBO_MODEL" = libracolour ]; then
+        MODEL_NOTE="
+注意（Libra Colour 彩色屏）：
+- 当前显示桥把 Android 画面转换为 8 位灰度输出，彩色内容会以灰阶显示；
+  这是为墨水屏文字锐利度与刷新速度做的取舍，不影响微信读书等文字类应用。
+- 必须使用支持 N428 / Libra Colour 的 FBInk（>= 1.25.0-544）构建的 fbink，
+  旧版 FBInk 会报 Unidentified Kobo device code 且屏幕不刷新。
+- 内核模块仅匹配 4.9.77（固件 4.42.23303）；升级 Kobo 固件后需重新获取对应模块。
+"
+    fi
     cat > "$root/README-INSTALL.txt" <<EOF
 ================================================================
-${PKG_NAME} (Kobo Libra 2 / N418)  v${VER} (${pkg_type})
+${PKG_NAME} (${MODEL_NAME} / ${MODEL_CODE})  v${VER} (${pkg_type})
 构建日期：${BUILD_DATE}
-支持固件内核：4.38.23852 / 4.34.20097
+支持固件内核：${FW_TEXT}
 支持启动入口：NickelMenu（无需 KOReader）与 KOReader 插件
 ================================================================
 
 一、全新安装（使用 full 完整包）
 ----------------------------------------------------------------
-1. 确保 Kobo Libra 2 剩余空间 >= 2.5 GB。
+1. 确保 ${MODEL_NAME} 剩余空间 >= 2.5 GB。
 2. 用数据线将 Kobo 连接电脑，打开 Kobo U 盘根目录。
 3. 将本压缩包内的「.adds」文件夹完整解压合并到 Kobo 根目录：
    - .adds/${PKG_NAME}/                                （主程序与纯净 Android 镜像）
@@ -199,6 +264,7 @@ ${PKG_NAME} (Kobo Libra 2 / N418)  v${VER} (${pkg_type})
 - 返回 Kobo / KOReader：长按屏幕左下角 2 秒，或在下拉面板点击「返回 Kobo」。
 - 实体翻页键：上键下一页、下键上一页；长按上键全刷去残影、长按下键返回。
 - 电源键：短按休眠进入深度待机（省电），再按唤醒。
+${MODEL_NOTE}
 EOF
 }
 
@@ -212,9 +278,9 @@ write_manifest_and_sums() {
     fi
     cat > "$vd/manifest.json" <<EOF
 {
-  "product": "veradroid-kobo-libra2",
+  "product": "${PRODUCT_ID}",
   "name": "${PKG_NAME}",
-  "model": "libra2",
+  "model": "${KOBO_MODEL}",
   "version": "${VER}",
   "raw_version": "${RAW_VER}",
   "type": "${pkg_type}",

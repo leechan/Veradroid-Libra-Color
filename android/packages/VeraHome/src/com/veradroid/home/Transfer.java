@@ -973,7 +973,7 @@ final class Transfer {
         return new Cloud.Progress() { @Override public void update(long done, long total) { t.done = done; t.total = total; } };
     }
 
-    /** A download lands in TMP first; move it to the target folder (fonts -> Fonts, books -> Books/Kindle, apk stays and is installed). */
+    /** A download lands in TMP first; move it to the target folder (fonts -> Fonts, books -> Books/Kobo, apk stays and is installed). */
     private void finishDownload(File f, String to, Task t) {
         t.name = f.getName();
         if (!isApk(f.getName())) {

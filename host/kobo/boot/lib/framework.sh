@@ -69,9 +69,15 @@ fb_geom() {
     FB_STRIDE=$(cat $FB/stride 2>/dev/null)
     FB_PANY=$(cut -d, -f2 $FB/pan 2>/dev/null)
     FB_ROWS=$(sed -n 's/.*U:\([0-9]*\)x\([0-9]*\)p.*/\2/p' $FB/modes 2>/dev/null | awk '$1 >= 1000 { print; exit }')
-    [ -n "$FB_STRIDE" ] || FB_STRIDE=1280
+    if [ -z "$FB_STRIDE" ]; then
+        _vw=$(cut -d, -f1 $FB/virtual_size 2>/dev/null)
+        _bpp=$(cat $FB/bits_per_pixel 2>/dev/null)
+        case "$_vw" in ''|*[!0-9]*) _vw=1264 ;; esac
+        case "$_bpp" in ''|*[!0-9]*) _bpp=32 ;; esac
+        FB_STRIDE=$(( _vw * _bpp / 8 ))
+    fi
     [ -n "$FB_PANY" ] || FB_PANY=0
-    [ -n "$FB_ROWS" ] || FB_ROWS=1680
+    [ -n "$FB_ROWS" ] || FB_ROWS=${FB_PANEL_H:-1680}
 }
 
 framework_stop() {
@@ -127,11 +133,13 @@ framework_stop() {
             usleep 300000
         fi
         rm -f /tmp/nickel-hardware-status
-        # Switch fb0 from 32bpp to 8bpp while VeraDroid runs (matches KOReader & saves 4x fb bandwidth)
-        if [ "$orig_bpp" != "8" ] && [ -x "$FBDEPTH" ]; then
+        # Switch fb0 from 32bpp to 8bpp while VeraDroid runs (matches KOReader & saves 4x fb bandwidth).
+        # Not on MTK colour panels: hwtcon expects 32bpp and fbdepth does not
+        # support the CFA pipeline (FB_DEPTH_LOCK=1 in the model profile).
+        if [ "${FB_DEPTH_LOCK:-0}" != 1 ] && [ "$orig_bpp" != "8" ] && [ -x "$FBDEPTH" ]; then
             "$FBDEPTH" -d 8 >/dev/null 2>&1 && echo 1 > "$FWD/bpp_changed" || true
         fi
-        t "fw: stopped nickel cleanly (orig_bpp=${orig_bpp:-?}, freed event0 + RAM)"
+        t "fw: stopped nickel cleanly (orig_bpp=${orig_bpp:-?}, depth_lock=${FB_DEPTH_LOCK:-0}, freed event0 + RAM)"
     else
         t "fw: no foreground Kobo UI detected (headless/SSH launch)"
     fi

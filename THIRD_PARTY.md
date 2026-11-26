@@ -2,7 +2,7 @@
 
 本文列出 VeraDroid 的安装包和本仓库里带有、链接或分发的第三方组件，以及它们的许可和源码获取方式。
 VeraDroid 自己的代码是 GPL-3.0-or-later（见 `LICENSE`）。
-本仓库只含源码：预编译二进制、APK、字体和系统镜像不入库，下表“在哪里”一栏指安装包里的位置（安装包版本：PW6 0.92 / k49 1.00 / legacy 0.8.5）。
+本仓库以源码为主：除 `host/kobo/kmod/4.9.77/` 内为 Kobo Libra Colour 实机验证过的内核模块外，预编译二进制、APK、字体和系统镜像不入库。下表“在哪里”一栏指安装包里的位置。
 
 标注“未确认”的条目是维护者还没核实的信息，不要当作结论。发现错误请提 issue。
 
@@ -21,6 +21,7 @@ VeraDroid 自己的代码是 GPL-3.0-or-later（见 `LICENSE`）。
 | Dropbear SSH | 2026.92（KOReader 构建） | MIT 式（含少量其他宽松许可） | 单独发布的 SSH 调试包 | 预编译二进制 |
 | e2fsprogs（e2fsck、resize2fs） | 1.47.1 | GPL-2.0-only（库部分 LGPL-2.1 / BSD / MIT） | `bin/e2fsck`、`bin/resize2fs`（调整系统镜像大小） | 官方源码 tarball 的静态编译，未修改；构建脚本 `tools/cross/build-e2fs.sh` |
 | Linux binder 驱动及其头文件 | AOSP `kernel/common` `deprecated/android-3.0`；NXP `rel_imx_3.0.35_4.1.0_ga_caf` | GPL-2.0-only | 老机型的外挂内核模块（由 `tools/kmod/` 构建，未入库） | 内核模块 |
+| Kobo Libra Colour 4.9.77 内核模块 | `binder32` 协议 7 binder、`kobo_madvise`、`kobo_pagecache` | GPL-2.0-only | `host/kobo/kmod/4.9.77/*.ko`（内核 4.9.77 / 固件 4.42.23303） | 预编译内核模块（源码见 `host/kobo/kmod/4.9.77/README.md`，可用 `tools/kobo/fetch-libra-colour-kmod.sh` 重新获取） |
 
 不随安装包分发、只在开发时使用的：eink-emulator（QEMU，测试用）、Docker 构建镜像里的 Ubuntu 软件包（以各自的许可为准）。
 

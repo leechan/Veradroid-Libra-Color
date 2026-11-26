@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Status reporter for VeraHome / panel on Kobo Libra 2.
+# Status reporter for VeraHome / panel on Kobo (Libra 2 / Libra Colour).
 
 status_write() {
     bat=$(kobo_battery)
@@ -27,7 +27,7 @@ status_write() {
         echo "lowmem_setting=${LOWMEM:-auto}"
         echo "kindleui=$(kindle_ui_mode)"
         echo "sysversion=$(head -1 "$VD/VERSION" 2>/dev/null | sed 's/-.*//' | tr -cd '0-9.')"
-        echo "imageclass=kobo-libra2"
+        echo "imageclass=kobo-${MODEL_ID:-libra2}"
         echo "autoupdate=0"
         echo "update_available="
         echo "memtotal_mb=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)"
@@ -40,6 +40,7 @@ status_write() {
         ps=$(type wifi_ps_state >/dev/null 2>&1 && wifi_ps_state)
         [ -n "$ps" ] && echo "wifips=$ps"
         echo "wifipsmode=${WIFI_PS:-auto}"
-        echo "model=libra2"
+        echo "model=${MODEL_ID:-libra2}"
+        echo "modelname=${MODEL_NAME:-Kobo}"
     } > "$X/ctl/status.tmp" && mv -f "$X/ctl/status.tmp" "$X/ctl/status"
 }

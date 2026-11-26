@@ -1,8 +1,8 @@
-# Veradroid-Libra2
+# Veradroid-Kobo (Libra 2 / Libra Colour)
 
-*An optimized Android 7.1.1 reading environment (VeraDroid port) for **Kobo Libra 2 (N418)** — supporting both **NickelMenu** and **KOReader**, true `mem` deep sleep, NEON Skia E-Ink rendering, and incremental offline upgrades.*
+*An optimized Android 7.1.1 reading environment (VeraDroid port) for **Kobo Libra 2 (N418)** and **Kobo Libra Colour (N428)** — supporting both **NickelMenu** and **KOReader**, true `mem` deep sleep, NEON Skia E-ink rendering, and incremental offline upgrades.*
 
-将开源项目 [VeraDroid](https://github.com/xyc0677/veradroid)（`legacy` 分支，Android 7.1.1 / 32-bit ARMv7）深度移植并优化到 **Kobo Libra 2 (N418)**，复用并融合 [Koboweread](https://github.com/scokyfei/Koboweread) 的内核模块与阅读器硬件调优方案。
+将开源项目 [VeraDroid](https://github.com/xyc0677/veradroid)（`legacy` 分支，Android 7.1.1 / 32-bit ARMv7）深度移植并优化到 **Kobo Libra 2 (N418)**，并进一步适配 **Kobo Libra Colour (N428)**；复用并融合 [Koboweread](https://github.com/scokyfei/Koboweread) 的内核模块与阅读器硬件调优方案。
 
 Android 运行在独立的 `ext4` 系统镜像（`veradroid-sys.img`）与挂载命名空间容器内，**不刷机、不替换 Kobo 内核、不改动 Kobo 系统分区与原生书库**；退出后自动卸载镜像与 loop 设备，不影响 USB 传书，随时一键返回 Kobo 原生界面（Nickel）或 KOReader。
 
@@ -18,8 +18,8 @@ Android 运行在独立的 `ext4` 系统镜像（`veradroid-sys.img`）与挂载
 
 | 项目 | 要求 |
 |---|---|
-| 设备型号 | **Kobo Libra 2 (N418)**（i.MX6SL 单核 Cortex-A9 + NEON，512 MB RAM，1264×1680 300 ppi） |
-| 支持固件 | **4.38.23852**（内核 `4.1.15-00868-g58a2758be07`）或 **4.34.20097**（内核 `4.1.15-00838-g349fbf5767c`） |
+| 设备型号 | **Kobo Libra 2 (N418)**（i.MX6SL 单核 Cortex-A9 + NEON，512 MB RAM，1264×1680 300 ppi）<br>**Kobo Libra Colour (N428 / N428B)**（MediaTek MT8113T 双核 Cortex-A53，1 GB RAM，1264×1680 Kaleido 3 彩色墨水屏） |
+| 支持固件 | Libra 2：**4.38.23852**（内核 `4.1.15-00868-g58a2758be07`）或 **4.34.20097**（内核 `4.1.15-00838-g349fbf5767c`）<br>Libra Colour：**4.42.23303**（内核 `4.9.77`） |
 | 启动入口 | **NickelMenu**（可独立使用，无需安装 KOReader）或 **KOReader 插件**（两者可同时安装） |
 | 存储空间 | 全新安装建议 Kobo 剩余空间 **≥ 2.5 GB**（首次启动自动创建 2 GB ext4 镜像） |
 
@@ -33,13 +33,13 @@ Android 运行在独立的 `ext4` 系统镜像（`veradroid-sys.img`）与挂载
   - **4 档实时 E-Ink 文字笔锋加黑**（Skia NEON 字形层加速 + Gamma 增强）与 **32×32 插图智能抖动**（文字锐利、插图柔和）；
   - 阅读页专属翻页动画门控、弹窗/目录收起自动清残影、大图后自动消残影、单应用独立显示配置。
 - **完整硬件操控与手势 (`veradroid-input`)**：
-  - Elan 触摸屏 `--swap-xy` 坐标映射、**重力感应自动旋转**（`kx122`，0°/90°/180°/270° 无重启随动）；
+  - Elan 触摸屏 `--swap-xy` 坐标映射、**重力感应自动旋转**（Libra 2 `kx122` / Libra Colour gpio-keys 旋转信号，0°/90°/180°/270° 无重启随动）；
   - 实体翻页键支持互换与 **14 种长按快捷功能**；
   - **左右边缘上下滑动无级调亮度与色温**（直写 `mxc_msp430` / `lm3630a` sysfs，支持左右互换）；
   - 底边三段手势、顶边下拉快捷面板、双指手势、四角长按（默认左下角长按 2 秒返回 Kobo）。
 - **低内存与深度省电调优**：
   - `256 MB` ZRAM + `vdsqueeze` 冷页预挤压 + 零 FUSE `kobo-sdcard` 绑定挂载 + 后台应用智能 `speed-profile` / `speed` AOT 预编译；
-  - **真 `mem` 深度休眠**（过滤 Linux 4.1 伪 RTC 唤醒，待机功耗低至 ~0.1%/h）、阅读静止 15s 自动 Wi-Fi LPS 省电、CPU 静止柔和限频、独立无操作息灯。
+  - **真 `mem` 深度休眠**（过滤 i.MX/MTK 伪 RTC 唤醒，Libra 2 待机功耗低至 ~0.1%/h）、阅读静止 15s 自动 Wi-Fi LPS 省电、CPU 静止柔和限频、独立无操作息灯。
 - **完整 VeraHome 桌面生态**：
   - 6 大分层设置、内置应用商店 & 字体商店、局域网网页传书 / 安装 / 管理（PIN 保护）、离线阅读器、阅读时长统计（结合宿主机触摸时间戳防虚高）、自定义屏保与锁屏。
 - **纯净系统 + 离线增量升级**：
@@ -47,45 +47,49 @@ Android 运行在独立的 `ext4` 系统镜像（`veradroid-sys.img`）与挂载
   - 内置离线升级器（`localupdate.sh`），支持 SHA-256 校验、防降级检查、失败自动回滚，增量升级 **100% 保留已装应用、书籍、阅读进度与设置**。
 
 完整的技术实现、微信读书专项优化与实机基准测试数据见：[`docs/kobo-libra2-optimizations.md`](docs/kobo-libra2-optimizations.md)。
+Libra Colour 的硬件差异、改造点与已知限制见：[`docs/kobo-libra-colour-port.md`](docs/kobo-libra-colour-port.md)。
+
+> **Libra Colour 说明**：显示桥按区域检测色度：含彩色内容（封面、插图、彩色高亮）的区域走 MTK hwtcon 的 **GCC16/GLRC16 + CFA** 彩色波形，纯黑白文字区域继续走快速灰度波形；需要 **FBInk ≥ 1.25.0-544**。内核模块匹配 4.9.77（已在 4.42.23303 / 4.46.23852 上加载验证），升级 Kobo 固件后若内核变化需重新编译模块。
 
 ---
 
 ## 安装与升级指南
 
-请前往本仓库 [Releases](https://github.com/scokyfei/Veradroid-Libra2/releases) 页面下载对应压缩包：
+请前往本仓库 [Releases](https://github.com/scokyfei/Veradroid-Libra2/releases) 页面下载对应机型的压缩包：
 
-- **`Veradroid-Libra2-<版本>-full.zip`**（约 138 MB）：**全新安装完整包**
-- **`Veradroid-Libra2-<版本>-upgrade.zip`**（约 4.6 MB）：**增量升级包**
+- **Libra 2**：`Veradroid-Libra2-<版本>-full.zip`（全新安装完整包）/ `-upgrade.zip`（增量升级包）
+- **Libra Colour**：`Veradroid-LibraColour-<版本>-full.zip`（全新安装完整包）/ `-upgrade.zip`（增量升级包）
 
 ### 一、全新安装（免 SSH，USB 解压即用）
 
-1. 确保 Kobo Libra 2 剩余空间 **≥ 2.5 GB**。
+1. 确保 Kobo 剩余空间 **≥ 2.5 GB**。
 2. 用 USB 数据线连接电脑，打开 Kobo U 盘根目录（即设备上的 `/mnt/onboard`）。
-3. 将 `Veradroid-Libra2-<版本>-full.zip` 中的 `.adds` 文件夹完整解压合并到 Kobo 根目录：
+3. 将对应机型 `-full.zip` 中的 `.adds` 文件夹完整解压合并到 Kobo 根目录：
    ```text
    .adds/
-   ├── Veradroid-Libra2/                         # 主程序与纯净 Android rootfs
-   ├── nm/Veradroid-Libra2                       # NickelMenu 入口（不覆盖你已有的 nm/config）
-   └── koreader/plugins/Veradroid-Libra2.koplugin/  # KOReader 插件入口
+   ├── Veradroid-Libra2/          # Libra 2 主程序与纯净 Android rootfs
+   │   或 Veradroid-LibraColour/  # Libra Colour 主程序与纯净 Android rootfs
+   ├── nm/<对应机型>              # NickelMenu 入口（不覆盖你已有的 nm/config）
+   └── koreader/plugins/<对应机型>.koplugin/  # KOReader 插件入口
    ```
 4. 安全弹出 USB，直接从以下任一入口启动：
-   - **NickelMenu**：右下角菜单 → `Veradroid-Libra2 (Android)`
-   - **KOReader**：顶部菜单 → 工具 → `Veradroid-Libra2` → `启动 Veradroid-Libra2 (Android)`
+   - **NickelMenu**：右下角菜单 → `Veradroid-Libra2 (Android)` 或 `Veradroid-LibraColour (Android)`
+   - **KOReader**：顶部菜单 → 工具 → `Veradroid-Libra2` / `Veradroid-LibraColour` → `启动 (Android)`
 5. 首次启动会自动创建 2 GB ext4 系统镜像（约 1–2 分钟，屏幕有进度提示，请勿关机），完成后自动删除临时 `rootfs.tar.gz` 并直接进入 Android 桌面。
-   > 若习惯使用 SSH 安装，也可直接执行：`sh /mnt/onboard/.adds/Veradroid-Libra2/install.sh`
+   > 若习惯使用 SSH 安装，也可直接执行：`sh /mnt/onboard/.adds/<对应机型>/install.sh`
 
 ### 二、增量升级（保留全部应用、书籍与设置）
 
 - **方式 A（推荐，自动校验与失败回滚）**：
-  1. 将 `Veradroid-Libra2-<版本>-upgrade.zip` 直接复制到 Kobo 的 `.adds/Veradroid-Libra2/update/` 目录。
-  2. 弹出 USB 后，点击 NickelMenu「`Veradroid-Libra2 检查更新`」或 KOReader「`应用离线升级包`」，或直接启动 `Veradroid-Libra2` 即可自动完成升级。
+  1. 将 `<对应机型>-<版本>-upgrade.zip` 直接复制到 Kobo 的 `.adds/<对应机型>/update/` 目录。
+  2. 弹出 USB 后，点击 NickelMenu「`检查更新`」或 KOReader「`应用离线升级包`」，或直接启动 VeraDroid 即可自动完成升级。
 - **方式 B（USB 覆盖解压）**：
   - 将 `-upgrade.zip` 中的 `.adds` 目录直接解压覆盖到 Kobo 根目录即可（升级包不含 `veradroid-sys.img` 与 `settings.conf`，不会清除任何个人数据）。
 
 ### 三、安装第三方应用（如微信读书墨水屏版）
 
 1. **应用商店**：进入桌面 →「应用商店」直接搜索安装；
-2. **USB 自动安装**：将 32 位 ARM（`armeabi-v7a`）APK 放入 `.adds/Veradroid-Libra2/apps/`，启动后自动安装并清理原 APK；
+2. **USB 自动安装**：将 32 位 ARM（`armeabi-v7a`）APK 放入 `.adds/<对应机型>/apps/`，启动后自动安装并清理原 APK；
 3. **局域网传书网页**：打开桌面「传书与安装」，在电脑/手机浏览器上传 APK 或电子书。
 
 ### 四、常用操作
@@ -108,12 +112,20 @@ ZIG=/path/to/zig FBINK_DIR=/path/to/fbink E2FSPROGS_TAR=/path/to/e2fsprogs-1.47.
 TOOLS_DIR=/path/to/tools bash tools/kobo/build-verahome.sh
 
 # 3. 生成纯净发布包（full.zip + upgrade.zip + SHA256SUMS.txt，内置隐私审计）
+#    Libra 2：默认 KMOD_DIR 不含 4.1.15 模块时需显式指定：
+#    KMOD_DIR=/path/to/Koboweread/kernels
+#    Libra Colour：加 KOBO_MODEL=libracolour，4.9.77 模块已在仓库内
+KOBO_MODEL=libracolour \
 BIN_DIR=build/kobo-bin \
 EXTRA_BIN_DIR=/path/to/extra-kobo-bins \
 LEGACY_DIR=/path/to/veradroid-legacy/veradroid-pw6 \
-KMOD_DIR=/path/to/Koboweread/kernels \
   sh tools/kobo/build-release.sh dist
 ```
+
+> Libra Colour 的 4.9.77 内核模块已随仓库放在 `host/kobo/kmod/4.9.77/`；可用
+> `sh tools/kobo/fetch-libra-colour-kmod.sh` 重新下载并校验。FBInk 必须支持 N428
+> （≥ 1.25.0-544），否则屏幕不会刷新；**`veradroid-epd` 必须用新版 FBInk 源码重新编译**
+> （显示桥静态链接 FBInk，只换脚本不够）。
 
 ---
 
@@ -121,8 +133,8 @@ KMOD_DIR=/path/to/Koboweread/kernels \
 
 | 目录 | 说明 |
 |---|---|
-| [`host/kobo/`](host/kobo/) | Kobo Libra 2 宿主机脚本（容器、显示、输入、休眠、网络、编译、离线升级、NickelMenu & KOReader 双入口、硬件配置） |
-| [`display/legacy/epd.c`](display/legacy/epd.c) | Kobo EPDC v2 墨水屏显示桥（FBInk + NEON 灰度转换 + 局部插图抖动 + Eclipse 夜间波形） |
+| [`host/kobo/`](host/kobo/) | Kobo 宿主机脚本（容器、显示、输入、休眠、网络、编译、离线升级、NickelMenu & KOReader 双入口、硬件配置；`models/` 同时含 libra2 与 libracolour） |
+| [`display/legacy/epd.c`](display/legacy/epd.c) | Kobo 墨水屏显示桥（FBInk + NEON 灰度转换 + 局部插图抖动 + Eclipse 夜间波形；Libra Colour 的 GCC16/GLRC16 彩色 CFA 路径） |
 | [`input/legacy/vinput.c`](input/legacy/vinput.c) | 触摸 / 实体翻页键 / `kx122` 自动旋转 / 边缘滑光输入前端 |
 | [`android/packages/VeraHome/`](android/packages/VeraHome/) | Kobo 适配版 VeraHome 桌面与系统服务源码 |
 | [`tools/kobo/`](tools/kobo/) | Kobo 编译、打包、Bionic `madvise`/Skia NEON 垫片与运行时优化脚本 |

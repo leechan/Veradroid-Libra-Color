@@ -6,7 +6,7 @@ diag_save() {
     d=$SYS/data/media/0/Diagnostics/$(date +%Y%m%d-%H%M%S)
     mkdir -p $d && chmod 777 $SYS/data/media/0/Diagnostics $d 2>/dev/null
     {
-        echo "VeraDroid diagnostics (Kobo Libra 2)"
+        echo "VeraDroid diagnostics (Kobo)"
         date
         echo "model=$(cat $SYS/model 2>/dev/null)"
         echo "version=$(cat $SYS/version 2>/dev/null)"
@@ -111,7 +111,7 @@ diag_save() {
     t "diagnostics saved: $d"
 }
 
-# 返回 Kobo：Kobo Libra 2 默认完整停止以释放挂载供 USB 存储使用。
+# 返回 Kobo：Kobo 默认完整停止以释放挂载供 USB 存储使用。
 do_exit() {
     settings_load
     t "return to kobo requested"
@@ -138,7 +138,26 @@ do_exit() {
 # 调 stop.sh 之前先把自己的输出从系统盘上的 veradroid.log 挪开：stop.sh 不杀调用自己的进程，
 # 这个打开的文件会让 loop 系统盘卸不掉。
 log_release() { t "releasing the log on the system image (stop follows)"; exec >>/tmp/veradroid-stop.log 2>&1; }
-do_stop() { t "stop requested"; log_release; sh $VD/boot/stop.sh >/dev/null 2>&1; exit 0; }
+do_stop() {
+    t "stop requested (pid $$ ppid $PPID watchdog=$(cat $W/watchdog.pid 2>/dev/null) cmd=$(cat $W/cmd.pid 2>/dev/null))"
+    if [ -f "$VD/debugstop" ]; then
+        mkdir -p "$VD/logs" 2>/dev/null
+        ps > "$VD/logs/ps-at-stop.txt" 2>&1 || true
+        ls -la "$X/ctl" > "$VD/logs/ctl-at-stop.txt" 2>&1 || true
+        tail -80 /tmp/veradroid-actions.log > "$VD/logs/actions-at-stop.txt" 2>/dev/null || true
+        cp "$W/input.log" "$VD/logs/input-at-stop.log" 2>/dev/null || true
+        cp "$W/input.err" "$VD/logs/input-err-at-stop.txt" 2>/dev/null || true
+        cp "$W/epd.log" "$VD/logs/epd-at-stop.log" 2>/dev/null || true
+        if type adb_sh >/dev/null 2>&1; then
+            t "capturing android state before stop"
+            adb_sh 'export PATH=/system/bin:/system/xbin; logcat -b all -d -v threadtime' > "$VD/logs/android-logcat-at-stop.txt" 2>&1 || true
+            adb_sh 'ps' > "$VD/logs/android-ps-at-stop.txt" 2>&1 || true
+            adb_sh 'dumpsys activity activities' > "$VD/logs/android-activities-at-stop.txt" 2>&1 || true
+            adb_sh 'dumpsys window windows' > "$VD/logs/android-window-at-stop.txt" 2>&1 || true
+        fi
+    fi
+    log_release; sh $VD/boot/stop.sh >/dev/null 2>&1; exit 0
+}
 do_restart() {
     t "restart requested"; touch $W/restarting
     log_release; sh $VD/boot/stop.sh >/dev/null 2>&1
@@ -291,7 +310,7 @@ watchdog() {
         # 系统盘快满了就自动扩（storage.sh）。冻结时不做。
         [ -f $W/saver_frozen ] || [ -f $W/frozen ] || { type st_auto_tick >/dev/null 2>&1 && st_auto_tick; }
         if [ -f $X/ctl/diag ]; then rm -f $X/ctl/diag; ( diag_save; touch $X/ctl/diag.done ) & fi
-        [ -f $X/ctl/stop ] && { rm -f $X/ctl/stop; do_stop; }
+        [ -f $X/ctl/stop ] && { t "ctl/stop file present (created outside cmd.sh)"; rm -f $X/ctl/stop; do_stop; }
         [ -f $X/ctl/restart ] && { rm -f $X/ctl/restart; do_restart; }
         [ -f $X/ctl/exit ] && { rm -f $X/ctl/exit; do_exit; }
     done

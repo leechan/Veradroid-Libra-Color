@@ -173,7 +173,7 @@ final class HostLink {
         try { return Integer.parseInt(m.get(key)); } catch (Exception e) { return def; }
     }
 
-    /** True when running on a Kobo host (e.g. Kobo Libra 2, imageclass=kobo-libra2). */
+    /** True when running on a Kobo host (e.g. Kobo Libra 2 or Libra Colour, imageclass=kobo-<model>). */
     static boolean isKobo() {
         Map<String, String> st = kv(CTL + "status");
         String ic = st.get("imageclass");

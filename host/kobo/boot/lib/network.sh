@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Shared host networking for Kobo Libra 2 (HOSTNS=1 / VdHostNet).
+# Shared host networking for Kobo (HOSTNS=1 / VdHostNet).
 # Android shares Kobo's wlan0 directly without net namespace or slirp4netns.
 
 net_setup() {
@@ -7,9 +7,10 @@ net_setup() {
       grep '^nameserver' "$(readlink -f /etc/resolv.conf 2>/dev/null || echo /etc/resolv.conf)" 2>/dev/null; } > "$W/resolv.conf"
 }
 
-wifi_dev() { for d in wlan0 eth0; do [ -d "/sys/class/net/$d" ] && { echo "$d"; return 0; }; done; echo wlan0; }
+wifi_dev() { for d in "${WIFI_IF:-wlan0}" wlan0 eth0; do [ -d "/sys/class/net/$d" ] && { echo "$d"; return 0; }; done; echo "${WIFI_IF:-wlan0}"; }
 
 wifi_ps_state() {
+    [ "${WIFI_PS_SUPPORTED:-1}" = 1 ] || { echo off; return 0; }
     d=$(wifi_dev)
     if [ -r "/proc/net/rtl8723ds/$d/ps_info" ]; then
         grep -q 'LPS mode: NO LPS' "/proc/net/rtl8723ds/$d/ps_info" 2>/dev/null && echo off || echo on
@@ -19,6 +20,7 @@ wifi_ps_state() {
 }
 
 wifi_ps_set() {
+    [ "${WIFI_PS_SUPPORTED:-1}" = 1 ] || return 0
     d=$(wifi_dev)
     if [ -r "/proc/net/rtl8723ds/$d/ps_info" ] && command -v iwpriv >/dev/null 2>&1; then
         case "$1" in
@@ -90,7 +92,7 @@ wifi_ps_tick() {
 hostnet_write() {
     dev=$(ip route 2>/dev/null | awk '$1 == "default" { for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
     gw=$(ip route 2>/dev/null | awk '$1 == "default" { for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }')
-    [ -n "$dev" ] || dev=wlan0
+    [ -n "$dev" ] || dev=${WIFI_IF:-wlan0}
     addr=$(ip -4 addr show dev "$dev" 2>/dev/null | awk '$1 == "inet" { print $2; exit }')
     if [ -z "$addr" ]; then
         ip4=$(kobo_wifi_ip)

@@ -5,8 +5,10 @@ VeraDroid's own code is licensed under the GNU General Public License,
 version 3 or (at your option) any later version. See LICENSE. Files carry an
 SPDX-License-Identifier line; files without one are either third-party
 (AOSP overlays keep the licence of the file they replace) or still awaiting a
-licence decision, see THIRD_PARTY.md. This repository contains source code
-only; prebuilt binaries, APKs, fonts and system images are not included.
+licence decision, see THIRD_PARTY.md. This repository contains source code plus the small,
+verified Kobo Libra Colour (N428) kernel modules under
+host/kobo/kmod/4.9.77/ (GPL-2.0, sources linked in that directory);
+other prebuilt binaries, APKs, fonts and system images are not included.
 
 VeraDroid is an independent project. It is not affiliated with, endorsed by or
 sponsored by Amazon. "Kindle" is a trademark of Amazon.com, Inc. or its
@@ -26,8 +28,12 @@ licences, versions and the place to get the corresponding source:
       MIT-style          https://github.com/mkj/dropbear
   Android Open Source Project, android-7.1.1_r61 (system image, libandroid_runtime.so)
       Apache-2.0 and others   https://source.android.com/
-  Linux binder driver (external module for old kernels, built on demand, not shipped)
+  Linux binder driver (external module for old kernels, built on demand)
       GPL-2.0-only       https://android.googlesource.com/kernel/common
+  Kobo Libra Colour 4.9.77 modules: binder32 (protocol-7 binder), kobo_madvise,
+  kobo_pagecache (prebuilt .ko in host/kobo/kmod/4.9.77/)
+      GPL-2.0-only       https://github.com/kobolabs/Kobo-Reader/tree/master/hw/mt8113-libraC_vision7
+                        https://github.com/lyoe/Koboweread-Colour/tree/main/src/kmod-mtk
   glibc / libgcc (statically linked into the host programs)
       LGPL-2.1-or-later / GPL-3.0-or-later with the GCC runtime library exception
   LXGW WenKai 1.510 (fonts/LXGWWenKai-Regular.ttf in the packages, see fonts/OFL.txt)

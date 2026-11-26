@@ -1,0 +1,5 @@
+# NickelMenu entries for Veradroid-LibraColour on Kobo Libra Colour (N428).
+# Placed at /mnt/onboard/.adds/nm/Veradroid-LibraColour — works standalone without KOReader.
+menu_item:main:Veradroid-LibraColour (Android):cmd_spawn:/bin/sh /mnt/onboard/.adds/Veradroid-LibraColour/boot/veradroid.sh home
+menu_item:main:Veradroid-LibraColour 停止:cmd_spawn:/bin/sh /mnt/onboard/.adds/Veradroid-LibraColour/boot/stop.sh
+menu_item:main:Veradroid-LibraColour 检查更新:cmd_output:500:/bin/sh /mnt/onboard/.adds/Veradroid-LibraColour/boot/lib/localupdate.sh install

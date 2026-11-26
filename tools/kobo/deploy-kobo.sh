@@ -1,23 +1,28 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Package and deploy VeraDroid for Kobo Libra 2 over SSH.
+# Package and deploy VeraDroid for Kobo (Libra 2 / Libra Colour) over SSH.
 #
 # Usage:
-#   KOBO_HOST=<KOBO_IP> KOBO_PORT=2222 \
+#   KOBO_MODEL=libracolour KOBO_HOST=<KOBO_IP> KOBO_PORT=2222 \
 #   BIN_DIR=/path/to/kobo-bin \
 #   LEGACY_DIR=/path/to/veradroid-pw6 \
-#   KMOD_DIR=/path/to/Koboweread/kernels \
 #   sh tools/kobo/deploy-kobo.sh [--init-img]
 set -eu
 
 TOP=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+KOBO_MODEL=${KOBO_MODEL:-libra2}
+case "$KOBO_MODEL" in
+    libra2)      PKG_NAME=Veradroid-Libra2;      KMOD_KERS="4.1.15-00868-g58a2758be07 4.1.15-00838-g349fbf5767c"; MODEL_NAME="Kobo Libra 2" ;;
+    libracolour) PKG_NAME=Veradroid-LibraColour; KMOD_KERS="4.9.77"; MODEL_NAME="Kobo Libra Colour" ;;
+    *) echo "deploy-kobo: KOBO_MODEL must be libra2 or libracolour" >&2; exit 2 ;;
+esac
 HOST=${KOBO_HOST:?set KOBO_HOST to your Kobo IP address}
 PORT=${KOBO_PORT:-2222}
 USER=${KOBO_USER:-root}
-REMOTE_VD=${KOBO_VD:-/mnt/onboard/.adds/veradroid-libra2-dev}
+REMOTE_VD=${KOBO_VD:-/mnt/onboard/.adds/veradroid-${KOBO_MODEL}-dev}
 BIN_DIR=${BIN_DIR:-$TOP/build/kobo-bin}
 LEGACY_DIR=${LEGACY_DIR:-}
-KMOD_DIR=${KMOD_DIR:-}
+KMOD_DIR=${KMOD_DIR:-$TOP/host/kobo/kmod}
 SSH_HELPER=${SSH_HELPER:-}
 INIT_IMG=0
 for arg in "$@"; do
@@ -57,16 +62,19 @@ if [ -n "$LEGACY_DIR" ] && [ -d "$LEGACY_DIR" ]; then
 fi
 
 if [ -n "$KMOD_DIR" ] && [ -d "$KMOD_DIR" ]; then
-    echo "[3/4] Staging Kobo 4.1.15 kernel modules ..."
-    for kver in 4.1.15-00868-g58a2758be07 4.1.15-00838-g349fbf5767c; do
+    echo "[3/4] Staging Kobo kernel modules for $KOBO_MODEL ..."
+    for kver in $KMOD_KERS; do
         if [ -d "$KMOD_DIR/$kver" ]; then
             mkdir -p "$STAGE/kmod/$kver"
             cp -a "$KMOD_DIR/$kver"/*.ko "$STAGE/kmod/$kver/" 2>/dev/null || true
+            for mf in SHA256SUMS README.md firmware; do
+                [ -f "$KMOD_DIR/$kver/$mf" ] && cp "$KMOD_DIR/$kver/$mf" "$STAGE/kmod/$kver/"
+            done
         fi
     done
 fi
 
-TAR=$TOP/build/veradroid-kobo-libra2-host.tar.gz
+TAR=$TOP/build/veradroid-kobo-${KOBO_MODEL}-host.tar.gz
 tar -czf "$TAR" -C "$STAGE" .
 echo "[4/4] Packaged host payload: $TAR ($(du -h "$TAR" | awk '{print $1}'))"
 
@@ -89,7 +97,12 @@ put_file() {
 echo "[deploy] Uploading host payload to $HOST:$PORT -> $REMOTE_VD ..."
 run_remote "mkdir -p $REMOTE_VD /mnt/onboard/.adds/koreader/plugins"
 put_file "$TAR" "/tmp/veradroid-kobo-host.tar.gz"
-run_remote "tar -xzf /tmp/veradroid-kobo-host.tar.gz -C $REMOTE_VD && rm -f /tmp/veradroid-kobo-host.tar.gz && rm -rf /mnt/onboard/.adds/koreader/plugins/veradroid_libra2_dev.koplugin && cp -a $REMOTE_VD/koplugin/veradroid_libra2_dev.koplugin /mnt/onboard/.adds/koreader/plugins/ && [ -d /mnt/onboard/.adds/nm ] && cp -f $REMOTE_VD/nm/veradroid_libra2_dev /mnt/onboard/.adds/nm/veradroid_libra2_dev || true && chmod 755 $REMOTE_VD/bin/* $REMOTE_VD/boot/*.sh"
+if [ -d "$TOP/host/kobo/koplugin/veradroid_libra2_dev.koplugin" ] && [ "$KOBO_MODEL" = libra2 ]; then
+    DEV_PLUGIN=veradroid_libra2_dev.koplugin
+else
+    DEV_PLUGIN=${PKG_NAME}.koplugin
+fi
+run_remote "tar -xzf /tmp/veradroid-kobo-host.tar.gz -C $REMOTE_VD && rm -f /tmp/veradroid-kobo-host.tar.gz && rm -rf /mnt/onboard/.adds/koreader/plugins/$DEV_PLUGIN && cp -a $REMOTE_VD/koplugin/$DEV_PLUGIN /mnt/onboard/.adds/koreader/plugins/ && [ -d /mnt/onboard/.adds/nm ] && cp -f $REMOTE_VD/nm/${PKG_NAME} /mnt/onboard/.adds/nm/${PKG_NAME} || true && chmod 755 $REMOTE_VD/bin/* $REMOTE_VD/boot/*.sh"
 
 if [ "$INIT_IMG" = 1 ]; then
     [ -n "$LEGACY_DIR" ] && [ -f "$LEGACY_DIR/rootfs.tar.gz" ] || { echo "deploy-kobo: --init-img needs LEGACY_DIR with rootfs.tar.gz" >&2; exit 2; }
@@ -98,5 +111,5 @@ if [ "$INIT_IMG" = 1 ]; then
     run_remote "sh $REMOTE_VD/boot/init-sysimg.sh $REMOTE_VD/rootfs.tar.gz 2048 && rm -f $REMOTE_VD/rootfs.tar.gz"
 fi
 
-echo "[deploy] Complete! Start on Kobo via KOReader -> Tools -> VeraDroid (Libra 2), or SSH:"
+echo "[deploy] Complete! Start on $MODEL_NAME via KOReader -> Tools -> VeraDroid, or SSH:"
 echo "  sh $REMOTE_VD/boot/veradroid.sh home"

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Sleep / screensaver manager for Kobo Libra 2.
+# Sleep / screensaver manager for Kobo.
 # Driven by hardware KEY_POWER (via veradroid-input -> action.sh power -> $W/power.fifo),
 # VeraHome "sleep" command, and optional idle timeout ($SLEEP_TIMEOUT).
 
@@ -66,14 +66,26 @@ kobo_rtc_wakeup_set() { # $1 = enabled|disabled
     if [ "$want" = disabled ]; then
         [ -w /sys/class/rtc/rtc0/wakealarm ] && echo 0 > /sys/class/rtc/rtc0/wakealarm 2>/dev/null || true
     fi
-    for f in /sys/devices/platform/soc/2100000.aips-bus/21a8000.i2c/i2c-2/2-0032/rtc_ricoh619/power/wakeup \
-             /sys/devices/platform/soc/2000000.aips-bus/20cc000.snvs/20cc000.snvs:snvs-rtc-lp/power/wakeup; do
+    for f in ${RTC_WAKEUP_PATHS:-} \
+             /sys/class/rtc/rtc0/device/power/wakeup \
+             /sys/class/rtc/rtc0/power/wakeup; do
+        [ -n "$f" ] || continue
         [ -w "$f" ] && echo "$want" > "$f" 2>/dev/null || true
     done
 }
 
+kobo_wake_irq_supported() {
+    awk -v names="${SUSPEND_IRQ_NAMES:-Power Hall PageUp PageDown}" '
+        BEGIN { n = split(names, a, " ") }
+        { for (i = 1; i <= n; i++) if ($NF == a[i]) { found = 1; exit } }
+        END { exit !found }' /proc/interrupts 2>/dev/null
+}
+
 kobo_wake_irq_sum() {
-    awk '$NF == "Power" || $NF == "Hall" || $NF == "PageUp" || $NF == "PageDown" { s += $2 } END { print s + 0 }' /proc/interrupts 2>/dev/null
+    awk -v names="${SUSPEND_IRQ_NAMES:-Power Hall PageUp PageDown}" '
+        BEGIN { n = split(names, a, " ") }
+        { for (i = 1; i <= n; i++) if ($NF == a[i]) { s += $2; break } }
+        END { print s + 0 }' /proc/interrupts 2>/dev/null
 }
 
 sleep_timeout_get() {
@@ -99,7 +111,7 @@ sleep_wait_1s() {
 }
 
 kobo_deep_suspend() {
-    # Enter true Linux mem suspend on Kobo Libra 2 (drops standby draw from ~1.8%/h / 34mA to ~0.1%/h).
+    # Enter true Linux mem suspend on Kobo (drops standby draw from ~1.8%/h / 34mA to ~0.1%/h).
     # Skipped while charging so USB charging & SSH debugging stay uninterrupted (screensaver stays active).
     # Spurious RTC/PMIC wakeups (e.g. Android 10-min healthd/AlarmManager alarmtimer) are filtered by
     # checking hardware Power/Hall IRQ counters in /proc/interrupts and immediately re-suspending.
@@ -111,8 +123,11 @@ kobo_deep_suspend() {
     kobo_is_charging && return 1
     [ -f "$W/saver_nofreeze" ] && return 1
 
-    # Power off SDIO Wi-Fi (8723ds + sdio_wifi_pwr) so the radio cannot block suspend or leak current.
-    if [ "$(kobo_wifi_enabled)" = 1 ]; then
+    # Power off SDIO Wi-Fi on models that load it out-of-tree, so the radio
+    # cannot block suspend or leak current. MTK combo Wi-Fi is built in and
+    # stays associated (SLEEP_WIFI_OFF=0): interface down/up would drop SSH and
+    # force a reconnect on every wake.
+    if [ "${SLEEP_WIFI_OFF:-1}" = 1 ] && [ "$(kobo_wifi_enabled)" = 1 ]; then
         echo 1 > "$W/sleep.wifi"
         kobo_wifi_set 0
         t "sleep: wifi powered off for deep suspend"
@@ -122,31 +137,34 @@ kobo_deep_suspend() {
 
     sync
 
-    # Kobo Libra 2 (1264x1680) mxc_epdc_v2_fb enforces dwSafeTicksEP3V3 = 900 ticks (9.0s @ HZ=100)
+    # Kobo (1264x1680) mxc_epdc_v2_fb enforces dwSafeTicksEP3V3 = 900 ticks (9.0s @ HZ=100)
     # after epdc_powerdown() for VEE rail stabilization; earlier /sys/power/state writes fail with -2.
     # Wait interruptibly until >= 10s have elapsed since screensaver draw (and EPDC power_state is off).
+    # MTK hwtcon has no such rail: SUSPEND_VEE_WAIT=0 skips the wait entirely.
     t0=$(cat "$W/saver.t0" 2>/dev/null || echo 0)
     case "$t0" in ''|*[!0-9]*) t0=0 ;; esac
-    w=0
-    while [ $w -lt 12 ]; do
-        if kobo_is_charging; then
-            [ -w /sys/power/state-extended ] && echo 0 > /sys/power/state-extended 2>/dev/null || true
-            t "sleep: deep suspend aborted (charger connected)"
-            return 1
-        fi
-        now=$(date +%s)
-        pstate=$(cat /sys/class/graphics/fb0/power_state 2>/dev/null || echo off)
-        if [ "$pstate" = off ] && { [ "$t0" -eq 0 ] || [ $((now - t0)) -ge 10 ] || [ "$now" -lt "$t0" ]; }; then
-            break
-        fi
-        sleep_wait_1s
-        if [ $? -eq 2 ]; then
-            [ -w /sys/power/state-extended ] && echo 0 > /sys/power/state-extended 2>/dev/null || true
-            t "sleep: deep suspend cancelled by user wakeup"
-            return 2
-        fi
-        w=$((w + 1))
-    done
+    if [ "${SUSPEND_VEE_WAIT:-1}" = 1 ]; then
+        w=0
+        while [ $w -lt 12 ]; do
+            if kobo_is_charging; then
+                [ -w /sys/power/state-extended ] && echo 0 > /sys/power/state-extended 2>/dev/null || true
+                t "sleep: deep suspend aborted (charger connected)"
+                return 1
+            fi
+            now=$(date +%s)
+            pstate=$(cat /sys/class/graphics/fb0/power_state 2>/dev/null || echo off)
+            if [ "$pstate" = off ] && { [ "$t0" -eq 0 ] || [ $((now - t0)) -ge 10 ] || [ "$now" -lt "$t0" ]; }; then
+                break
+            fi
+            sleep_wait_1s
+            if [ $? -eq 2 ]; then
+                [ -w /sys/power/state-extended ] && echo 0 > /sys/power/state-extended 2>/dev/null || true
+                t "sleep: deep suspend cancelled by user wakeup"
+                return 2
+            fi
+            w=$((w + 1))
+        done
+    fi
 
     rc=1
     spurious_burst=0
@@ -188,6 +206,14 @@ kobo_deep_suspend() {
         if [ "${irq_after:-0}" != "${irq_before:-0}" ]; then
             rc=0
             t "sleep: real user wakeup from mem suspend (tries=$i irq $irq_before->$irq_after)"
+            break
+        fi
+        # MTK boards do not expose the i.MX IRQ labels. Trust the first resume
+        # (SUSPEND_TRUST_WAKE=1) instead of treating every wake as a spurious
+        # RTC alarm and re-suspending five times.
+        if [ "${SUSPEND_TRUST_WAKE:-0}" = 1 ] && ! kobo_wake_irq_supported; then
+            rc=0
+            t "sleep: woke from mem suspend (IRQ accounting unavailable, trusting wake)"
             break
         fi
 

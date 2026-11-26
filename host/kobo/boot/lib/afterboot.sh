@@ -234,7 +234,7 @@ after_boot() {
     # 离线更新文件夹（lib/localupdate.sh）：装好就有这个文件夹和一份说明，用户才知道离线包往哪里放
     if [ ! -f $VD/update/README.txt ]; then
         mkdir -p $VD/update 2>/dev/null && cat > $VD/update/README.txt 2>/dev/null <<'RDME'
-VeraDroid for Kobo Libra 2
+VeraDroid for Kobo
 
 可将需要自动安装的 Android 安装包（.apk）放入上级目录的 apps/ 文件夹，
 启动 VeraDroid 后将自动安装并删除原安装包。

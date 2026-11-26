@@ -1,5 +1,7 @@
 # Kobo Libra 2 (N418) 功能变更、优化清单与基准记录
 
+> 本文档记录的是 **Libra 2（N418）** 的调优与基准。Libra Colour（N428）的硬件差异、binder32 / MTK hwtcon / 触摸镜像 / 电源键等适配见 [`kobo-libra-colour-port.md`](kobo-libra-colour-port.md)。
+
 本文档完整汇总 `kobo-libra2` 分支自项目启动（`5dc32b2`）至今在 **Kobo Libra 2（单核 i.MX6SL Cortex-A9 1 GHz + 512 MB RAM，Linux 4.1.15）** 上完成的**全部功能新增、精简/移除项、底层硬件修复、性能优化措施**及实机基准测试记录，并按作用范围明确区分：
 1. **项目功能增删与硬件适配全景（新增功能 / 精简移除 / 关键硬件修复）**
 2. **全局系统、内核与墨水屏显示层优化（对所有程序均生效）**

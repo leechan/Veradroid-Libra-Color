@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Container lifecycle for VeraDroid on Kobo Libra 2:
+# Container lifecycle for VeraDroid on Kobo:
 #   - Private mount namespace via `busybox unshare -m` + `pivot_init` into $R
 #   - Shared host network (HOSTNS=1 / androidboot.vdhostnet=1)
 #   - Out-of-tree /dev/binder bound into container /dev/binder
@@ -10,16 +10,17 @@ input_find() { # $1 = regex matching N: Name=...
 }
 
 touch_setup() {
-    # Physical keys on Kobo Libra 2 (gpio-keys) are grabbed & mapped by veradroid-input (--keydev).
+    # Physical keys on Kobo (gpio-keys) are grabbed & mapped by veradroid-input (--keydev).
     KFB_KEYS=
     export KFB_KEYS
 }
 
 display_prepare() {
     rm -rf "$X"; mkdir -p "$X/ctl"
-    # Kobo Libra 2 native portrait panel is 1264x1680 (stride 1280).
-    # FBInk -e reports viewWidth/viewHeight = 1264/1680.
-    viewWidth=; viewHeight=; viewVisWidth=; deviceName="Kobo Libra 2"
+    # Native portrait panel is 1264x1680 on both N418 (i.MX EPDC) and N428
+    # (MTK hwtcon). FBInk -e is authoritative; the model profile only provides
+    # a fallback when fbink is missing.
+    viewWidth=; viewHeight=; viewVisWidth=; deviceName=$(kobo_model_name)
     if [ -x "$FBINK" ]; then
         eval "$("$FBINK" -e 2>/dev/null)" || true
     fi
@@ -29,17 +30,17 @@ display_prepare() {
             set -- $m; viewWidth=$1; viewHeight=$2
         fi
     fi
-    viewWidth=${viewWidth:-1264}
-    viewHeight=${viewHeight:-1680}
+    viewWidth=${viewWidth:-${FB_PANEL_W:-1264}}
+    viewHeight=${viewHeight:-${FB_PANEL_H:-1680}}
     viewVisWidth=${viewWidth}
     case "$(rot_deg)" in
         90|270) echo "${viewHeight} ${viewVisWidth} ${deviceName}" > "$X/info" ;;
         *)      echo "${viewWidth} ${viewHeight} ${deviceName}" > "$X/info" ;;
     esac
-    echo "libra2" > "$X/model"
+    echo "${MODEL_ID:-$(kobo_model)}" > "$X/model"
     hwc_prepare
     chmod -R 777 "$X"
-    t "display: prepared ${viewWidth}x${viewHeight} (${deviceName}), rot=$(rot_deg)"
+    t "display: prepared ${viewWidth}x${viewHeight} (${deviceName}), model=${MODEL_ID:-?} fb_mtk=${FB_MTK:-0} color=${FB_COLOR:-0} rot=$(rot_deg)"
 }
 
 hwc_prepare() {
@@ -76,7 +77,12 @@ rot_args() {
 
 display_start() {
     [ -x "$VD/bin/veradroid-epd" ] || { t "display: veradroid-epd missing"; return 1; }
-    : > "$W/epd.log"
+    epdlog=$W/epd.log
+    if [ -f "$VD/debugcolor" ]; then
+        mkdir -p "$VD/logs" 2>/dev/null
+        epdlog=$VD/logs/epd-color.log
+    fi
+    : > "$epdlog"
     "$VD/bin/veradroid-epd" run "$X/fb" "$X/epd.fifo" "$X/ctl" \
         --w "${viewWidth:-1264}" --h "${viewHeight:-1680}" \
         --contrast "${KFB_CONTRAST:-1.3}" --dither "${KFB_DITHER:-3}" \
@@ -91,7 +97,7 @@ display_start() {
         --scroll-style "${KFB_SCROLLSTYLE:-1}" --scroll-wfm "${KFB_SCROLLWFM:-a2}" \
         --gcn "${KFB_GCN:-0}" \
         --eclipse "${KFB_ECLIPSE:-1}" --dark-crush "${KFB_DARKCRUSH:-36}" --heavy-flash "${KFB_HEAVY_FLASH:-1}" \
-        --nice "${KFB_EPD_NICE:--8}" $(rot_args) >>"$W/epd.log" 2>&1 &
+        --nice "${KFB_EPD_NICE:--8}" $(rot_args) >>"$epdlog" 2>&1 &
     echo $! > "$W/epd.pid"
     rot_deg > "$W/rotate"
     touch "$W/rotate.live"
@@ -236,6 +242,9 @@ container_start() {
             cp "$VD/VERSION" "$SYS/version.tmp" 2>/dev/null && mv -f "$SYS/version.tmp" "$SYS/version" 2>/dev/null || true
         fi
     fi
+    # Record the running model for diagnostics / VeraHome (an image created on
+    # one model can be moved to the other; the hardware profile is model-aware).
+    [ -d "$SYS" ] && printf '%s\n' "${MODEL_ID:-$(kobo_model)}" > "$SYS/model" 2>/dev/null || true
     # Prevent Android init.rc `mount rootfs rootfs / ro remount` from flipping the
     # shared ext4 loop superblock (/dev/loop0 holding both rootfs and /data) read-only!
     if [ -w "$R/init.rc" ] && grep -q '^[[:space:]]*mount rootfs rootfs / ro remount' "$R/init.rc" 2>/dev/null; then
@@ -442,7 +451,7 @@ run_in_ns() {
     # BusyBox drops MS_BIND on remount and turns the entire veradroid-sys.img ext4 superblock read-only!
 
     mount -t tmpfs -o nosuid,mode=755 tmpfs "$R/dev" || exit 1
-    for n in null zero full tty random urandom kmsg fuse; do
+    for n in null zero full tty random urandom kmsg fuse ashmem ion; do
         [ -e "/dev/$n" ] && touch "$R/dev/$n" && mount --bind "/dev/$n" "$R/dev/$n"
     done
 
@@ -453,7 +462,7 @@ run_in_ns() {
         mount --bind /dev/binder "$R/dev/binder" || { echo "veradroid: failed to bind /dev/binder" >&2; exit 1; }
         chmod 666 "$R/dev/binder" 2>/dev/null || true
     else
-        echo "veradroid: /dev/binder missing (binder_linux.ko not loaded)" >&2
+        echo "veradroid: /dev/binder missing (binder module not loaded)" >&2
         exit 1
     fi
     if [ -c /dev/kobo_madvise ]; then

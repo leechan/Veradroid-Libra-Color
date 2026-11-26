@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Offline system image resize helper for Kobo Libra 2.
+# Offline system image resize helper for Kobo.
 # Usage: sh resize.sh <MB>
 {
 VD=${VD:-$(cd "$(dirname "$0")/.." && pwd)}

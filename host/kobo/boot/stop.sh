@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Cleanly stop VeraDroid on Kobo Libra 2, unmount system image, and resume KOReader/Nickel.
+# Cleanly stop VeraDroid on Kobo, unmount system image, and resume KOReader/Nickel.
 
 VD=${VD:-$(cd "$(dirname "$0")/.." && pwd)}
 export VD
@@ -8,6 +8,7 @@ export VD
 for m in settings memory freeze framework container input network; do
     [ -f "$VD/boot/lib/$m.sh" ] && . "$VD/boot/lib/$m.sh"
 done
+type settings_load >/dev/null 2>&1 && settings_load
 
 STALE=; [ "$1" = "--stale" ] && STALE=1
 RS=; [ -f "$W/restarting" ] && RS=1

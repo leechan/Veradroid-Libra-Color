@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Memory, zram, ART heap, VM tuning, readahead, and loop page-cache deduplication for Kobo Libra 2 (512 MB RAM).
+# Memory, zram, ART heap, VM tuning, readahead, and loop page-cache deduplication for Kobo (512 MB RAM).
 
 overcommit_on() {
     [ -f "$W/overcommit.state" ] || cat /proc/sys/vm/overcommit_memory > "$W/overcommit.state"
@@ -41,9 +41,10 @@ heap_fix() {
     _prop ro.config.max_starting_bg "${MAX_STARTING_BG:-2}"
     _prop ro.sys.fw.bg_apps_limit "${PROC_LIMIT:-2}"
     _prop persist.sys.strictmode.disable true
-    _prop ro.product.model "VeraDroid on Kobo Libra 2"
-    _prop ro.product.board "libra2"
-    t "memory: heap ${HEAP_START:-8m}/$hg/$hs (${HEAP_MINFREE:-2m}-${HEAP_MAXFREE:-8m}) + ro.config.low_ram=true"
+    _prop ro.product.model "VeraDroid on ${MODEL_NAME:-Kobo}"
+    _prop ro.product.board "${MODEL_ID:-libra2}"
+    _prop ro.config.low_ram "${ANDROID_LOW_RAM:-true}"
+    t "memory: heap ${HEAP_START:-8m}/$hg/$hs (${HEAP_MINFREE:-2m}-${HEAP_MAXFREE:-8m}) + ro.config.low_ram=${ANDROID_LOW_RAM:-true}"
 }
 
 zram_on() {
@@ -53,7 +54,8 @@ zram_on() {
     Z=/sys/block/zram0
     [ -e "$Z/disksize" ] || { t "zram: /sys/block/zram0 not available"; return 0; }
     [ "${ZRAM_MB:-256}" -gt 0 ] || return 0
-    [ "$ZRAM_MB" -gt 256 ] && ZRAM_MB=256
+    zm=${ZRAM_MAX_MB:-256}
+    [ "$ZRAM_MB" -gt "$zm" ] && ZRAM_MB=$zm
     if ! grep -q '^/dev/zram0 ' /proc/swaps; then
         [ "$(cat "$Z/disksize" 2>/dev/null)" != 0 ] && echo 1 > "$Z/reset" 2>/dev/null || true
         mksw=mkswap
@@ -104,11 +106,11 @@ cpu_gov_restore() {
     # Switching back to interactive resets kernel tunables to defaults; re-apply our balanced profile.
     if [ "$prev" = interactive ] && [ -d /sys/devices/system/cpu/cpufreq/interactive ]; then
         ig=/sys/devices/system/cpu/cpufreq/interactive
-        [ -w "$ig/go_hispeed_load" ] && echo 75 > "$ig/go_hispeed_load" 2>/dev/null || true
-        [ -w "$ig/target_loads" ] && echo "65 396000:75 792000:80" > "$ig/target_loads" 2>/dev/null || true
-        [ -w "$ig/io_is_busy" ] && echo 1 > "$ig/io_is_busy" 2>/dev/null || true
-        [ -w "$ig/min_sample_time" ] && echo 20000 > "$ig/min_sample_time" 2>/dev/null || true
-        [ -w "$ig/above_hispeed_delay" ] && echo 20000 > "$ig/above_hispeed_delay" 2>/dev/null || true
+        [ -w "$ig/go_hispeed_load" ] && echo "${CPUFREQ_HISPEED_LOAD:-75}" > "$ig/go_hispeed_load" 2>/dev/null || true
+        [ -n "${CPUFREQ_TARGET_LOADS:-}" ] && [ -w "$ig/target_loads" ] && echo "$CPUFREQ_TARGET_LOADS" > "$ig/target_loads" 2>/dev/null || true
+        [ -w "$ig/io_is_busy" ] && echo "${CPUFREQ_IO_IS_BUSY:-1}" > "$ig/io_is_busy" 2>/dev/null || true
+        [ -w "$ig/min_sample_time" ] && echo "${CPUFREQ_MIN_SAMPLE_MS:-20000}" > "$ig/min_sample_time" 2>/dev/null || true
+        [ -w "$ig/above_hispeed_delay" ] && echo "${CPUFREQ_ABOVE_HISPEED_MS:-20000}" > "$ig/above_hispeed_delay" 2>/dev/null || true
     fi
 }
 
@@ -141,7 +143,7 @@ readahead_restore() {
 
 TUNE_VM="vfs_cache_pressure:VM_VFS_CACHE_PRESSURE min_free_kbytes:VM_MIN_FREE_KB"
 tune_apply() {
-    t "profile: kobo libra2 ($(uname -r), fw $(kobo_firmware), MemTotal $(awk '/^MemTotal:/{print $2}' /proc/meminfo) kB)"
+    t "profile: kobo ${MODEL_ID:-?} (${MODEL_NAME:-Kobo}, $(uname -r), fw $(kobo_firmware), MemTotal $(awk '/^MemTotal:/{print $2}' /proc/meminfo) kB)"
     for kv in $TUNE_VM; do
         k=${kv%%:*}; eval "v=\$${kv#*:}"
         f=/proc/sys/vm/$k
@@ -160,9 +162,9 @@ tune_apply() {
                t "display: ro.sf.lcd_density=${LCD_DENSITY:-300}"
            fi ;;
     esac
-    # Tune interactive governor for balanced responsiveness & battery life on single-core i.MX6:
-    # Burst to 996 MHz under heavy load (85%), step smoothly through 396/792 MHz, and drop back to
-    # 198 MHz quickly (20 ms) when reading static pages instead of pinning at 996 MHz on I/O waits.
+    # Tune interactive governor for balanced responsiveness & battery life.
+    # Libra 2 (single i.MX6SLL) uses explicit 396/792 MHz steps; MTK uses a
+    # generic profile because its OPP table differs (CPUFREQ_TARGET_LOADS empty).
     ig=/sys/devices/system/cpu/cpufreq/interactive
     if [ -d "$ig" ]; then
         [ -f "$W/cpufreq.interactive.state" ] || {
@@ -170,20 +172,22 @@ tune_apply() {
                 [ -r "$ig/$k" ] && echo "$k $(cat "$ig/$k")"
             done > "$W/cpufreq.interactive.state"
         }
-        [ -w "$ig/go_hispeed_load" ] && echo 75 > "$ig/go_hispeed_load" 2>/dev/null || true
-        [ -w "$ig/target_loads" ] && echo "65 396000:75 792000:80" > "$ig/target_loads" 2>/dev/null || true
-        [ -w "$ig/io_is_busy" ] && echo 1 > "$ig/io_is_busy" 2>/dev/null || true
-        [ -w "$ig/min_sample_time" ] && echo 20000 > "$ig/min_sample_time" 2>/dev/null || true
-        [ -w "$ig/above_hispeed_delay" ] && echo 20000 > "$ig/above_hispeed_delay" 2>/dev/null || true
-        t "cpufreq: interactive tuned (go_hispeed=75 target=65/75/80 io_is_busy=1 min_sample=20ms)"
+        [ -w "$ig/go_hispeed_load" ] && echo "${CPUFREQ_HISPEED_LOAD:-75}" > "$ig/go_hispeed_load" 2>/dev/null || true
+        [ -n "${CPUFREQ_TARGET_LOADS:-}" ] && [ -w "$ig/target_loads" ] && echo "$CPUFREQ_TARGET_LOADS" > "$ig/target_loads" 2>/dev/null || true
+        [ -w "$ig/io_is_busy" ] && echo "${CPUFREQ_IO_IS_BUSY:-1}" > "$ig/io_is_busy" 2>/dev/null || true
+        [ -w "$ig/min_sample_time" ] && echo "${CPUFREQ_MIN_SAMPLE_MS:-20000}" > "$ig/min_sample_time" 2>/dev/null || true
+        [ -w "$ig/above_hispeed_delay" ] && echo "${CPUFREQ_ABOVE_HISPEED_MS:-20000}" > "$ig/above_hispeed_delay" 2>/dev/null || true
+        t "cpufreq: interactive tuned (hispeed=${CPUFREQ_HISPEED_LOAD:-75} target_loads=${CPUFREQ_TARGET_LOADS:-auto} io_is_busy=${CPUFREQ_IO_IS_BUSY:-1})"
     fi
-    # Switch flash eMMC scheduler from cfq to deadline (matches Koboweread io-tune; avoids rotational time-slices)
+    # Switch the eMMC scheduler to the model's preference (deadline on both
+    # i.MX6 and MT8113; silently keeps the current one when unavailable).
     sf=/sys/block/mmcblk0/queue/scheduler
-    if [ -w "$sf" ] && grep -qw deadline "$sf" 2>/dev/null; then
+    isch=${IO_SCHEDULER:-deadline}
+    if [ -n "$isch" ] && [ -w "$sf" ] && grep -qw "$isch" "$sf" 2>/dev/null; then
         cur_s=$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' "$sf" 2>/dev/null)
-        if [ -n "$cur_s" ] && [ "$cur_s" != deadline ]; then
+        if [ -n "$cur_s" ] && [ "$cur_s" != "$isch" ]; then
             [ -f "$W/iosched.state" ] || echo "$cur_s" > "$W/iosched.state"
-            echo deadline > "$sf" 2>/dev/null && t "io: mmcblk0 scheduler=deadline (was $cur_s)"
+            echo "$isch" > "$sf" 2>/dev/null && t "io: mmcblk0 scheduler=$isch (was $cur_s)"
         fi
     fi
     return 0

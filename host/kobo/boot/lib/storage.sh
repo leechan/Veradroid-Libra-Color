@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# System image storage inspection & resize manager for Kobo Libra 2 (/mnt/onboard/.adds/veradroid-libra2/veradroid-sys.img).
+# System image storage inspection & resize manager for Kobo (/mnt/onboard/.adds/veradroid-libra2/veradroid-sys.img).
 # Always uses offline resize on Kobo Linux 4.1.15 (online resize2fs on 4.1.15 ext4 loops can hang).
 
 ST_STATE=$VD/state/resize.state

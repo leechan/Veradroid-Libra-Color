@@ -1,6 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Cross-compile static ARMv7 (Cortex-A9 + NEON) host binaries for Kobo Libra 2 using Zig.
+# Cross-compile static ARMv7 (Cortex-A9/A53, NEON) host binaries for Kobo
+# Libra 2 (i.MX6SLL) and Libra Colour (MT8113). Both run 32-bit userspace, so
+# one binary set works on both; the hardware profile is selected at runtime.
 # Usage:
 #   ZIG=/path/to/zig FBINK_DIR=/path/to/fbink sh tools/kobo/build-kobo-bin.sh [OUT_DIR]
 set -eu
@@ -12,6 +14,14 @@ FBINK_DIR=${FBINK_DIR:-$TOP/third_party/fbink}
 
 [ -n "$ZIG" ] && [ -x "$ZIG" ] || { echo "build-kobo-bin: set ZIG=/path/to/zig (0.13.x)" >&2; exit 2; }
 [ -f "$FBINK_DIR/fbink.c" ] || { echo "build-kobo-bin: FBInk sources not found at $FBINK_DIR (set FBINK_DIR)" >&2; exit 2; }
+
+# Libra Colour support (N428 / Kobo_monza) landed in FBInk v1.25.0-544.
+# An older tree compiles but prints "Unidentified Kobo device code" on N428 and
+# never refreshes the panel, so warn loudly here.
+if ! grep -rqsE 'Libra ?Colour|LibraColour|N428|Kobo_monza|monza' "$FBINK_DIR" 2>/dev/null; then
+    echo "build-kobo-bin: WARNING: this FBInk tree does not mention the Kobo Libra Colour."
+    echo "                Use FBInk >= v1.25.0-544 if you plan to run on N428." >&2
+fi
 
 mkdir -p "$OUT"
 CACHE=${ZIG_CACHE_DIR:-$TOP/build/zig-cache}

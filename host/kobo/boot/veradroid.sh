@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# VeraDroid main launcher for Kobo Libra 2.
+# VeraDroid main launcher for Kobo (Libra 2 / Libra Colour).
 # Usage: sh veradroid.sh [home | <pkg> | stop | status]
 {
 case "$1" in --in-ns|--in-chroot) ;; *)
@@ -36,6 +36,7 @@ if ! { [ -f "$W/frozen" ] && kill -0 "$(cat "$W/pid" 2>/dev/null)" 2>/dev/null; 
     rm -f "$SYS/settings.app" "$W/appprof.pkg"
 fi
 settings_load
+type vd_restore_fsck >/dev/null 2>&1 && vd_restore_fsck
 
 if [ "$1" = "--in-chroot" ]; then HOSTNS=1 run_in_ns "$2" "$3" "$4"; exit 1; fi
 
@@ -49,7 +50,7 @@ if [ -z "${VERADROID_DETACHED:-}" ]; then
     exec env -i VERADROID_DETACHED=1 VERADROID_NO_AUTOUPDATE="${VERADROID_NO_AUTOUPDATE:-}" VD="$VD" PATH="$PATH" setsid sh "$0" "$@" </dev/null
 fi
 
-echo "== $(date) start (Kobo Libra 2) app=${1:-$SYSTEM_APP}"
+echo "== $(date) start (${MODEL_NAME:-Kobo}) app=${1:-$SYSTEM_APP}"
 APP=${1:-$SYSTEM_APP}
 open_app() { echo "$APP" > "$X/ctl/app.tmp" && mv -f "$X/ctl/app.tmp" "$X/ctl/app"; t "open: $APP"; }
 
@@ -107,7 +108,7 @@ sh "$VD/boot/stop.sh" --stale >/dev/null 2>&1 || true
 
 # 1. Auto-apply pending offline upgrade ZIP in $VD/update/ before booting
 if [ -z "${VERADROID_NO_AUTOUPDATE:-}" ] && [ -f "$VD/boot/lib/localupdate.sh" ]; then
-    for _upz in "$VD/update"/Veradroid-Libra2-*.zip "$VD/update"/VeraDroid-Kobo-Libra2-*.zip "$VD/update"/veradroid-kobo-libra2-*.zip; do
+    for _upz in "$VD/update/${PKG_NAME:-Veradroid-Libra2}-"*.zip; do
         [ -f "$_upz" ] || continue
         t "update: applying offline package ${_upz##*/}"
         storage_umount 2>/dev/null || true
@@ -232,6 +233,6 @@ start_helpers
 after_boot &
 echo $! > "$W/afterboot.pid"
 
-t "started (Kobo Libra 2)"
+t "started (${MODEL_NAME:-Kobo})"
 exit 0
 }

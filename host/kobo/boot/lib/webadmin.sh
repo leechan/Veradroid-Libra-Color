@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Privileged host request handler (`wa <32-hex-id>`) for VeraHome Web Admin & WifiActivity on Kobo Libra 2.
+# Privileged host request handler (`wa <32-hex-id>`) for VeraHome Web Admin & WifiActivity on Kobo.
 
 WA_PKG=com.veradroid.home
 WA_OUT=$X/wa
@@ -64,7 +64,7 @@ wa_df() {
 
 wa_sysinfo() {
     echo "ok=1"
-    echo "model=Kobo Libra 2 (N418)"
+    echo "model=${MODEL_NAME:-Kobo Libra 2} (${MODEL_CODE:-N418})"
     echo "firmware=$(kobo_firmware 2>/dev/null | wa_clean 80)"
     echo "vdversion=$(cat "$VD/VERSION" 2>/dev/null | wa_clean 32)"
     echo "kernel=$(uname -r | wa_clean 60)"

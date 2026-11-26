@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Settings management for VeraDroid on Kobo Libra 2.
+# Settings management for VeraDroid on Kobo.
 
 settings_defaults() {
     RETURN_MODE=off
@@ -88,6 +88,47 @@ settings_defaults() {
     TIME_12_24=auto
     GESTURE_HINT=all
     SYSTEM_FONT=
+    # Hardware-profile defaults (overridden by models/<MODEL_ID>.conf)
+    MODEL_ID=libra2
+    MODEL_NAME="Kobo"
+    MODEL_CODE=N418
+    PKG_NAME=Veradroid-Libra2
+    PRODUCT_ID=veradroid-kobo-libra2
+    KERNEL_SERIES=4.1
+    BINDER_DEVNAME=binder
+    BINDER_KO=binder_linux.ko
+    MADVISE_KO=kobo_madvise.ko
+    BUILTIN_ASHMEM=0
+    BUILTIN_ZRAM=0
+    BUILTIN_FUSE=0
+    FB_MTK=0
+    FB_COLOR=0
+    FB_DEPTH_LOCK=0
+    TOUCH_FLIP_X=0
+    TOUCH_FLIP_Y=0
+    POWER_KEY_DEV=
+    WIFI_IF=wlan0
+    WIFI_MODULES=
+    WIFI_PS_SUPPORTED=1
+    WIFI_PS_DEFAULT=auto
+    BATTERY_NODES="mc13892_bat battery"
+    CHARGER_NODES="acpwr usbpwr"
+    FL_COLD=mxc_msp430.0
+    FL_WARM=lm3630a_led
+    FL_MAX=100
+    SUSPEND_VEE_WAIT=1
+    SUSPEND_TRUST_WAKE=0
+    SUSPEND_IRQ_NAMES="Power Hall PageUp PageDown"
+    SLEEP_WIFI_OFF=1
+    RTC_WAKEUP_PATHS=
+    IO_SCHEDULER=deadline
+    CPUFREQ_HISPEED_LOAD=75
+    CPUFREQ_TARGET_LOADS=
+    CPUFREQ_IO_IS_BUSY=1
+    CPUFREQ_MIN_SAMPLE_MS=20000
+    CPUFREQ_ABOVE_HISPEED_MS=20000
+    ANDROID_LOW_RAM=true
+    ZRAM_MAX_MB=256
 }
 
 lowmem_ram() { _mt=$(awk '/^MemTotal:/{print $2}' /proc/meminfo); [ -n "$_mt" ] && [ "$_mt" -lt 700000 ]; }
@@ -96,7 +137,7 @@ lowmem() {
     lowmem_ram
 }
 kindle_ui_mode() { echo keep; }
-model_sub() { echo libra2; }
+model_sub() { kobo_model; }
 
 smooth_apply() {
     case "$KFB_SMOOTH" in
@@ -109,8 +150,25 @@ smooth_apply() {
 
 settings_load() {
     settings_defaults
-    MODEL_SUB=libra2
-    [ -f "$VD/models/libra2.conf" ] && . "$VD/models/libra2.conf"
+    MODEL_SUB=$(model_sub)
+    case "$MODEL_SUB" in libracolour|libra2) ;; *) MODEL_SUB=libra2 ;; esac
+    MODEL_ID=$MODEL_SUB
+    # Older releases only shipped libra2.conf; fall back so a partially
+    # upgraded install never boots with empty hardware settings.
+    if [ -f "$VD/models/$MODEL_SUB.conf" ]; then
+        . "$VD/models/$MODEL_SUB.conf"
+    elif [ -f "$VD/models/libra2.conf" ]; then
+        t "settings: no $MODEL_SUB.conf in $VD/models, falling back to libra2 (wrong package for this device?)"
+        . "$VD/models/libra2.conf"
+        MODEL_ID=libra2
+    else
+        t "settings: no model profile found in $VD/models (expected $MODEL_SUB.conf)"
+    fi
+    MODEL_SUB=$MODEL_ID
+    MODEL_NAME=${MODEL_NAME:-$(kobo_model_name)}
+    MODEL_CODE=${MODEL_CODE:-$(kobo_model_code)}
+    PKG_NAME=${PKG_NAME:-Veradroid-${MODEL_ID}}
+    kobo_light_init
     [ -f "$SYS/settings.conf" ] && . "$SYS/settings.conf"
     [ -f "$VD/settings.test" ] && . "$VD/settings.test"
     for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SCROLLDU KFB_IMG KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN KFB_GCN KFB_NEWWIN KFB_ECLIPSE KFB_DARKCRUSH KFB_HEAVY_FLASH KFB_IMG_DITHER; do
@@ -126,7 +184,7 @@ settings_load() {
             . "$SYS/settings.app"
         fi
     fi
-    # On Kobo 4.1.15 (hostns / 512 MB), always exit cleanly so /mnt/onboard can unmount for USB.
+    # Always exit cleanly so /mnt/onboard can unmount for USB mass storage.
     RETURN_MODE=off
 }
 

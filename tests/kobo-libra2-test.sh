@@ -87,9 +87,42 @@ grep -q 'libkobo_madvise.so' "$TOP/host/kobo/boot/lib/afterboot.sh" \
     && ok "adb_sh and ashell.sh export libkobo_madvise.so LD_PRELOAD" || fail "missing LD_PRELOAD in adb_sh/ashell.sh"
 grep -q 'state/kobo-screen.raw' "$TOP/host/kobo/boot/lib/framework.sh" \
     && ok "framework.sh stores kobo-screen.raw on disk" || fail "framework.sh still uses tmpfs for screen backup"
-[ -f "$TOP/host/kobo/koplugin/veradroid_libra2.koplugin/_meta.lua" ] \
-    && [ -f "$TOP/host/kobo/koplugin/veradroid_libra2.koplugin/main.lua" ] \
-    && ok "KOReader plugin files present" || fail "KOReader plugin missing"
+[ -f "$TOP/host/kobo/koplugin/Veradroid-Libra2.koplugin/_meta.lua" ] \
+    && [ -f "$TOP/host/kobo/koplugin/Veradroid-Libra2.koplugin/main.lua" ] \
+    && [ -f "$TOP/host/kobo/koplugin/Veradroid-LibraColour.koplugin/_meta.lua" ] \
+    && [ -f "$TOP/host/kobo/koplugin/Veradroid-LibraColour.koplugin/main.lua" ] \
+    && ok "KOReader plugin files present (Libra 2 + Libra Colour)" || fail "KOReader plugin missing"
+
+# 5b. Kobo Libra Colour (N428) profile, binder32 and touch transform
+[ -f "$TOP/host/kobo/models/libracolour.conf" ] \
+    && grep -q '^MODEL_ID=libracolour' "$TOP/host/kobo/models/libracolour.conf" \
+    && grep -q '^MODEL_CODE=N428' "$TOP/host/kobo/models/libracolour.conf" \
+    && grep -q '^BINDER_DEVNAME=binder32' "$TOP/host/kobo/models/libracolour.conf" \
+    && grep -q '^TOUCH_SWAP_XY=1' "$TOP/host/kobo/models/libracolour.conf" \
+    && grep -q '^TOUCH_FLIP_Y=1' "$TOP/host/kobo/models/libracolour.conf" \
+    && grep -q '^POWER_KEY_DEV=bd71828-pwrkey' "$TOP/host/kobo/models/libracolour.conf" \
+    && grep -q '^FB_MTK=1' "$TOP/host/kobo/models/libracolour.conf" \
+    && grep -q '^BUILTIN_ZRAM=1' "$TOP/host/kobo/models/libracolour.conf" \
+    && ok "libracolour.conf model profile present (N428 / MTK / binder32 / mirrored touch)" \
+    || fail "libracolour.conf invalid"
+grep -q 'N428\*) echo libracolour' "$TOP/host/kobo/boot/lib/kobo.sh" \
+    && grep -q 'BINDER_DEVNAME' "$TOP/host/kobo/boot/lib/kmod.sh" \
+    && grep -q 'binder32' "$TOP/host/kobo/boot/lib/kmod.sh" \
+    && grep -q 'bd71827_bat' "$TOP/host/kobo/models/libracolour.conf" \
+    && grep -q 'kobo_pagecache.ko' "$TOP/host/kobo/kmod/4.9.77/SHA256SUMS" \
+    && [ -f "$TOP/host/kobo/kmod/4.9.77/binder_linux.ko" ] \
+    && ok "Libra Colour runtime wiring (model detect / binder32 / bd71827 / 4.9.77 modules)" \
+    || fail "Libra Colour runtime wiring missing"
+grep -q -- '--keydev2' "$TOP/input/legacy/vinput.c" \
+    && grep -q -- '--keydev2' "$TOP/host/kobo/boot/lib/input.sh" \
+    && grep -q 'POWER_KEY_DEV' "$TOP/host/kobo/boot/lib/input.sh" \
+    && ok "separate PMIC power key (--keydev2) wired for N428" || fail "vinput keydev2 missing"
+grep -q 'FB_DEPTH_LOCK' "$TOP/host/kobo/boot/lib/framework.sh" \
+    && grep -q 'SUSPEND_VEE_WAIT' "$TOP/host/kobo/boot/lib/sleep.sh" \
+    && grep -q 'SUSPEND_TRUST_WAKE' "$TOP/host/kobo/boot/lib/sleep.sh" \
+    && grep -q 'WIFI_PS_SUPPORTED' "$TOP/host/kobo/boot/lib/network.sh" \
+    && ok "Libra Colour host adaptations (no fbdepth on hwtcon, no i.MX VEE wait, generic wake/PS)" \
+    || fail "Libra Colour host adaptations missing"
 
 # 6. UI Kobo rebranding checks (no user-facing Kindle strings in host/kobo or VeraHome)
 kh_host=$(grep -rn 'Kindle' "$TOP/host/kobo/boot" | grep -vE 'KindleLibrary|KindleFonts|appprofiles\.conf|:[0-9]+:[[:space:]]*#' || true)
@@ -261,4 +294,4 @@ grep -q 'S_CONTROLS' "$TOP/android/packages/VeraHome/src/com/veradroid/home/Bloc
     || fail "missing VeraHome 6-category settings IA"
 
 [ "$FAIL" -eq 0 ] || exit 1
-echo "ALL KOBO LIBRA 2 STATIC CHECKS PASSED"
+echo "ALL KOBO (LIBRA 2 + LIBRA COLOUR) STATIC CHECKS PASSED"

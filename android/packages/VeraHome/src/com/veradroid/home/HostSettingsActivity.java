@@ -171,7 +171,7 @@ public class HostSettingsActivity extends Activity {
             "KFB_FLASH", new String[] { "不按页数闪", "每页", "每 3 页", "每 6 页", "每 8 页", "每 10 页", "每 20 页" },
             new String[] { "0", "1", "3", "6", "8", "10", "20" }, "6", null);
         if (HostLink.isKobo()) {
-            section("夜间与残影（Libra 2）");
+            section("夜间与残影（墨水屏）");
             stepper("夜间原生波形（Eclipse）", "在系统反色或应用深色模式下自动切换硬件 GLKW16 / GCK16 波形：黑底更匀、白字更锐利，全刷暗闪不刺眼。",
                 "KFB_ECLIPSE", new String[] { "关", "开（默认）" }, new String[] { "0", "1" }, "1", null);
             stepper("暗底压纯黑", "暗色页面中把深灰背景（如 #181818）压成纯黑并轻提白字对比度，消除深灰底斑驳残影；看暗色漫画可设为关。",
@@ -218,7 +218,7 @@ public class HostSettingsActivity extends Activity {
         }
         section("内存");
         stepper("小内存模式", kobo
-                ? "自动：512 MB 内存机型（Kobo Libra 2）自动开启，停掉不需要的后台服务并优化内存阈值。下次启动 Android 生效。"
+                ? "自动：小内存机型（512 MB 级）自动开启，停掉不需要的后台服务并优化内存阈值。下次启动 Android 生效。"
                 : "自动：内存不到约 700 MB 的机型自动开。开着时 Kobo 的书库程序停掉腾内存、回 Kobo 完全退出（再进要重新开机）。下次启动 Android 生效。",
             "LOWMEM", new String[] { "自动", "开", "关" }, new String[] { "auto", "on", "off" }, "auto", null);
         if (!kobo) {

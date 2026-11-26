@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Host command listener ($X/ctl/cmd) for VeraDroid on Kobo Libra 2.
+# Host command listener ($X/ctl/cmd) for VeraDroid on Kobo.
 
 numeric() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; }
 [ -f "$VD/boot/lib/appprof.sh" ] && . "$VD/boot/lib/appprof.sh"
@@ -129,6 +129,9 @@ cmd_listen() {
     exec 3<>"$cmdfifo"
     while :; do
         read -r c a <&3 || { usleep 300000; continue; }
+        case "$c" in
+            stop|restart|reboot|poweroff|exit) t "cmd: $c ${a:-}" ;;
+        esac
         case "$c" in
         exit)    do_exit ;;
         stop)    do_stop ;;

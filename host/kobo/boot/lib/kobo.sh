@@ -59,6 +59,21 @@ kobo_battery() {
     echo 0
 }
 
+# one-line snapshot of all power_supply nodes (diagnosing wrong charge detection: a
+# node that reports online=1 on battery keeps deep suspend disabled and drains it)
+kobo_power_summary() {
+    _s=
+    for _p in /sys/class/power_supply/*; do
+        [ -d "$_p" ] || continue
+        _n=${_p##*/}
+        _st=$(cat "$_p/status" 2>/dev/null)
+        _on=$(cat "$_p/online" 2>/dev/null)
+        _cp=$(cat "$_p/capacity" 2>/dev/null)
+        _s="$_s $_n(status=${_st:-?} online=${_on:--} cap=${_cp:--})"
+    done
+    echo "${_s# }"
+}
+
 kobo_is_charging() {
     for n in ${BATTERY_NODES:-mc13892_bat battery}; do
         st=$(cat "/sys/class/power_supply/$n/status" 2>/dev/null)
@@ -74,7 +89,13 @@ kobo_is_charging() {
             esac
         done
     done
+    # Fallback: any supply that says it is online. Skip Battery nodes: on N428
+    # bd71827_bat reports online=1 ("battery present") while discharging, which
+    # used to look like a charger and disabled deep suspend entirely.
     for p in /sys/class/power_supply/*/online; do
+        d=${p%/online}
+        [ "$(cat "$d/type" 2>/dev/null)" = Battery ] && continue
+        case "${d##*/}" in *bat*) continue ;; esac
         v=$(cat "$p" 2>/dev/null | tr -cd '0-9')
         [ -n "$v" ] && [ "$v" -gt 0 ] 2>/dev/null && return 0
     done

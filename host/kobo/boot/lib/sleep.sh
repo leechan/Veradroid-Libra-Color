@@ -119,8 +119,19 @@ kobo_deep_suspend() {
     #   0 = resumed by real user wakeup (Power key / Hall sleepcover)
     #   2 = cancelled by user power/wake press during pre-suspend wait
     #   1 = skipped or failed (caller stays in screensaver fallback)
-    [ -w /sys/power/state ] && grep -qw mem /sys/power/state 2>/dev/null || return 1
-    kobo_is_charging && return 1
+    [ -w /sys/power/state ] || { t "sleep: no /sys/power/state"; return 1; }
+    suspend_state=
+    for _ss in ${SUSPEND_STATES:-mem}; do
+        grep -qw "$_ss" /sys/power/state 2>/dev/null && { suspend_state=$_ss; break; }
+    done
+    [ -n "$suspend_state" ] || { t "sleep: no usable suspend state in '$(cat /sys/power/state 2>/dev/null)': cannot deep suspend"; return 1; }
+    if kobo_is_charging; then
+        t "sleep: deep suspend skipped (charging): $(kobo_power_summary)"
+        return 1
+    fi
+    _bat0=$(kobo_battery); _dst0=$(date +%s)
+    t "sleep: deep suspend $suspend_state (battery ${_bat0}%, available: $(cat /sys/power/state 2>/dev/null | tr '\n' ' '))"
+
     [ -f "$W/saver_nofreeze" ] && return 1
 
     # Power off SDIO Wi-Fi on models that load it out-of-tree, so the radio
@@ -130,7 +141,7 @@ kobo_deep_suspend() {
     if [ "${SLEEP_WIFI_OFF:-1}" = 1 ] && [ "$(kobo_wifi_enabled)" = 1 ]; then
         echo 1 > "$W/sleep.wifi"
         kobo_wifi_set 0
-        t "sleep: wifi powered off for deep suspend"
+        t "sleep: wifi powered off for deep suspend (state=$suspend_state)"
     elif [ ! -f "$W/sleep.wifi" ]; then
         rm -f "$W/sleep.wifi"
     fi
@@ -182,8 +193,10 @@ kobo_deep_suspend() {
         while [ $i -lt 8 ]; do
             kobo_is_charging && break
             i=$((i + 1))
-            if echo mem > /sys/power/state 2>"$W/suspend.err"; then
+            _st0=$(date +%s)
+            if echo "$suspend_state" > /sys/power/state 2>"$W/suspend.err"; then
                 mem_ok=1
+                t "sleep: left $suspend_state after $(( $(date +%s) - _st0 ))s"
                 break
             fi
             sleep_wait_1s
@@ -224,6 +237,26 @@ kobo_deep_suspend() {
             break
         fi
 
+        # N428/MTK: the PMIC power-key IRQ counter often does not move on wake. vinput turns
+        # the press into a power/toggle FIFO event within ~100 ms of resume; wait briefly for
+        # it and treat that as a real user wake before assuming an RTC/PMIC spurious wakeup.
+        if [ "${SLEEP_FIFO_READY:-0}" = 1 ]; then
+            _w=0
+            while [ "$_w" -lt 8 ]; do
+                if read -t 0.1 -r _ev <&4 2>/dev/null; then
+                    case "$_ev" in
+                        wake|power|toggle) _w=99; break ;;
+                    esac
+                fi
+                _w=$((_w + 1))
+            done
+            if [ "$_w" = 99 ]; then
+                rc=0
+                t "sleep: real user wakeup (power event after mem, tries=$i)"
+                break
+            fi
+        fi
+
         # Spurious wakeup (e.g. kernel alarmtimer / rtc_ricoh61x 10-min alarm or PMIC noise): re-suspend silently.
         now_s=$(date +%s)
         if [ "$spurious_t0" -eq 0 ] || [ $((now_s - spurious_t0)) -gt 30 ]; then
@@ -255,6 +288,7 @@ kobo_deep_suspend() {
         err=$(tr '\n' ' ' < "$W/suspend.err" 2>/dev/null)
         t "sleep: left deep suspend (rc=$rc err=${err:-charger_or_retry})"
     fi
+    t "sleep: deep suspend $suspend_state ended rc=$rc after $(( $(date +%s) - _dst0 ))s, battery ${_bat0}% -> $(kobo_battery)%"
     return $rc
 }
 
@@ -284,7 +318,8 @@ kobo_enter_sleep() {
         type wifi_ps_restore >/dev/null 2>&1 && wifi_ps_restore
     fi
     date +%s > "$W/saver.t0"
-    t "sleep: entered screensaver (saved frontlight=$cur_fl)"
+    t "sleep: entered screensaver (saved frontlight=$cur_fl, charging=$(kobo_is_charging && echo 1 || echo 0))"
+    t "sleep: power: $(kobo_power_summary)"
 
     kobo_deep_suspend
     ds_rc=$?
@@ -326,7 +361,7 @@ kobo_exit_sleep() {
             t "sleep: wifi restored after wakeup"
         ) </dev/null >>"$LOG" 2>&1 &
     fi
-    t "sleep: woke up and redrew screen"
+    t "sleep: woke up and redrew screen (battery $(kobo_battery)%)"
 }
 
 sleep_watch() {

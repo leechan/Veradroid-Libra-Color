@@ -7,7 +7,7 @@
  * key events on a second virtual device ("veradroid-keys") or run as host actions.
  *
  *   edge gestures (single finger, never forwarded):
- *       start in the bottom edge and swipe up      -> KEY_BACK
+ *       start in the bottom edge and swipe up      -> BACK button (G_BACK_REVEAL); swipe again / tap it -> KEY_BACK
  *       start in the top edge and swipe down       -> action "panel"
  *   two fingers (second finger within --window ms of the first; never forwarded):
  *       tap                                         -> action "clear"   (full-screen refresh)
@@ -18,7 +18,8 @@
  *       towards Android first)
  *
  * Each gesture can be switched off on its own (--gconf FILE, KEY=0|1 lines, re-read on the next touch after it changes):
- *   G_EDGE_BACK (bottom edge up -> back)  G_EDGE_PANEL (top edge down -> panel)  G_TWO_TAP (clear)  G_TWO_LONG (invert)
+ *   G_EDGE_BACK (bottom edge up -> back)  G_BACK_REVEAL (two-stage: reveal, then confirm)  G_EDGE_PANEL (top edge down -> panel)
+ *   G_TWO_TAP (clear)  G_TWO_LONG (invert)
  *   G_TWO_BACK (two-finger horizontal -> back)  G_TWO_SLIDE (two-finger vertical -> light / warmth)
  *   G_CORNERS=tl,bl  -- only these corners take the long press (the ones with an action; "none" = no corner; key absent = all).
  *   G_BACK_EXCLUDE=pkg,pkg  -- no bottom-edge back while one of these apps is in front (--fg FILE holds the foreground
@@ -150,6 +151,10 @@ static char G_BACK_EXCLUDE[512] = "";
 static char G_CORNERS[24] = "all";   /* corners whose long press is a gesture ("tl,bl", "" = none, "all"); others stay Android's */
 /* bottom edge in thirds (G_EDGE_THIRDS): G_EB[0..2] = left / middle / right swipe up, G_EB[3] = swipe up and hold */
 static int G_EDGE_THIRDS = 0, G_EB_HOLD_MS = 500;
+/* two-stage bottom edge: the first swipe up reveals a BACK button, the second swipe (or a tap on
+   it) goes back. G_BACK_REVEAL=0 restores the old one-swipe back. */
+static int G_BACK_REVEAL = 1, G_BACK_REVEAL_MS = 4000;
+static long long back_armed_until = 0;
 static char G_EB[4][24] = { "appopt", "home", "back", "switch" };
 static const char *const EB_KEY[4] = { "G_EB_L", "G_EB_M", "G_EB_R", "G_EB_HOLD" };
 static const char *const EB_DEF[4] = { "appopt", "home", "back", "switch" };
@@ -211,7 +216,7 @@ static void gconf_load(void)
     G_TAP = 1; G_TAP_KEY = KEY_VOLUMEDOWN; snprintf(G_CORNERS, sizeof(G_CORNERS), "all");
     BOOST_MS = 150; BOOST_KHZ = 0; SCROLL_PX = 20; PASS_PX = 12; FAST_DRAG = 1; HELD_REPLAY = 0; TAP_PX = 28;
     IDLE_CAP_MS = 10000; IDLE_CAP_KHZ = 792000; FL_TIMEOUT = 0;
-    G_EDGE_THIRDS = 0; G_EB_HOLD_MS = 500;
+    G_EDGE_THIRDS = 0; G_EB_HOLD_MS = 500; G_BACK_REVEAL = 1; G_BACK_REVEAL_MS = 4000; back_armed_until = 0;
     G_AUTO_ROTATE = 0; KEY_SWAP = KEY_SWAP_CLI;
     snprintf(KEY_NEXT_LONG, sizeof(KEY_NEXT_LONG), "clear");
     snprintf(KEY_PREV_LONG, sizeof(KEY_PREV_LONG), "back");
@@ -235,6 +240,8 @@ static void gconf_load(void)
             else if (!strcmp(line, "G_TAP")) G_TAP = b;
             else if (!strcmp(line, "G_EDGE_THIRDS")) G_EDGE_THIRDS = b;
             else if (!strcmp(line, "G_EB_HOLD_MS")) { G_EB_HOLD_MS = atoi(v); if (G_EB_HOLD_MS < 200 || G_EB_HOLD_MS > 3000) G_EB_HOLD_MS = 500; }
+            else if (!strcmp(line, "G_BACK_REVEAL")) G_BACK_REVEAL = b;
+            else if (!strcmp(line, "G_BACK_REVEAL_MS")) { G_BACK_REVEAL_MS = atoi(v); if (G_BACK_REVEAL_MS < 800 || G_BACK_REVEAL_MS > 10000) G_BACK_REVEAL_MS = 4000; }
             else if (!strncmp(line, "G_EB_", 5)) {
                 for (int i = 0; i < 4; i++)
                     if (!strcmp(line, EB_KEY[i])) {
@@ -935,9 +942,42 @@ static void eb_fire(int i)
     if (!strcmp(G_EB[i], "back")) back_key();   /* the key straight away, as the plain bottom-edge back */
     else action("eb", G_EB[i]);
 }
+static void back_reveal_show(void)
+{
+    int ms = G_BACK_REVEAL_MS;
+    if (ms < 800) ms = 800;
+    if (ms > 10000) ms = 10000;
+    back_armed_until = now_ms() + ms;
+    char b[96];
+    snprintf(b, sizeof(b), "BADGE %d b back BACK|返回\n", ms);
+    epd_cmd(b);
+    logf_("edge swipe up -> back button shown (%d ms)", ms);
+}
+static void back_reveal_fire(const char *why)
+{
+    back_armed_until = 0;
+    epd_cmd("BADGE 0\n");
+    logf_("back button -> back (%s)", why);
+    back_key();
+}
+/* while the BACK button is up: a tap on it (bottom centre, where the badge is drawn) confirms */
+static int back_button_hit(int x, int y)
+{
+    if (!G_BACK_REVEAL || !back_armed_until || now_ms() >= back_armed_until) return 0;
+    int hw = W * 13 / 100;                 /* the badge is ~192 px wide on 1264: a little margin around it */
+    if (hw < 120) hw = 120;
+    return y > H - 260 && y < H - 30 && abs(x - W / 2) < hw;
+}
 static void eb_swipe(int lifted)
 {
-    if (eb_third < 0) { logf_("edge swipe up -> back"); back_key(); return; }
+    if (eb_third < 0) {
+        if (G_BACK_REVEAL) {
+            if (back_armed_until && now_ms() < back_armed_until) { back_reveal_fire("second swipe"); return; }
+            back_reveal_show();
+            return;
+        }
+        logf_("edge swipe up -> back"); back_key(); return;
+    }
     if (lifted || eb_none(3)) { eb_fire(eb_third); return; }
     arm_x = sl[cur_slot].x; arm_y = sl[cur_slot].y; arm_t = now_ms();
     md = EDGE_ARM;
@@ -1266,6 +1306,14 @@ static void handle_frame(struct input_event *fr, int n)
         if (active >= 1) {
             int sx = sl[cur_slot].sx >= 0 ? sl[cur_slot].sx : sl[cur_slot].x, sy = sl[cur_slot].sy >= 0 ? sl[cur_slot].sy : sl[cur_slot].y;
             gconf_load();
+            /* the revealed BACK button was tapped: go back instead of sending the touch to Android */
+            if (active == 1 && back_button_hit(sx, sy)) {
+                nheld = 0;
+                corner_fired = 1;
+                md = SWALLOW;
+                back_reveal_fire("tap");
+                break;
+            }
             /* bottom-edge back: its own switch, and off while an excluded app (WeRead: swipe-up = toolbar) is in front */
             int eb = EDGE_BACK && G_EDGE_BACK && active == 1 && sy > H - EDGE && !back_excluded();
             /* gestures off: everything goes to Android except a swipe that starts in the bottom edge (back stays) */

@@ -43,6 +43,9 @@ input_touch_start() {
     gestures_write
 
     ge=${TOUCH_EDGE_PX:-120}; case "$ge" in ''|*[!0-9]*) ge=120 ;; esac
+    et=${TOUCH_EDGE_TOP_PX:-0}; case "$et" in ''|*[!0-9]*) et=0 ;; esac
+    topedge=
+    [ "$et" -gt 0 ] && topedge="--edge-top $et"
     extra=
     [ "${TOUCH_SWAP_XY:-1}" = 1 ] && extra="$extra --swap-xy"
     [ "${TOUCH_FLIP_X:-0}" = 1 ] && extra="$extra --flip-x"
@@ -53,7 +56,7 @@ input_touch_start() {
 
     "$VD/bin/veradroid-input" "$REAL" "$W/input.log" "$VD/boot/action.sh" \
         --w "${viewWidth:-1264}" --h "${viewHeight:-1680}" \
-        --edge "$ge" --window "${G_WINDOW:-25}" \
+        --edge "$ge" $topedge --window "${G_WINDOW:-25}" \
         --edge-hold $((ge / 2)) --edge-swipe $((ge * 2 / 3)) \
         --edge-back "${KFB_EDGE_BACK:-1}" --corner-ms 2000 \
         --flag "$W/nogestures" --inject "$W/inject" \

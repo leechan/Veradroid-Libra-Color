@@ -44,6 +44,7 @@ final class BlocksHome {
     final SharedPreferences prefs;
     private final LinearLayout root;
     private final FrameLayout body;
+    ColorHome colorHome;
     private final Blocks.Nav nav;
     private final TextView stLeft, stRight;
     private final Icons.IconView stWifi;
@@ -70,6 +71,7 @@ final class BlocksHome {
         st.setPadding(dp(16), dp(5), dp(16), dp(4));
         st.setBackgroundColor(Color.WHITE);   // 最上面一行小字不压在壁纸上
         Icons.IconView logo = new Icons.IconView(a, Icons.Kind.BOOK);
+        if (Blocks.color(a)) logo.setColor(Palette.mood());
         st.addView(logo, Blocks.lp(dp(16), dp(16)));
         stLeft = Ui.text(a, "", 12, true);
         stLeft.setSingleLine(true);
@@ -82,12 +84,15 @@ final class BlocksHome {
         stWifi.setVisibility(View.GONE);
         st.addView(stWifi, wp);
         stRight = Ui.text(a, "", 12, false);
+        if (Blocks.color(a)) { stLeft.setTextColor(Palette.INK); stRight.setTextColor(Palette.MUTED); }
         st.addView(stRight);
         root.addView(st);
-        root.addView(Ui.rule(a, 1, Color.BLACK));
+        View stRule = Ui.rule(a, 1, Blocks.color(a) ? Palette.LINE : Color.BLACK);
+        root.addView(stRule);
+        if (Blocks.color(a)) { st.setVisibility(View.GONE); stRule.setVisibility(View.GONE); }
         body = new FrameLayout(a);
         root.addView(body, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        nav = new Blocks.Nav(a, new String[] { "首页", "文件", "应用", "我的" },
+        nav = new Blocks.Nav(a, new String[] { "首页", Blocks.color(a) ? "书库" : "文件", "应用", "我的" },
             new Icons.Kind[] { Icons.Kind.HOME, Icons.Kind.FOLDER, Icons.Kind.GRID, Icons.Kind.USER }, new Blocks.Nav.Listener() {
                 @Override public void onTab(int i) {
                     if (i == cur) { if (i == FILES && files.toRoot()) a.changed(); return; }
@@ -134,7 +139,7 @@ final class BlocksHome {
         cur = key;
         a.blocksWall(key);
         nav.setActive(key == S_LIBRARY ? HOME : key >= 10 ? ME : key);
-        if (key == HOME) { tickClock(); BlocksCards.maybeFetchWeather(a, new BlocksCards.Changed() { @Override public void changed() { if (cur == HOME) { dataChanged(); a.changed(); } } }); }
+        if (key == HOME) { tickClock(); if (colorHome != null) colorHome.tick(); BlocksCards.maybeFetchWeather(a, new BlocksCards.Changed() { @Override public void changed() { if (cur == HOME) { dataChanged(); a.changed(); } } }); }
         if (key == ME) refreshMe();
         if (key == S_STORAGE && prevCur != S_STORAGE) HostLink.cmd("status");
         if (key == catKey(HomeActivity.CAT_XFER_)) a.updateTransferInfo();
@@ -197,6 +202,15 @@ final class BlocksHome {
         switch (key) {
         case HOME: {
             Calendar c = Calendar.getInstance();
+            if (Blocks.color(a)) {
+                // Deliberately coarse: the hero, covers and cards are rebuilt only when what they
+                // show really changes. Minute-level numbers are updated in ColorHome.tick() instead,
+                // so coming back from an app does not repaint the whole colour page.
+                return caps + "|c|" + Lib.version() + "|" + prefs.getString("la_pkg", "")
+                    + "|" + prefs.getLong("wx_at", 0) + prefs.getString("wx_city", "")
+                    + "|" + c.get(Calendar.DAY_OF_YEAR)
+                    + "|" + a.appsVersion() + "|" + a.libOn() + "|" + prefs.getString("name", "VeraDroid");
+            }
             return caps + "|" + Lib.version() + "|" + prefs.getString(BlocksCards.KEY, BlocksCards.DEFAULT) + "|" + Stats.weekMs(a) / 60000 + "|" + Stats.bookmarkCount(a)
                 + "|" + prefs.getLong("la_time", 0) + "|" + prefs.getLong("wx_at", 0) + prefs.getString("wx_city", "") + "|" + c.get(Calendar.DAY_OF_YEAR)
                 + "|" + a.appsVersion() + "|" + prefs.getString("blk_quick", "") + "|" + a.libOn() + "|" + prefs.getInt(Blocks.WALLCARD_KEY, 0);
@@ -240,6 +254,7 @@ final class BlocksHome {
     }
 
     void refreshStatus(String clock, String state, boolean wifiConnected) {
+        if (colorHome != null) colorHome.refreshStatus(clock, state, wifiConnected);
         String name = prefs.getString("name", "VeraDroid");
         if (name.length() == 0) name = "VeraDroid";
         if (!name.contentEquals(stLeft.getText())) stLeft.setText(name);
@@ -257,6 +272,7 @@ final class BlocksHome {
     void tickClock() {
         String t = Ui.clock(a);
         for (TextView v : clocks) if (v.isAttachedToWindow() && !t.contentEquals(v.getText())) v.setText(t);
+        if (colorHome != null) colorHome.tick();
         int day = Calendar.getInstance().get(Calendar.DAY_OF_YEAR);
         if (tickDay >= 0 && day != tickDay && cur == HOME) dataChanged();   // 过了零点：日期、日历、诗词都换（一天一次）
         tickDay = day;
@@ -337,6 +353,8 @@ final class BlocksHome {
         clocks.clear();
         homeSlots.clear();
         homeLayoutSig = homeLayoutSig();
+        if (Blocks.color(a)) { colorHome = new ColorHome(this); return colorHome.build(); }
+        colorHome = null;
         LinearLayout pg = new LinearLayout(a);
         pg.setOrientation(LinearLayout.VERTICAL);
         int n = a.libOn() ? Lib.all().size() : 0;
@@ -471,7 +489,7 @@ final class BlocksHome {
         return null;
     }
 
-    private Lib.Book lastBook() {
+    Lib.Book lastBook() {
         if (!a.libOn()) return null;
         Lib.Book best = null;
         for (Lib.Book b : Lib.all()) if (b.lastRead > 1 && b.percent < 100 && (best == null || b.lastRead > best.lastRead)) best = b;
@@ -610,7 +628,7 @@ final class BlocksHome {
     }
 
     /** 继续阅读：书的文件不在了（删了 / 挪了 / 存储没挂上）就说一声并重新扫书库，不再什么都不做。 */
-    private void openBook(Lib.Book b) {
+    void openBook(Lib.Book b) {
         if (b.path == null || !new java.io.File(b.path).isFile()) {
             VeraToast.show(a, "找不到《" + b.title + "》的文件了，可能已被删除或移动。正在重新整理书库。");
             Lib.scan(a, 0);
@@ -620,7 +638,7 @@ final class BlocksHome {
     }
 
     /** 继续阅读：应用被卸载 / 停用了就提示，不再静默失败。 */
-    private void openApp(ResolveInfo app) {
+    void openApp(ResolveInfo app) {
         String pkg = app.activityInfo.packageName;
         try {
             android.content.pm.ApplicationInfo ai = a.getPackageManager().getApplicationInfo(pkg, 0);

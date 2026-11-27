@@ -356,8 +356,11 @@ final class BlocksSettings {
         add(hm, Blocks.navRow(a, "面板名称", prefs.getString("panelname", "").length() == 0 ? "（不显示）" : prefs.getString("panelname", ""), new View.OnClickListener() {
             @Override public void onClick(View v) { a.textDialog("面板名称", "最多 16 个字；留空就不显示。", "panelname", "", 16); } }));
         LinearLayout ui = group(c, "界面风格与字体");
-        add(ui, Blocks.row(a, "界面风格", "Launcher style", new Blocks.Stepper(a, new String[] { "经典", "方块" }, 1, new Blocks.Stepper.Listener() {
-            @Override public void onStep(final int i) { if (i == 0) a.setStyle("classic"); } }).wrap()));
+        final String[] styles = { "classic", "blocks", "color" };
+        int styleIdx = 2;
+        for (int i = 0; i < styles.length; i++) if (styles[i].equals(Blocks.style(a))) styleIdx = i;
+        add(ui, Blocks.row(a, "界面风格", "Launcher style", new Blocks.Stepper(a, new String[] { "经典", "方块", "色彩" }, styleIdx, new Blocks.Stepper.Listener() {
+            @Override public void onStep(final int i) { a.setStyle(styles[i]); } }).wrap()));
         add(ui, Blocks.row(a, "界面字重", "UI font weight", new Blocks.Stepper(a, Fonts.WEIGHT_L, Fonts.weight(a), new Blocks.Stepper.Listener() {
             @Override public void onStep(int i) { prefs.edit().putInt(Fonts.WEIGHT_KEY, i).commit(); a.reloadBlocks(BlocksHome.S_UI); } })));
         add(ui, Blocks.row(a, "英文小字", "English captions", toggle(Blocks.caps(a), new Icons.Toggle.Listener() {

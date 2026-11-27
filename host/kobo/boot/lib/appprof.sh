@@ -94,8 +94,10 @@ appprof_fg() {
     ap_old=$(cat $SYS/settings.app 2>/dev/null)
     if [ "$ap_new" = "$ap_old" ]; then
         # 参数没变也算换了窗口：KFB_NEWWIN=1 时照样让新应用的第一屏闪刷一次；桌面 / 应用之间切换时数页开关（FLIPCOUNT）照样要换
-        ap_msg=; [ "$ap_pkg" = home ] && ap_msg="FLIPCOUNT 0" || ap_msg="FLIPCOUNT 1"
         settings_load 2>/dev/null || true
+        if [ "$ap_pkg" = home ]; then ap_msg="FLIPCOUNT 0
+COLORBOOST ${KFB_COLORBOOST_HOME:-35}"; else ap_msg="FLIPCOUNT 1
+COLORBOOST ${KFB_COLORBOOST:-0}"; fi
         if [ "${KFB_NEWWIN:-0}" = 1 ]; then
             ap_msg="$ap_msg
 NEWWIN"
@@ -121,6 +123,8 @@ appprof_send() {
       echo "HOLD ${KFB_HOLD:-70}"
       # 桌面在前台时不数页（桌面换页、切标签不是读书翻页，用不着按页数全刷）
       [ -n "$ap_pkg" ] && { [ "$ap_pkg" = home ] && echo "FLIPCOUNT 0" || echo "FLIPCOUNT 1"; }
+      # 彩色饱和度：桌面的大块平涂色需要多一点（可配置），普通应用 / 阅读器保持原样
+      if [ "$ap_pkg" = home ]; then echo "COLORBOOST ${KFB_COLORBOOST_HOME:-35}"; else echo "COLORBOOST ${KFB_COLORBOOST:-0}"; fi
       # 换了前台应用（KFB_NEWWIN=1，按新应用的设置）：新应用的第一屏整屏闪刷一次
       [ "${KFB_NEWWIN:-0}" = 1 ] && [ "$ap_newpkg" = 1 ] && echo NEWWIN
       # legacy 的显示桥没有 PACE/CLEAN/REAGL/SETTLE2/SCROLLDU/IMG：那里的 settings.sh 不定义 epd_send_smooth，这几条就不发

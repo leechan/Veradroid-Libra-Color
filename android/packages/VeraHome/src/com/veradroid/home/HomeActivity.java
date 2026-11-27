@@ -348,7 +348,7 @@ public class HomeActivity extends Activity {
         HostLink.cmd("status");
         long tv = Theme.version();
         if (tv != themeVer) { themeVer = tv; wallApplied = ""; }   // 在传书网页换了壁纸 / 图标
-        if (!standalone && shownStyle != null && !shownStyle.equals(styleName(Blocks.on(this)))) applyStyle(styleName(Blocks.on(this)));
+        if (!standalone && shownStyle != null && !shownStyle.equals(Blocks.style(this))) applyStyle(Blocks.style(this));
         if (standalone) { if (appsLoadedAt == 0) reload(); refreshStatus(); }
         else if (!inSettings) {
             // Returning from an app does not change the launcher list; keep the existing e-ink grid.
@@ -518,12 +518,11 @@ public class HomeActivity extends Activity {
      * 这个桌面还是老样子，要等进程重启才换（测试机实测：从面板“全部设置”换成方块，回到桌面还是经典）。回到前台时对一下，不一样就按新风格重搭。
      */
     private String shownStyle;
-    private static String styleName(boolean blocksOn) { return blocksOn ? "blocks" : "classic"; }
 
     private void applyStyle(String style) {
         settingsViews[0] = null;   // 设置页上的“界面风格”要跟着变
         java.util.Arrays.fill(settingsSigs, null);
-        if (!"blocks".equals(style) && blocks != null) {
+        if (!("blocks".equals(style) || "color".equals(style)) && blocks != null) {
             if (blocks.root().getParent() != null) ((ViewGroup) blocks.root().getParent()).removeView(blocks.root());
             blocks = null;
             BlocksCards.stopListening(this);
@@ -749,7 +748,7 @@ public class HomeActivity extends Activity {
      */
     private void showMain(int which) {
         if (standalone) { openSettingsEntry(); return; }   // 单独的设置页里换了界面风格：按新风格再开设置
-        shownStyle = styleName(Blocks.on(this));
+        shownStyle = Blocks.style(this);
         if (Blocks.on(this)) { showBlocks(-1); return; }
         if (which == TAB_LIB && !libOn()) which = TAB_HOME;
         Perf.measure(page, which == TAB_LIB ? "library" : "home");
@@ -2649,18 +2648,27 @@ public class HomeActivity extends Activity {
         if ("iconstyle".equals(key) || "size".equals(key)) reload();
     }
 
-    /** 界面风格：经典（照 Kobo）/ 方块（底部四个标签、卡片式首页）。 */
+    /** 界面风格：经典（照 Kobo）/ 方块（黑白方块卡片）/ 色彩（彩色首页，彩色机型默认）。 */
     private void styleChoice(LinearLayout list) {
-        LinearLayout r = row(list, "界面风格", "经典：照 Kobo 的主页和书库。方块：底部 首页 / 文件 / 应用 / 我的 四个标签，首页是可以自己挑的卡片（继续阅读、天气、日历……）。");
-        final boolean on = Blocks.on(this);
+        LinearLayout r = row(list, "界面风格", "色彩：彩色首页、随时间变色的强调色、圆角卡片。方块：原来的黑白方块界面。经典：照 Kobo 的主页和书库。");
+        final String[] keys = { "classic", "blocks", "color" };
+        final String[] labels = { "经典", "方块", "色彩" };
+        String cur = Blocks.style(this);
+        int idx = 2;
+        for (int i = 0; i < keys.length; i++) if (keys[i].equals(cur)) idx = i;
         if (bs) {
-            ((LinearLayout) r.getTag()).addView(new Blocks.Stepper(this, new String[] { "经典", "方块" }, on ? 1 : 0, new Blocks.Stepper.Listener() {
-                @Override public void onStep(int i) { setStyle(i == 1 ? "blocks" : "classic"); }
+            ((LinearLayout) r.getTag()).addView(new Blocks.Stepper(this, labels, idx, new Blocks.Stepper.Listener() {
+                @Override public void onStep(int i) { setStyle(keys[i]); }
             }).wrap());
             return;
         }
-        ((LinearLayout) r.getTag()).addView(valueButton(on ? "方块" : "经典", new View.OnClickListener() {
-            @Override public void onClick(View v) { setStyle(on ? "classic" : "blocks"); }
+        ((LinearLayout) r.getTag()).addView(valueButton(labels[idx], new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                String cur = Blocks.style(HomeActivity.this);
+                int i = 2;
+                for (int k = 0; k < keys.length; k++) if (keys[k].equals(cur)) i = k;
+                setStyle(keys[(i + 1) % keys.length]);
+            }
         }));
     }
 

@@ -277,6 +277,7 @@ final class Icons {
     static class IconView extends View {
         private Kind kind;
         private boolean inverted;
+        private int color = 0;   // 0 = black/white by inverted, otherwise an explicit palette colour
 
         IconView(Context c, Kind k) {
             super(c);
@@ -286,8 +287,13 @@ final class Icons {
 
         void setKind(Kind k) { kind = k; invalidate(); }
         void setInverted(boolean on) { inverted = on; invalidate(); }
+        void setColor(int c) { color = c; invalidate(); }
 
         @Override protected void onDraw(Canvas c) {
+            if (color != 0) {
+                Icons.draw(c, kind, Math.min(getWidth(), getHeight()), isPressed() ? Palette.INK : color);
+                return;
+            }
             boolean white = isPressed() ? !inverted : inverted;
             Icons.draw(c, kind, Math.min(getWidth(), getHeight()), white ? Color.WHITE : Color.BLACK);
         }

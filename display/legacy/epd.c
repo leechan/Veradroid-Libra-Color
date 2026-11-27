@@ -372,6 +372,7 @@ static int g_color = 0;       /* MTK color panel (Colorsoft): REAGL is GLRC16 th
 static unsigned long n_color_sent = 0, n_gray_sent = 0;
 static long long ms_color_sent = 0, ms_gray_sent = 0;
 static int color_no_anim = 0; /* inside kobo_wipe_rgba: do not start another animation */
+static int color_boost = 0;   /* COLORBOOST 0..100: extra saturation for flat UI colours (launcher), 0 = off */
 static int skip_cfa = 0;      /* --skip-cfa 1: experimental, off by default. On the cs-5192 emulator it removed the per-REAGL dmesg
                                  error but small refreshes took ~160 ms instead of ~60 ms (emulated MDP; real panel unknown) */
 #ifdef FBINK_FOR_KOBO
@@ -1494,6 +1495,25 @@ static int push_y8(const uint8_t *buf, int x, int y, int w, int h, int mode)
     return rc;
 }
 
+/* Push colours away from their grey axis before the CFA pipeline. Kaleido 3 mutes
+   large flat fills (a saturated launcher card reads as pastel); photos already carry
+   enough local contrast. amount 0..100 -> 1.0x .. 2.0x, fixed point. Black/white
+   pixels do not move, so text stays crisp. */
+static void boost_rgba(uint8_t *buf, size_t n, int amount)
+{
+    int k = 256 + amount * 256 / 100;
+    for (size_t i = 0; i + 3 < n; i += 4) {
+        int r = buf[i], g = buf[i + 1], b = buf[i + 2];
+        int l = (r * 77 + g * 150 + b * 29) >> 8;
+        int nr = l + (((r - l) * k) >> 8);
+        int ng = l + (((g - l) * k) >> 8);
+        int nb = l + (((b - l) * k) >> 8);
+        buf[i]     = (uint8_t)(nr < 0 ? 0 : nr > 255 ? 255 : nr);
+        buf[i + 1] = (uint8_t)(ng < 0 ? 0 : ng > 255 ? 255 : ng);
+        buf[i + 2] = (uint8_t)(nb < 0 ? 0 : nb > 255 ? 255 : nb);
+    }
+}
+
 /* Send a color region. Kaleido 3 needs a CFA waveform: GCC16 for image content,
    GLRC16 for small color highlights on text. Both must be paired with a FULL
    update (FBInk's hwtcon backend handles the CFA flags). */
@@ -1547,7 +1567,22 @@ static int push_color(const uint8_t *buf, int x, int y, int w, int h, int mode)
        every cover tile / page turn flash. Explicit cleanup paths can still
        request a full update via M_CLEAN below. */
     c.is_flashing = (mode == M_FULL || mode == M_CLEAN);
-    int rc = fbink_print_raw_data(fbfd, (unsigned char *)buf, w, h, (size_t)w * h * 4, (short)x, (short)y, &c);
+    const unsigned char *send = (const unsigned char *)buf;
+    if (color_boost > 0) {
+        static uint8_t *boosted = NULL;
+        static size_t boosted_cap = 0;
+        size_t need = (size_t)w * h * 4;
+        if (need > boosted_cap) {
+            uint8_t *nb = realloc(boosted, need);
+            if (nb) { boosted = nb; boosted_cap = need; }
+        }
+        if (boosted) {
+            memcpy(boosted, buf, need);
+            boost_rgba(boosted, need, color_boost);
+            send = boosted;
+        }
+    }
+    int rc = fbink_print_raw_data(fbfd, (unsigned char *)send, w, h, (size_t)w * h * 4, (short)x, (short)y, &c);
     long long dt = now_ms() - t0;
     if (rc >= 0) {
         busy_add(x, y, w, h, t0);
@@ -2849,6 +2884,17 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             else if (!strncmp(line, "HOLD", 4)) {   /* HOLD <ms>: how long a small change waits for a following frame (0 = off) */
                 int v;
                 if (sscanf(line + 4, "%d", &v) == 1 && v >= 0 && v <= 300) hold_ms = v;
+            }
+            else if (!strncmp(line, "COLORBOOST", 10)) {   /* COLORBOOST <0..100>: saturation for flat UI colours */
+                int v;
+                if (sscanf(line + 10, "%d", &v) == 1) {
+                    if (v < 0) v = 0;
+                    if (v > 100) v = 100;
+                    if (v != color_boost) {
+                        color_boost = v;
+                        fprintf(stderr, "[%lld] epd: color boost %d%%\n", now_ms(), v);
+                    }
+                }
             }
             else if (!strncmp(line, "SWIPE", 5)) {
                 /* SWIPE <dir> <steps>: animate the next change (one shot) with this direction (0 down, 1 up, 2 left, 3 right,

@@ -210,15 +210,22 @@ after_boot() {
         ep=$(pidof android.ext.services 2>/dev/null)
         [ -n "$ep" ] && kill $ep 2>/dev/null || true
         slim_after_boot
-        if lowmem; then
-            set -- $(heap_values); hg=$1; hs=$2   # 和 heap_fix 一致（memory.sh）
-            extra_dis=
-            for p in com.android.printspooler com.android.managedprovisioning com.android.companiondevicesupport com.android.bookmarkprovider com.android.providers.calendar com.android.calendar com.android.sharedstoragebackup com.android.camera2 com.android.gallery3d; do
-                pkg_installed "$p" && extra_dis="$extra_dis $p"
-            done
-            adb_sh 'for p in'"$extra_dis"'; do pm disable-user --user 0 $p >/dev/null 2>&1; done; settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0; settings put global wifi_scan_always_enabled 0; setprop dalvik.vm.heapgrowthlimit '"$hg"'; setprop dalvik.vm.heapsize '"$hs" >/dev/null 2>&1 || true
-            t "low-ram: disabled extra pkgs + zero anim"
-        fi
+        # 动画全关 + 关掉“始终允许扫描 Wi-Fi”：墨水屏上每一帧动画都是一次刷新和一次 CPU 唤醒，
+        # 以前只在 512 MB 机型做（lowmem），1 GB 的 Libra Colour 上动画一直是开着的。
+        adb_sh 'settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0; settings put global wifi_scan_always_enabled 0; settings put global captive_portal_detection_enabled 0' >/dev/null 2>&1
+        # 用不到的后台应用：打印 / 引导 / 日历 / 相机 / 图库 / 备份 / 系统屏保，全部关掉（省内存也少后台唤醒）
+        extra_dis=
+        for p in com.android.printspooler com.android.managedprovisioning com.android.companiondevicesupport \
+                 com.android.bookmarkprovider com.android.providers.calendar com.android.calendar \
+                 com.android.sharedstoragebackup com.android.camera2 com.android.gallery3d \
+                 com.android.dreams.basic com.android.dreams.phototable com.android.wallpaper.livepicker \
+                 com.android.printservice.recommendation; do
+            pkg_installed "$p" && extra_dis="$extra_dis $p"
+        done
+        [ -n "$extra_dis" ] && adb_sh 'for p in'"$extra_dis"'; do pm disable-user --user 0 $p >/dev/null 2>&1; done' >/dev/null 2>&1
+        t "perf: zero anim + scan-always off, disabled${extra_dis:- none}"
+        set -- $(heap_values); hg=$1; hs=$2   # 和 heap_fix 一致（memory.sh）
+        adb_sh "setprop dalvik.vm.heapgrowthlimit $hg; setprop dalvik.vm.heapsize $hs" >/dev/null 2>&1 || true
     fi
     lmk_tune          # 运行时参数，不持久：每次开机都要做
     proc_limit_apply  # 机型文件的 PROC_LIMIT（memory.sh）：同样不持久

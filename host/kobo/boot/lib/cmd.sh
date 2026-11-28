@@ -115,9 +115,27 @@ wifi_connect() {
                 hostnet_write 2>/dev/null || true
                 wifi_result ok=1 "essid=$hex"
             else
-                # 还连不上：留现场（不再自动重载内核模块——wmt_drv 还被蓝牙占着，卸不干净反而会把 wlan0 弄没）
-                type wifi_diag >/dev/null 2>&1 && wifi_diag "connect $want: failed"
-                wifi_result ok=0 "error=timeout" "essid=$hex"
+                # 还连不上：把 Wi-Fi 模块栈重启一次再试（上次失败是因为没卸蓝牙模块，wmt_drv 卸不掉）
+                type wifi_diag >/dev/null 2>&1 && wifi_diag "connect $want: before stack restart"
+                if type wifi_stack_restart >/dev/null 2>&1 && wifi_stack_restart; then
+                    if [ -n "$psk" ]; then
+                        kobo_wifi_connect_new "$want" "$psk" || kobo_wifi_select "$want" || true
+                    else
+                        kobo_wifi_select "$want" || kobo_wifi_connect_new "$want" "" || true
+                    fi
+                    i=0
+                    while [ $i -lt 20 ]; do
+                        sleep 1; i=$((i + 1))
+                        [ "$(kobo_wifi_current)" = "$want" ] && [ -n "$(kobo_wifi_ip)" ] && break
+                    done
+                fi
+                type wifi_diag >/dev/null 2>&1 && wifi_diag "connect $want: final"
+                if [ "$(kobo_wifi_current)" = "$want" ] && [ -n "$(kobo_wifi_ip)" ]; then
+                    hostnet_write 2>/dev/null || true
+                    wifi_result ok=1 "essid=$hex"
+                else
+                    wifi_result ok=0 "error=timeout" "essid=$hex"
+                fi
             fi
         fi
     else

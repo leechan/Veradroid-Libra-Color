@@ -91,6 +91,14 @@ wifi_ps_tick() {
 
 # After wake: if the interface has no address, restart the supplicant and DHCP.
 # The MTK combo keeps the interface across suspend, but the supplicant/lease can be lost.
+# 有地址并且网关能 ping 通（只看地址不够：唤醒后经常“连上但没有网”）
+wifi_net_ok() {
+    [ -n "$(kobo_wifi_ip)" ] || return 1
+    gw=$(ip route 2>/dev/null | awk '$1 == "default" { for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }')
+    [ -n "$gw" ] || return 1
+    ping -c 1 -W 2 "$gw" >/dev/null 2>&1
+}
+
 wifi_resume() {
     [ "$(cat "$W/wifi.was" 2>/dev/null)" = 1 ] || return 0   # Wi-Fi was off before sleep: leave it off
     dev=$(kobo_wifi_if)
@@ -99,8 +107,8 @@ wifi_resume() {
     ip=$(kobo_wifi_ip)
     wst=$(wpa_cli -i "$dev" status 2>/dev/null | sed -n 's/^wpa_state=//p')
     t "wifi: after wake iface=$dev oper=${st:-?} ip=${ip:-none} wpa=${wst:-none}"
-    # 只有「有地址 + supplicant 已连上」才算好的；有地址但没连上说明是休眠前的旧地址
-    if [ -n "$ip" ] && { [ -z "$wst" ] || [ "$wst" = COMPLETED ]; }; then return 0; fi
+    # 只有「有地址 + supplicant 已连上 + 网关能通」才算好的：唤醒后经常有地址但没有网
+    if wifi_net_ok; then return 0; fi
     kobo_wifi_set 1
     hostnet_write 2>/dev/null || true
     type dns_apply >/dev/null 2>&1 && dns_apply 2>/dev/null || true
@@ -122,20 +130,31 @@ wifi_resume() {
             sleep 1; i=$((i + 1))
         done
     fi
-    if [ -z "$(kobo_wifi_ip)" ]; then
+    if ! wifi_net_ok; then
         # 这个驱动唤醒后经常只扫得到 5GHz：同名的 -5G 网络保存过就切过去
         type wifi_try_saved_5g >/dev/null 2>&1 && wifi_try_saved_5g
         i=0
         while [ $i -lt 10 ]; do
-            [ -n "$(kobo_wifi_ip)" ] && break
+            wifi_net_ok && break
             sleep 1; i=$((i + 1))
         done
         hostnet_write 2>/dev/null || true
         type dns_apply >/dev/null 2>&1 && dns_apply 2>/dev/null || true
     fi
-    if [ -z "$(kobo_wifi_ip)" ]; then
-        # 不再自动重载内核模块：wmt_drv 被蓝牙模块占着，卸不干净反而会让 wlan0 消失
-        type wifi_diag >/dev/null 2>&1 && wifi_diag "wake: still down"
+    if ! wifi_net_ok; then
+        # 最后手段：按依赖顺序把整个 Wi-Fi 模块栈重启一次（含蓝牙模块，否则 wmt_drv 卸不掉）
+        type wifi_diag >/dev/null 2>&1 && wifi_diag "wake: before stack restart"
+        if type wifi_stack_restart >/dev/null 2>&1 && wifi_stack_restart; then
+            kobo_wifi_set 1
+            i=0
+            while [ $i -lt 25 ]; do
+                wifi_net_ok && break
+                sleep 1; i=$((i + 1))
+            done
+            hostnet_write 2>/dev/null || true
+            type dns_apply >/dev/null 2>&1 && dns_apply 2>/dev/null || true
+        fi
+        type wifi_diag >/dev/null 2>&1 && wifi_diag "wake: after stack restart"
     fi
     t "wifi: resumed oper=$(cat /sys/class/net/$dev/operstate 2>/dev/null) ip=$(kobo_wifi_ip)"
 }

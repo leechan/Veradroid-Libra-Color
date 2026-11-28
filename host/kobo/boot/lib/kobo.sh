@@ -331,6 +331,13 @@ wifi_diag() {
         wpa_cli -i "$dev" scan >/dev/null 2>&1
         sleep 3
         wpa_cli -i "$dev" scan_results 2>&1 | head -25
+        echo "--- addr / route"
+        ip -4 addr show dev "$dev" 2>&1 | head -5
+        ip route 2>&1 | head -5
+        echo "--- ping"
+        gw=$(ip route 2>/dev/null | awk '$1 == "default" { for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }')
+        [ -n "$gw" ] && ping -c 1 -W 2 "$gw" >/dev/null 2>&1 && echo "gw $gw ok" || echo "gw ${gw:-?} unreachable"
+        ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 && echo "dns 223.5.5.5 ok" || echo "dns 223.5.5.5 unreachable"
         echo "--- scan bands"
         wpa_cli -i "$dev" scan_results 2>/dev/null | awk 'NR > 1 { if ($2 < 3000) a++; else b++ } END { print "2.4G=" a+0 " 5G=" b+0 }'
         echo "--- reg"
@@ -386,6 +393,57 @@ wifi_try_saved_5g() {
     wpa_cli -i "$dev" scan_results 2>/dev/null | grep -q "	$cur-5G$" || return 1
     t "wifi: 2.4G not visible, switching to saved $cur-5G"
     wpa_cli -i "$dev" select_network "$nid" >/dev/null 2>&1
+}
+
+# 彻底重启 MTK 组合 Wi-Fi：按依赖顺序卸掉 4 个模块（含蓝牙那个，否则 wmt_drv 卸不掉），
+# 再按依赖顺序装回来。中途任何一步失败就回滚（把已卸的装回去），不会把 wlan0 弄丢。
+WIFI_KO_DIR_MTK=/drivers/mt8113t-ntx/mt66xx
+wifi_stack_load_missing() {
+    for m in wmt_drv wmt_chrdev_wifi wmt_cdev_bt wlan_drv_gen4m; do
+        if ! grep -q "^$m " /proc/modules 2>/dev/null; then
+            insmod "$WIFI_KO_DIR_MTK/$m.ko" 2>/dev/null || t "wifi: insmod $m failed"
+        fi
+        sleep 1
+    done
+}
+
+wifi_stack_restart() {
+    dev=$(kobo_wifi_if)
+    for m in wlan_drv_gen4m wmt_chrdev_wifi wmt_cdev_bt wmt_drv; do
+        [ -f "$WIFI_KO_DIR_MTK/$m.ko" ] || { t "wifi restart: $m.ko missing"; return 1; }
+    done
+    t "wifi: restarting combo stack"
+    type wifi_diag >/dev/null 2>&1 && wifi_diag "before stack restart"
+    command -v wpa_cli >/dev/null 2>&1 && wpa_cli -i "$dev" terminate >/dev/null 2>&1 || true
+    killall -q -TERM wpa_supplicant 2>/dev/null || true
+    killall -q -TERM wmt_launcher 2>/dev/null || true
+    usleep 300000
+    killall -q -KILL wpa_supplicant wmt_launcher 2>/dev/null || true
+    ifconfig "$dev" down 2>/dev/null || true
+    rm -f "/var/run/wpa_supplicant/$dev"
+    sleep 1
+    for m in wlan_drv_gen4m wmt_chrdev_wifi wmt_cdev_bt wmt_drv; do
+        rmmod "$m" 2>/dev/null || true
+        if grep -q "^$m " /proc/modules 2>/dev/null; then
+            t "wifi restart: cannot unload $m, rolling back"
+            wifi_stack_load_missing
+            ifconfig "$dev" up 2>/dev/null || true
+            kobo_wpa_ensure >/dev/null 2>&1 || true
+            return 1
+        fi
+        sleep 1
+    done
+    wifi_stack_load_missing
+    sleep 3
+    if [ ! -d "/sys/class/net/$dev" ]; then
+        t "wifi restart: $dev did not appear"
+        return 1
+    fi
+    ifconfig "$dev" up 2>/dev/null || true
+    kobo_wpa_ensure >/dev/null 2>&1 || t "wifi restart: supplicant failed"
+    command -v wpa_cli >/dev/null 2>&1 && wpa_cli -i "$dev" reconnect >/dev/null 2>&1 || true
+    t "wifi restart: stack back up"
+    return 0
 }
 
 # 扫一次：3 秒内有任何 AP（scan_results 的表头之外还有行）就算射频正常

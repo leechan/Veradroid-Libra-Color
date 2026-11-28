@@ -106,7 +106,28 @@ wifi_connect() {
                 hostnet_write 2>/dev/null || true
                 wifi_result ok=1 "essid=$hex"
             else
-                wifi_result ok=0 "error=timeout" "essid=$hex"
+                # 还连不上：最后把组合模块重载一次再试
+                type wifi_diag >/dev/null 2>&1 && wifi_diag "connect $want: before module reset"
+                if type wifi_module_reset >/dev/null 2>&1 && wifi_module_reset; then
+                    sleep 2
+                    if [ -n "$psk" ]; then
+                        kobo_wifi_connect_new "$want" "$psk" || kobo_wifi_select "$want" || true
+                    else
+                        kobo_wifi_select "$want" || kobo_wifi_connect_new "$want" "" || true
+                    fi
+                    i=0
+                    while [ $i -lt 25 ]; do
+                        sleep 1; i=$((i + 1))
+                        [ "$(kobo_wifi_current)" = "$want" ] && [ -n "$(kobo_wifi_ip)" ] && break
+                    done
+                fi
+                type wifi_diag >/dev/null 2>&1 && wifi_diag "connect $want: final"
+                if [ "$(kobo_wifi_current)" = "$want" ] && [ -n "$(kobo_wifi_ip)" ]; then
+                    hostnet_write 2>/dev/null || true
+                    wifi_result ok=1 "essid=$hex"
+                else
+                    wifi_result ok=0 "error=timeout" "essid=$hex"
+                fi
             fi
         fi
     else

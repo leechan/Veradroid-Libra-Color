@@ -111,10 +111,25 @@ wifi_resume() {
     done
     if [ -z "$(kobo_wifi_ip)" ]; then
         t "wifi: still no address after wake, hard recovery"
+        type wifi_diag >/dev/null 2>&1 && wifi_diag "wake: no address"
         type wifi_hard_recover >/dev/null 2>&1 && wifi_hard_recover
         kobo_wifi_set 1
         hostnet_write 2>/dev/null || true
         type dns_apply >/dev/null 2>&1 && dns_apply 2>/dev/null || true
+        i=0
+        while [ $i -lt 10 ]; do
+            [ -n "$(kobo_wifi_ip)" ] && break
+            sleep 1; i=$((i + 1))
+        done
+    fi
+    if [ -z "$(kobo_wifi_ip)" ]; then
+        t "wifi: still down after hard recovery, reloading combo modules"
+        type wifi_diag >/dev/null 2>&1 && wifi_diag "wake: before module reset"
+        type wifi_module_reset >/dev/null 2>&1 && wifi_module_reset
+        kobo_wifi_set 1
+        hostnet_write 2>/dev/null || true
+        type dns_apply >/dev/null 2>&1 && dns_apply 2>/dev/null || true
+        type wifi_diag >/dev/null 2>&1 && wifi_diag "wake: after module reset"
     fi
     t "wifi: resumed oper=$(cat /sys/class/net/$dev/operstate 2>/dev/null) ip=$(kobo_wifi_ip)"
 }

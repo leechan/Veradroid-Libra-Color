@@ -331,6 +331,10 @@ wifi_diag() {
         wpa_cli -i "$dev" scan >/dev/null 2>&1
         sleep 3
         wpa_cli -i "$dev" scan_results 2>&1 | head -25
+        echo "--- scan bands"
+        wpa_cli -i "$dev" scan_results 2>/dev/null | awk 'NR > 1 { if ($2 < 3000) a++; else b++ } END { print "2.4G=" a+0 " 5G=" b+0 }'
+        echo "--- reg"
+        iw reg get 2>&1 | head -6
         echo "--- networks"
         wpa_cli -i "$dev" list_networks 2>&1 | head -15
         echo "--- supplicant"
@@ -366,6 +370,22 @@ wifi_hard_recover() {
     else
         t "wifi: hard recover: scan sees APs"
     fi
+}
+
+# 唤醒后这个 MTK 驱动经常只能扫到 5GHz：如果同名 -5G 网络已经保存过，就直接切过去
+wifi_try_saved_5g() {
+    dev=$(kobo_wifi_if)
+    command -v wpa_cli >/dev/null 2>&1 || return 1
+    cur=$(kobo_wifi_current)
+    [ -n "$cur" ] || return 1
+    case "$cur" in *-5G) return 1 ;; esac
+    nid=$(wpa_cli -i "$dev" list_networks 2>/dev/null | awk -F'\t' -v s="$cur-5G" 'NR > 1 && $2 == s { print $1; exit }')
+    [ -n "$nid" ] || return 1
+    wpa_cli -i "$dev" scan >/dev/null 2>&1
+    sleep 3
+    wpa_cli -i "$dev" scan_results 2>/dev/null | grep -q "	$cur-5G$" || return 1
+    t "wifi: 2.4G not visible, switching to saved $cur-5G"
+    wpa_cli -i "$dev" select_network "$nid" >/dev/null 2>&1
 }
 
 # 扫一次：3 秒内有任何 AP（scan_results 的表头之外还有行）就算射频正常

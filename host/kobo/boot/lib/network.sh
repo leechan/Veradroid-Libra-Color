@@ -123,6 +123,17 @@ wifi_resume() {
         done
     fi
     if [ -z "$(kobo_wifi_ip)" ]; then
+        # 这个驱动唤醒后经常只扫得到 5GHz：同名的 -5G 网络保存过就切过去
+        type wifi_try_saved_5g >/dev/null 2>&1 && wifi_try_saved_5g
+        i=0
+        while [ $i -lt 10 ]; do
+            [ -n "$(kobo_wifi_ip)" ] && break
+            sleep 1; i=$((i + 1))
+        done
+        hostnet_write 2>/dev/null || true
+        type dns_apply >/dev/null 2>&1 && dns_apply 2>/dev/null || true
+    fi
+    if [ -z "$(kobo_wifi_ip)" ]; then
         # 不再自动重载内核模块：wmt_drv 被蓝牙模块占着，卸不干净反而会让 wlan0 消失
         type wifi_diag >/dev/null 2>&1 && wifi_diag "wake: still down"
     fi

@@ -323,6 +323,11 @@ public class HomeActivity extends Activity {
         else if (resumed && mainTab != TAB_HOME) showMain(TAB_HOME);   // 已经在桌面上再按一次主页：回“主页”标签
     }
 
+    @Override public boolean dispatchKeyEvent(android.view.KeyEvent e) {
+        if (e.getAction() == android.view.KeyEvent.ACTION_DOWN && blocks != null && blocks.scrollKey(e.getKeyCode())) return true;
+        return super.dispatchKeyEvent(e);
+    }
+
     @Override protected void onResume() {
         super.onResume();
         // 方块风格的“继续阅读”：刚离开的第三方应用最后的画面，趁主页还没画先从显示缓冲里取一张缩略图
@@ -1283,8 +1288,18 @@ public class HomeActivity extends Activity {
                         @Override public int compare(ResolveInfo a, ResolveInfo b) {
                             String pa = a.activityInfo.packageName, pb = b.activityInfo.packageName;
                             switch (mode) {
-                            case 0: return Long.compare(prefs.getLong("t_" + pb, 0), prefs.getLong("t_" + pa, 0));
-                            case 1: return Long.compare(prefs.getLong("t_" + pa, 0), prefs.getLong("t_" + pb, 0));
+                            case 0: {
+                                long ta = prefs.getLong("t_" + pa, 0), tb = prefs.getLong("t_" + pb, 0);
+                                if (ta != tb) return Long.compare(tb, ta);
+                                String la = labels.get(pa), lb = labels.get(pb);
+                                return zh.compare(la == null ? pa : la, lb == null ? pb : lb);
+                            }
+                            case 1: {
+                                long ta = prefs.getLong("t_" + pa, 0), tb = prefs.getLong("t_" + pb, 0);
+                                if (ta != tb) return Long.compare(ta, tb);
+                                String la = labels.get(pa), lb = labels.get(pb);
+                                return zh.compare(la == null ? pa : la, lb == null ? pb : lb);
+                            }
                             case 3: return pa.compareToIgnoreCase(pb);
                             case 4: return Long.compare(get(pb), get(pa));
                             default: {
@@ -2253,7 +2268,6 @@ public class HomeActivity extends Activity {
                 action(list, "阅读器名称", "显示在桌面左上角，替换默认的 VeraDroid。当前：" + devName + "。", "修改", new View.OnClickListener() {
                     @Override public void onClick(View v) { titleDialog(); }
                 });
-                styleChoice(list);
                 localSwitch(list, "英文小字", "方块风格里每个中文标题上面那行小号英文（CONTINUE、THIS WEEK…）。", Blocks.CAPS_KEY, true);
             }
             localSwitch(list, "书库", "主页底部的“书库”标签和顶上的搜索框。只用来开应用的话可以关掉：书库页不再显示，也不再读书的索引、不扫描书的文件夹。", "library", true);

@@ -22,7 +22,8 @@ final class Icons {
         HOME, GRID, BACK, CHEV_R, CHEV_U, CHEV_D, GEAR, POWER, SUN_S, SUN_L, WARM, WIFI, INVERT, REFRESH, SWITCH, EYE,
         SLIDERS, INFO, CLOSE, PLUS, MINUS, BELL, MOON, FONT, SWIPE, BOOK, UPLOAD, CLOUD, SEARCH, STORE, CHART, BLUETOOTH, CAMERA,
         EXIT, MORE, LIST, PLANE, BOOKMARK, TOC,
-        FOLDER, USER, DEVICE, IMAGE, NOTE, LAYOUT, CLOCK, CALENDAR, WIDGET, CLEAN, LOCK, UNLOCK
+        FOLDER, USER, DEVICE, IMAGE, NOTE, LAYOUT, CLOCK, CALENDAR, WIDGET, CLEAN, LOCK, UNLOCK,
+        SPARKLE, RESTART, ANDROID, BROOM
     }
 
     static void draw(Canvas c, Kind k, float size, int color) {
@@ -97,6 +98,46 @@ final class Icons {
         case REFRESH: {
             c.drawArc(new RectF(4.5f, 4.5f, 19.5f, 19.5f), -50, 290, false, p);
             poly(c, p, 15, 2.5f, 17.8f, 5.6f, 14, 7.8f);
+            break; }
+        case BROOM: {
+            // 扫帚：斜柄 + 刷头 + 几根刷毛
+            c.drawLine(4.5f, 20, 13.5f, 7.5f, p);
+            Path head = new Path();
+            head.moveTo(10.5f, 6.5f); head.lineTo(17, 3.5f); head.lineTo(20.5f, 9.5f);
+            head.lineTo(14, 12.5f); head.close();
+            c.drawPath(head, p);
+            c.drawLine(12.5f, 10.8f, 16.5f, 15.5f, p);
+            c.drawLine(10.8f, 11.8f, 15.3f, 17.2f, p);
+            c.drawLine(9.2f, 12.8f, 14.0f, 18.8f, p);
+            break; }
+        case SPARKLE: {
+            // 清残影：一颗四角星 + 两个小点，比循环箭头更像“擦干净”
+            Path star = new Path();
+            star.moveTo(11, 2.5f); star.lineTo(13.4f, 9.6f); star.lineTo(21, 12);
+            star.lineTo(13.4f, 14.4f); star.lineTo(11, 21.5f); star.lineTo(8.6f, 14.4f);
+            star.lineTo(1.5f, 12); star.lineTo(8.6f, 9.6f); star.close();
+            Paint sf = new Paint(p);
+            sf.setStyle(Paint.Style.FILL);
+            c.drawPath(star, sf);
+            c.drawCircle(19.5f, 19.5f, 1.3f, sf);
+            c.drawCircle(20.5f, 5.0f, 1.0f, sf);
+            break; }
+        case ANDROID: {
+            // a friendly Android head: dome, antennas, two eyes
+            c.drawArc(new RectF(4.5f, 8, 19.5f, 22), 180, 180, false, p);
+            c.drawLine(4.5f, 15, 19.5f, 15, p);
+            c.drawLine(8, 8, 5.8f, 4.2f, p);
+            c.drawLine(16, 8, 18.2f, 4.2f, p);
+            Paint f = new Paint(p);
+            f.setStyle(Paint.Style.FILL);
+            c.drawCircle(9, 12.2f, 1.2f, f);
+            c.drawCircle(15, 12.2f, 1.2f, f);
+            break; }
+        case RESTART: {
+            // 设备 + 环形箭头：重启 Android
+            c.drawRoundRect(new RectF(8.2f, 7.2f, 15.8f, 20.5f), 2.2f, 2.2f, p);
+            c.drawArc(new RectF(3.2f, 3.2f, 20.8f, 20.8f), -55, 250, false, p);
+            poly(c, p, 15.6f, 1.8f, 18.4f, 4.8f, 14.6f, 6.9f);
             break; }
         case SWITCH:
             c.drawRoundRect(new RectF(3.5f, 8, 16, 20.5f), 2, 2, p);

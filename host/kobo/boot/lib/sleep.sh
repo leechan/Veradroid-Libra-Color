@@ -40,7 +40,37 @@ screensaver_show() {
             done
         done
     fi
+    if [ "$smode" = wall ]; then
+        for f in "$SYS/data/media/0/.vdhome/theme/wallpaper.png" \
+                 "$SYS/data/media/0/.vdhome/theme/wallpaper.jpg" \
+                 "$SYS/data/media/0/.vdhome/theme/wallpaper.jpeg" \
+                 "$SYS/data/media/0/.vdhome/theme/wallpaper.webp"; do
+            [ -f "$f" ] || continue
+            echo "$f" >> "$list"
+            t "screensaver: wall mode, using $f"
+            break
+        done
+    fi
     n=$(wc -l < "$list" 2>/dev/null | tr -d ' ')
+    # No screensaver image? Use the launcher wallpaper the user picked, so pressing
+    # power always shows their picture instead of only the "已休眠" splash.
+    if [ "${n:-0}" -eq 0 ]; then
+        for f in "$SYS/data/media/0/.vdhome/theme/wallpaper.png" \
+                 "$SYS/data/media/0/.vdhome/theme/wallpaper.jpg" \
+                 "$SYS/data/media/0/.vdhome/theme/wallpaper.jpeg" \
+                 "$SYS/data/media/0/.vdhome/theme/wallpaper.webp"; do
+            [ -f "$f" ] || continue
+            echo "$f" >> "$list"
+            n=1
+            t "screensaver: no saver image, using home wallpaper $f"
+            break
+        done
+    fi
+    if [ "${n:-0}" -eq 0 ] && [ -f "$VD/boot/screensaver-default.png" ]; then
+        echo "$VD/boot/screensaver-default.png" >> "$list"
+        n=1
+        t "screensaver: using bundled default image"
+    fi
     fb_img="$VD/bin/fbink-img"
     [ -x "$fb_img" ] || fb_img="$FBINK"
     if [ "${n:-0}" -gt 0 ] && [ -x "$fb_img" ]; then
@@ -51,13 +81,25 @@ screensaver_show() {
         img=$(sed -n "${i}p" "$list")
         draw_img=$(saver_resolve_img "$img")
         if [ -f "$draw_img" ]; then
+            if [ -p "$X/epd.fifo" ] && [ -f "$W/epd.pid" ] && kill -0 "$(cat "$W/epd.pid" 2>/dev/null)" 2>/dev/null; then
+                ( printf 'IMG %s\n' "$draw_img" > "$X/epd.fifo" ) &
+                sleep 1
+                t "screensaver: img via bridge $draw_img"
+                return 0
+            fi
             if "$fb_img" -q -c -f -i "$draw_img" -g w=-2,h=-2,halign=CENTER,valign=CENTER,dither >/dev/null 2>&1; then
                 t "screensaver: $img"
                 return 0
             fi
             t "screensaver: fbink failed for $draw_img"
+            if [ -f "$VD/boot/screensaver-default.png" ] \
+               && "$fb_img" -q -c -f -i "$VD/boot/screensaver-default.png" -g w=-2,h=-2,halign=CENTER,valign=CENTER,dither >/dev/null 2>&1; then
+                t "screensaver: fallback bundled default"
+                return 0
+            fi
         fi
     fi
+    t "screensaver: no usable image (mode=${smode:-default}, n=${n:-0}, fbink=$([ -x "$fb_img" ] && echo yes || echo no)) -> splash"
     splash "已休眠 · 按电源键唤醒" 40 || true
 }
 
@@ -299,6 +341,7 @@ sleep_transfer_busy() {
 kobo_enter_sleep() {
     [ -f "$W/saver_frozen" ] || [ -f "$W/sleeping" ] && return 0
     touch "$W/sleeping" "$X/ctl/sleep"
+    kobo_wifi_enabled > "$W/wifi.was" 2>/dev/null || true
     type lock_request >/dev/null 2>&1 && lock_request
     usleep 250000
     cur_fl=$(kobo_light_get)
@@ -309,7 +352,6 @@ kobo_enter_sleep() {
     fi
     echo "${cur_fl:-0}" > "$W/sleep.fl"
     kobo_light_set 0
-    screensaver_show
     if sleep_transfer_busy; then
         touch "$W/saver_nofreeze"
         t "sleep: transfer/install in progress, leaving android running"
@@ -317,6 +359,8 @@ kobo_enter_sleep() {
         android_freeze && touch "$W/saver_frozen"
         type wifi_ps_restore >/dev/null 2>&1 && wifi_ps_restore
     fi
+    screensaver_show
+    usleep 400000
     date +%s > "$W/saver.t0"
     t "sleep: entered screensaver (saved frontlight=$cur_fl, charging=$(kobo_is_charging && echo 1 || echo 0))"
     t "sleep: power: $(kobo_power_summary)"
@@ -360,6 +404,8 @@ kobo_exit_sleep() {
             type status_write >/dev/null 2>&1 && status_write 2>/dev/null || true
             t "sleep: wifi restored after wakeup"
         ) </dev/null >>"$LOG" 2>&1 &
+    else
+        type wifi_resume >/dev/null 2>&1 && ( wifi_resume ) </dev/null >>"$LOG" 2>&1 &
     fi
     t "sleep: woke up and redrew screen (battery $(kobo_battery)%)"
 }

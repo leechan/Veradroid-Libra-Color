@@ -117,7 +117,7 @@ final class Panel {
     static final String DARKEN_DESC = "没有被滤成白的部分再压深一档：浅灰的字变黑，更清楚；图片会偏暗。";
     static int lightfLast = 2;       // 快捷开关重新打开时用的档位（上次用过的，默认“中”）
     /** 默认这一排和 Kobo 的一样是五个：联网、蓝牙、深色、（同步换成）清残影、全部设置。没有蓝牙的机型不显示蓝牙。 */
-    static final String QUICK_DEFAULT = "wifi,bt,invert,clear,settings,clean";   // 方块面板最多 5 个：有蓝牙的机型第 6 个“清后台”不显示
+    static final String QUICK_DEFAULT = "wifi,bt,invert,clear,clean,settings";   // 方块面板最多 5 个：有蓝牙的机型第 6 个“清后台”不显示
 
     private String panelName = "", builtConf = "";
     private boolean btOk;            // 宿主说这台机器有 Kobo 的蓝牙栈（status 里 btsupported=1）

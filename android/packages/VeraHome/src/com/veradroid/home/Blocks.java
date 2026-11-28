@@ -28,36 +28,14 @@ final class Blocks {
 
     static final String STYLE_KEY = "ui_style", CAPS_KEY = "ui_caps";
 
-    private static String panelDefault;
+    /**
+     * The colour launcher is the only style now: the local-library cards and the old
+     * black-and-white tabs were removed with the built-in reader.
+     */
+    static String style(Context c) { return "color"; }
+    static boolean on(Context c) { return true; }
+    static boolean color(Context c) { return true; }
 
-    /** “经典 / 方块 / 色彩”。没有存过时，彩色机型默认“色彩”，其余默认“方块”。 */
-    static String style(Context c) {
-        try {
-            android.content.SharedPreferences p = Store.prefs(c, "home");
-            String s = p.getString(STYLE_KEY, null);
-            if (panelDefault == null) {
-                String m = Update.model(c).toLowerCase(Locale.US);
-                panelDefault = (m.contains("colour") || m.contains("colorsoft")) ? "color" : "blocks";
-            }
-            // first start of the colour build on a colour panel: show the new style once,
-            // then remember the choice (the stepper can switch back to 方块 / 经典).
-            if (!p.getBoolean("ui_color_migrated", false)) {
-                p.edit().putBoolean("ui_color_migrated", true)
-                        .putString(STYLE_KEY, "color".equals(panelDefault) ? "color" : (s == null ? panelDefault : s)).apply();
-                return "color".equals(panelDefault) ? "color" : (s == null ? panelDefault : s);
-            }
-            return s == null ? panelDefault : s;
-        } catch (Throwable t) { return "blocks"; }
-    }
-
-    /** 方块 / 色彩都共用这套控件树（色彩只是同一套页面的彩色外观）。 */
-    static boolean on(Context c) {
-        String s = style(c);
-        return "blocks".equals(s) || "color".equals(s);
-    }
-
-    /** 色彩风格：圆角、彩色强调、首页换成 {@link ColorHome}。 */
-    static boolean color(Context c) { return "color".equals(style(c)); }
 
     /** 英文小字（每个中文标题上面那一行）。默认开，设置里可以关；色彩风格默认不显示（更干净）。 */
     static boolean caps(Context c) {
@@ -82,6 +60,11 @@ final class Blocks {
      * 下一次画面变化用墨水屏控制器的硬件擦除（MTK swipe，显示桥的 SWIPE 一次性命令）：只有几步，不是连续动画；
      * 中间帧是控制器自己的快刷，最后一帧是 REAGL（GLR16），不闪、不留残影。i.MX 的机型没有这个功能，桥会直接照常刷新。
      */
+    /** A full panel refresh after switching launcher pages: colour partial updates leave ghosting. */
+    static void tabRefresh(Context c) {
+        if (color(c)) HostLink.epd("COLORFULL");
+    }
+
     static void swipe(Context c, int dir, int kind) {
         if (color(c)) return;   // colour refreshes ignore the swipe and the gray pre-pass only costs time
         int lv = anim(c);
@@ -169,7 +152,7 @@ final class Blocks {
                 float rr = radius;
                 if (filled) {
                     p.setStyle(Paint.Style.FILL);
-                    p.setColor(Palette.mood());
+                    p.setColor(Palette.TEAL);
                     c.drawRoundRect(new android.graphics.RectF(b.left, b.top, b.right, b.bottom), rr, rr, p);
                 } else {
                     p.setStyle(Paint.Style.FILL);
@@ -267,7 +250,7 @@ final class Blocks {
         t.setLetterSpacing(0.08f);
         t.setSingleLine(true);
         t.setEllipsize(TextUtils.TruncateAt.END);
-        if (color(c)) t.setTextColor(Palette.mood());
+        if (color(c)) t.setTextColor(Palette.TEAL);
         if (en == null || !caps(c)) t.setVisibility(View.GONE);
         return t;
     }
@@ -290,7 +273,7 @@ final class Blocks {
         if (color(c)) {
             t.setTextColor(Palette.INK);
             GradientDrawable bar = new GradientDrawable();
-            bar.setColor(Palette.mood());
+            bar.setColor(Palette.TEAL);
             bar.setCornerRadius(dp(c, 2));
             bar.setSize(dp(c, 4), dp(c, 14));
             t.setCompoundDrawables(bar, null, null, null);
@@ -328,7 +311,7 @@ final class Blocks {
         ib.setBackground(frame(c));
         ib.setPadding(0, 0, shade(c), shade(c));
         Icons.IconView eiv = new Icons.IconView(c, icon);
-        if (color(c)) eiv.setColor(Palette.mood());
+        if (color(c)) eiv.setColor(Palette.TEAL);
         ib.addView(eiv, new FrameLayout.LayoutParams(dp(c, 30), dp(c, 30), Gravity.CENTER));
         l.addView(ib, lp(dp(c, 60) + shade(c), dp(c, 60) + shade(c)));
         TextView t = Ui.text(c, title, 17, true);
@@ -356,7 +339,7 @@ final class Blocks {
         TextView t = Ui.text(c, s, 13, true);
         t.setTextColor(Color.WHITE);
         if (color(c)) {
-            t.setBackground(Palette.pill(c, Palette.blend(Palette.mood(), Palette.INK, 0.18f)));
+            t.setBackground(Palette.pill(c, Palette.blend(Palette.TEAL, Palette.INK, 0.18f)));
             t.setPadding(dp(c, 12), dp(c, 4), dp(c, 12), dp(c, 4));
         } else {
             t.setBackgroundColor(Color.BLACK);
@@ -419,7 +402,7 @@ final class Blocks {
         TextView v = Ui.text(c, value, 22, true);
         v.setSingleLine(true);
         v.setTag("value");
-        if (color(c)) v.setTextColor(Palette.mood());
+        if (color(c)) v.setTextColor(Palette.TEAL);
         t.addView(v);
         return t;
     }
@@ -432,7 +415,7 @@ final class Blocks {
         t.setPadding(dp(c, 10), dp(c, 8), dp(c, 8) + shade(c), dp(c, 8) + shade(c));
         TextView v = Ui.text(c, value, 20, true);
         v.setSingleLine(true);
-        if (color(c)) v.setTextColor(Palette.mood());
+        if (color(c)) v.setTextColor(Palette.TEAL);
         t.addView(v);
         TextView z = Ui.text(c, zh, 13, false);
         z.setSingleLine(true);
@@ -450,20 +433,20 @@ final class Blocks {
         r.setMinimumHeight(dp(c, 64));
         LinearLayout mid = new LinearLayout(c);
         mid.setOrientation(LinearLayout.VERTICAL);
-        mid.setGravity(Gravity.CENTER_HORIZONTAL);
+        mid.setGravity(Gravity.LEFT);
         TextView t = Ui.text(c, zh, 18, true);
-        t.setGravity(Gravity.CENTER);
+        t.setGravity(Gravity.LEFT);
         mid.addView(t);
         if (hint != null) {
             TextView h = Ui.text(c, hint, 12, false);
-            h.setGravity(Gravity.CENTER);
+            h.setGravity(Gravity.LEFT);
             h.setSingleLine(true);
             h.setEllipsize(TextUtils.TruncateAt.END);
             mid.addView(h);
         }
         r.addView(mid, weight(1));
         Icons.IconView chev = new Icons.IconView(c, Icons.Kind.CHEV_R);
-        if (color(c)) chev.setColor(Palette.mood());
+        if (color(c)) chev.setColor(Palette.TEAL);
         r.addView(chev, lp(dp(c, 18), dp(c, 18)));
         r.setClickable(true);
         r.setOnClickListener(l);
@@ -478,7 +461,7 @@ final class Blocks {
         int s = dp(c, 44) + shade(c);
         f.setPadding(0, 0, shade(c), shade(c));
         Icons.IconView iv = new Icons.IconView(c, k);
-        if (color(c)) iv.setColor(Palette.mood());
+        if (color(c)) iv.setColor(Palette.INK);   /* arrows match the square border */
         f.addView(iv, new FrameLayout.LayoutParams(dp(c, 24), dp(c, 24), Gravity.CENTER));
         f.setLayoutParams(new LinearLayout.LayoutParams(s, s));
         f.setClickable(true);
@@ -493,7 +476,7 @@ final class Blocks {
         t.setGravity(Gravity.CENTER);
         if (color(c)) {
             t.setTextColor(filled ? Color.WHITE : Palette.INK);
-            t.setBackground(filled ? Palette.round(c, Palette.mood(), 24) : Palette.roundStroke(c, Palette.PAPER, Palette.INK, 2, 24));
+            t.setBackground(filled ? Palette.round(c, Palette.TEAL, 24) : Palette.roundStroke(c, Palette.PAPER, Palette.INK, 2, 24));
         } else {
             t.setTextColor(filled ? Color.WHITE : Color.BLACK);
             t.setBackground(filled ? plainFilled(c) : plain(c));
@@ -787,7 +770,7 @@ final class Blocks {
         r.setPadding(dp(c, 12), dp(c, 4), dp(c, 10), dp(c, 4));
         if (icon != null) {
             Icons.IconView iv = new Icons.IconView(c, icon);
-            if (color(c)) iv.setColor(Palette.mood());
+            if (color(c)) iv.setColor(Palette.TEAL);
             LinearLayout.LayoutParams ip = lp(dp(c, 26), dp(c, 26));
             ip.rightMargin = dp(c, 12);
             r.addView(iv, ip);
@@ -836,11 +819,11 @@ final class Blocks {
             if (Blocks.color(getContext())) {
                 p.setAntiAlias(true);
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(on ? Palette.mood() : Palette.PAPER);
+                p.setColor(on ? Palette.TEAL : Palette.PAPER);
                 c.drawRoundRect(new android.graphics.RectF(1, 1, w - 1, h - 1), h / 2f, h / 2f, p);
                 p.setStyle(Paint.Style.STROKE);
                 p.setStrokeWidth(Math.max(2, dp(getContext(), 1)));
-                p.setColor(on ? Palette.blend(Palette.mood(), Palette.INK, 0.25f) : Palette.INK);
+                p.setColor(on ? Palette.blend(Palette.TEAL, Palette.INK, 0.25f) : Palette.INK);
                 c.drawRoundRect(new android.graphics.RectF(1, 1, w - 1, h - 1), h / 2f, h / 2f, p);
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(on ? Palette.PAPER : Palette.INK);
@@ -973,7 +956,7 @@ final class Blocks {
             boolean col = Blocks.color(getContext());
             for (int i = 0; i < blocks; i++) {
                 float x = i * (bw + g);
-                p.setColor(col ? Palette.mood() : Color.BLACK);
+                p.setColor(col ? Palette.TEAL : Color.BLACK);
                 if (i < filled) {
                     p.setStyle(Paint.Style.FILL);
                     if (col) c.drawRoundRect(new android.graphics.RectF(x, 2, x + bw, h - 2), 4, 4, p);
@@ -1092,7 +1075,7 @@ final class Blocks {
             for (int k = 0; k < cells.length; k++) {
                 boolean on = k == i;
                 if (colored) {
-                    cells[k].setBackground(on ? Palette.round(getContext(), Palette.mood(), 22) : null);
+                    cells[k].setBackground(on ? Palette.round(getContext(), Palette.TEAL, 22) : null);
                     cells[k].setTextColor(on ? Color.WHITE : Palette.INK);
                 } else {
                     cells[k].setBackgroundColor(on ? Color.BLACK : Color.WHITE);
@@ -1124,7 +1107,7 @@ final class Blocks {
             mid.setGravity(Gravity.CENTER);
             cur = Ui.text(c, "1", 14, true);
             cur.setTextColor(Color.WHITE);
-            if (color(c)) cur.setBackground(Palette.pill(c, Palette.mood()));
+            if (color(c)) cur.setBackground(Palette.pill(c, Palette.TEAL));
             else cur.setBackgroundColor(Color.BLACK);
             cur.setPadding(dp(c, 6), 0, dp(c, 6), 0);
             mid.addView(cur);
@@ -1163,18 +1146,36 @@ final class Blocks {
         private final TextView[] names;
         private final Icons.IconView[] icons;
         private final LinearLayout[] cells;
-        private final boolean colored;
+        private final boolean colored, floating;
         private int active = -1;
 
         Nav(Context c, String[] labels, Icons.Kind[] kinds, final Listener l) {
             super(c);
             colored = color(c);
+            floating = colored && labels.length == 2;
             setOrientation(VERTICAL);
-            setBackgroundColor(Color.WHITE);
-            addView(Ui.rule(c, colored ? 1 : stroke(c), colored ? Palette.LINE : Color.BLACK));
+            setBackgroundColor(floating ? Color.TRANSPARENT : Color.WHITE);
+            if (!floating) addView(Ui.rule(c, colored ? 1 : stroke(c), colored ? Palette.LINE : Color.BLACK));
+
             LinearLayout row = new LinearLayout(c);
             row.setOrientation(HORIZONTAL);
-            row.setPadding(colored ? dp(c, 8) : 0, colored ? dp(c, 6) : 0, colored ? dp(c, 8) : 0, colored ? dp(c, 8) : 0);
+            row.setGravity(floating ? Gravity.CENTER : Gravity.CENTER_VERTICAL);
+            row.setPadding(floating ? 0 : dp(c, 8), floating ? dp(c, 4) : dp(c, 6),
+                    floating ? 0 : dp(c, 8), floating ? dp(c, 14) : dp(c, 8));
+
+            LinearLayout strip = row;
+            if (floating) {
+                LinearLayout pill = new LinearLayout(c);
+                pill.setOrientation(HORIZONTAL);
+                pill.setGravity(Gravity.CENTER);
+                // 药丸：白底 + 彩虹描边；彩虹斜纹只放在选中的那一枚上
+                pill.setBackground(Palette.gradientBorder(c, Palette.PAPER,
+                        new int[] { Palette.SKY, Palette.TEAL, Palette.BLUE, Palette.AMBER, Palette.PLUM }, 4, 31));
+                pill.setPadding(dp(c, 7), dp(c, 6), dp(c, 7), dp(c, 6));
+                row.addView(pill);
+                strip = pill;
+            }
+
             marks = new View[labels.length];
             names = new TextView[labels.length];
             icons = new Icons.IconView[labels.length];
@@ -1182,31 +1183,49 @@ final class Blocks {
             for (int i = 0; i < labels.length; i++) {
                 final int idx = i;
                 LinearLayout cell = new LinearLayout(c);
-                cell.setOrientation(VERTICAL);
-                cell.setGravity(Gravity.CENTER_HORIZONTAL);
                 cells[i] = cell;
-                if (!colored) {
-                    View m = new View(c);
-                    marks[i] = m;
-                    LinearLayout.LayoutParams mp = new LinearLayout.LayoutParams(dp(c, 64), dp(c, 7));
-                    mp.bottomMargin = dp(c, 4);
-                    cell.addView(m, mp);
+                if (floating) {
+                    cell.setOrientation(HORIZONTAL);
+                    cell.setGravity(Gravity.CENTER);
+                    cell.setPadding(dp(c, 24), dp(c, 12), dp(c, 24), dp(c, 12));
+                } else {
+                    cell.setOrientation(VERTICAL);
+                    cell.setGravity(Gravity.CENTER_HORIZONTAL);
+                    if (!colored) {
+                        View m = new View(c);
+                        marks[i] = m;
+                        LinearLayout.LayoutParams mp = new LinearLayout.LayoutParams(dp(c, 64), dp(c, 7));
+                        mp.bottomMargin = dp(c, 4);
+                        cell.addView(m, mp);
+                    }
                 }
                 Icons.IconView iv = new Icons.IconView(c, kinds[i]);
                 icons[i] = iv;
-                cell.addView(iv, lp(colored ? dp(c, 23) : dp(c, 26), colored ? dp(c, 23) : dp(c, 26)));
-                TextView t = Ui.text(c, labels[i], colored ? 12.5f : 14, false);
-                t.setPadding(0, colored ? dp(c, 1) : dp(c, 2), 0, colored ? dp(c, 3) : dp(c, 8));
-                t.setGravity(Gravity.CENTER);
+                cell.addView(iv, lp(floating ? dp(c, 26) : colored ? dp(c, 23) : dp(c, 26),
+                        floating ? dp(c, 26) : colored ? dp(c, 23) : dp(c, 26)));
+                TextView t = Ui.text(c, labels[i], floating ? 16 : colored ? 12.5f : 14, floating);
+                if (floating) {
+                    t.setSingleLine(true);
+                    t.setPadding(dp(c, 8), 0, 0, 0);
+                    t.setGravity(Gravity.CENTER);
+                } else {
+                    t.setPadding(0, colored ? dp(c, 1) : dp(c, 2), 0, colored ? dp(c, 3) : dp(c, 8));
+                    t.setGravity(Gravity.CENTER);
+                }
                 names[i] = t;
-                cell.addView(t, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                cell.setPadding(dp(c, colored ? 4 : 14), colored ? dp(c, 5) : 0, dp(c, colored ? 4 : 14), 0);
+                cell.addView(t, new LinearLayout.LayoutParams(floating ? ViewGroup.LayoutParams.WRAP_CONTENT : ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
                 cell.setClickable(true);
                 cell.setOnClickListener(new OnClickListener() { @Override public void onClick(View v) { if (l != null) l.onTab(idx); } });
                 Blocks.fast(cell);
-                LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-                if (colored && i > 0) cp.leftMargin = dp(c, 4);
-                row.addView(cell, cp);
+                if (floating) {
+                    LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    if (i > 0) cp.leftMargin = dp(c, 4);
+                    strip.addView(cell, cp);
+                } else {
+                    LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+                    if (colored && i > 0) cp.leftMargin = dp(c, 4);
+                    strip.addView(cell, cp);
+                }
             }
             addView(row);
         }
@@ -1216,8 +1235,19 @@ final class Blocks {
             active = i;
             for (int k = 0; k < names.length; k++) {
                 boolean on = k == i;
-                Fonts.apply(names[k], on);
-                if (colored) {
+                Fonts.apply(names[k], floating || on);   // 底部 tab 文字始终加粗
+                if (colored && floating) {
+                    // 选中页：白底 + 彩虹细斜纹 + 墨色描边，独立成一枚小贴纸
+                    cells[k].setBackground(on ? Palette.candy(getContext(), new int[] {
+                            Palette.blend(Palette.CORAL, Palette.PAPER, 0.42f),
+                            Palette.blend(Palette.AMBER, Palette.PAPER, 0.34f),
+                            Palette.blend(Palette.GREEN, Palette.PAPER, 0.40f),
+                            Palette.blend(Palette.SKY, Palette.PAPER, 0.40f),
+                            Palette.blend(Palette.PLUM, Palette.PAPER, 0.40f) },
+                            new int[] { Palette.INK }, 4, 23, 12, 5) : null);
+                    icons[k].setColor(Palette.INK);
+                    names[k].setTextColor(Palette.INK);
+                } else if (colored) {
                     cells[k].setBackground(on ? Palette.round(getContext(), Palette.CORAL, 26) : null);
                     icons[k].setColor(on ? Color.WHITE : Palette.tabAccent(k));
                     names[k].setTextColor(on ? Color.WHITE : Palette.MUTED);

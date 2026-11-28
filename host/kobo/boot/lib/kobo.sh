@@ -200,6 +200,8 @@ kobo_wifi_set() { # $1 = 0|1
         killall -q -TERM udhcpc dhcpcd 2>/dev/null || true
         command -v wpa_cli >/dev/null 2>&1 && wpa_cli -i "$dev" terminate >/dev/null 2>&1 || true
         killall -q -TERM wpa_supplicant 2>/dev/null || true
+        usleep 200000
+        rm -f "/var/run/wpa_supplicant/$dev"
         ifconfig "$dev" down 2>/dev/null || true
         # Only unload SDIO modules on models that load them out-of-tree (i.MX6).
         # MTK combo Wi-Fi is built into 4.9.77; leaving it loaded keeps the
@@ -228,19 +230,46 @@ kobo_wifi_set() { # $1 = 0|1
             sleep 1
         fi
         ifconfig "$dev" up 2>/dev/null || true
-        kobo_wpa_ensure >/dev/null 2>&1 || true
+        t "wifi: up iface=$([ -d /sys/class/net/$dev ] && echo yes || echo no) oper=$(cat /sys/class/net/$dev/operstate 2>/dev/null) mods=$(grep -iE 'wlan|mtk|mt76|gen4' /proc/modules 2>/dev/null | cut -d' ' -f1 | tr '\n' ' ')"
+        if ! kobo_wpa_ensure >/dev/null 2>&1; then t "wifi: wpa_supplicant could not start"; fi
         command -v wpa_cli >/dev/null 2>&1 && wpa_cli -i "$dev" reconnect >/dev/null 2>&1 || true
+        # Wait for the supplicant to associate before asking for a lease.
+        # A sleepy AP can stay in SCANNING for a while: nudge it twice before giving up.
+        i=0
+        while [ $i -lt 40 ]; do
+            st=$(wpa_cli -i "$dev" status 2>/dev/null | sed -n 's/^wpa_state=//p')
+            case "$st" in COMPLETED|ASSOCIATED) break ;; esac
+            if [ $i -eq 12 ] || [ $i -eq 26 ]; then
+                wpa_cli -i "$dev" reassociate >/dev/null 2>&1 || true
+            fi
+            sleep 1; i=$((i + 1))
+        done
+        t "wifi: state=${st:-?} after ${i}s"
         if [ -x /sbin/dhcpcd ]; then
             /sbin/dhcpcd -d -t 20 -w "$dev" >/dev/null 2>&1 || true
         else
             udhcpc -S -i "$dev" -s /etc/udhcpc.d/default.script -b -q >/dev/null 2>&1 || true
         fi
-        # Wait briefly for IP assignment so status_write and hostnet_write see the live IP
+        # Wait for the lease; retry once for a slow AP
         i=0
         while [ $i -lt 10 ]; do
             [ -n "$(kobo_wifi_ip)" ] && break
             sleep 1; i=$((i + 1))
         done
+        if [ -z "$(kobo_wifi_ip)" ]; then
+            wpa_cli -i "$dev" reassociate >/dev/null 2>&1 || true
+            sleep 3
+            if [ -x /sbin/dhcpcd ]; then
+                /sbin/dhcpcd -k "$dev" >/dev/null 2>&1 || true
+                /sbin/dhcpcd -d -t 20 -w "$dev" >/dev/null 2>&1 || true
+            fi
+            i=0
+            while [ $i -lt 15 ]; do
+                [ -n "$(kobo_wifi_ip)" ] && break
+                sleep 1; i=$((i + 1))
+            done
+        fi
+        t "wifi: ip=$(kobo_wifi_ip)" 
     fi
 }
 
@@ -254,19 +283,28 @@ kobo_wpa_conf() {
 kobo_wpa_ensure() {
     dev=$(kobo_wifi_if)
     sock=/var/run/wpa_supplicant/$dev
-    [ -S "$sock" ] && return 0
+    # A socket left behind after a sleep/Wi-Fi-off cycle is not a live supplicant.
+    # Check the process too, otherwise every later connect silently fails.
+    if [ -S "$sock" ] && pidof wpa_supplicant >/dev/null 2>&1; then return 0; fi
+    [ -S "$sock" ] && rm -f "$sock"
     conf=$(kobo_wpa_conf)
-    [ -f "$conf" ] || return 1
+    t "wifi: ensure dev=$dev iface=$([ -d /sys/class/net/$dev ] && echo yes || echo no) oper=$(cat /sys/class/net/$dev/operstate 2>/dev/null) conf=$conf wpa=$(command -v wpa_supplicant)"
+    [ -f "$conf" ] || { t "wifi: wpa config missing"; return 1; }
+    command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null || true
     mkdir -p /var/run/wpa_supplicant 2>/dev/null || true
     killall -q -TERM wpa_supplicant 2>/dev/null || true
-    usleep 300000
-    wpa_supplicant -D nl80211 -s -i "$dev" -c "$conf" -C /var/run/wpa_supplicant -B >/dev/null 2>&1 || return 1
+    usleep 400000
+    killall -q -KILL wpa_supplicant 2>/dev/null || true
+    rm -f "$sock"
+    _werr=$(wpa_supplicant -D nl80211 -s -i "$dev" -c "$conf" -C /var/run/wpa_supplicant -B 2>&1)
+    _wrc=$?
+    if [ "$_wrc" != 0 ]; then t "wifi: wpa start rc=$_wrc err=$_werr"; return 1; fi
     i=0
     while [ $i -lt 15 ]; do
-        [ -S "$sock" ] && return 0
+        [ -S "$sock" ] && pidof wpa_supplicant >/dev/null 2>&1 && return 0
         usleep 200000; i=$((i + 1))
     done
-    [ -S "$sock" ]
+    return 1
 }
 
 kobo_wifi_current() {

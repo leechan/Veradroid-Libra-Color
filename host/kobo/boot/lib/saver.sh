@@ -11,7 +11,7 @@ saver_choice() {
     smode=; sone=
     [ -f "$SAVER_SEL" ] && [ ! -L "$SAVER_SEL" ] || return 0
     smode=$(sed -n 's/^mode=\([a-z]*\)$/\1/p' "$SAVER_SEL" | tail -1)
-    case "$smode" in kindle|rotate|one) ;; *) smode= ; return 0 ;; esac
+    case "$smode" in kindle|rotate|one|wall) ;; *) smode= ; return 0 ;; esac
     [ "$smode" = one ] || return 0
     sf=$(sed -n 's/^file=\(.*\)$/\1/p' "$SAVER_SEL" | tail -1)
     sname=${sf#*/}

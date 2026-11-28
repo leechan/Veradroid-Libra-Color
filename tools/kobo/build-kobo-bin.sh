@@ -42,6 +42,16 @@ $CC -pthread \
     "$FBINK_DIR/i2c-tools/lib/smbus.c" \
     -lm -o "$OUT/veradroid-epd"
 
+echo "[1b/5] fbink-png (splash image, FBINK_WITH_IMAGE)"
+$CC -static -O2 -s \
+    -DFBINK_FOR_KOBO -DFBINK_MINIMAL -DFBINK_WITH_IMAGE -DFBINK_WITH_DRAW \
+    -I"$FBINK_DIR" -I"$FBINK_DIR/i2c-tools/include" \
+    "$TOP/host/kobo/src/fbink-png.c" \
+    "$FBINK_DIR/fbink.c" \
+    "$FBINK_DIR/qimagescale/qimagescale.c" \
+    "$FBINK_DIR/i2c-tools/lib/smbus.c" \
+    -lm -o "$OUT/fbink-png"
+
 echo "[2/5] veradroid-input"
 $CC "$TOP/input/legacy/vinput.c" -lm -o "$OUT/veradroid-input"
 

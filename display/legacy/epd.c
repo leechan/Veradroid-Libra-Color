@@ -372,7 +372,8 @@ static int g_color = 0;       /* MTK color panel (Colorsoft): REAGL is GLRC16 th
 static unsigned long n_color_sent = 0, n_gray_sent = 0;
 static long long ms_color_sent = 0, ms_gray_sent = 0;
 static int color_no_anim = 0; /* inside kobo_wipe_rgba: do not start another animation */
-static int color_boost = 0;   /* COLORBOOST 0..100: extra saturation for flat UI colours (launcher), 0 = off */
+static int color_boost = 0;
+static int colorfull = 0;   /* COLORFULL: one full-screen colour repaint without the flashing GC16 */   /* COLORBOOST 0..100: extra saturation for flat UI colours (launcher), 0 = off */
 static int skip_cfa = 0;      /* --skip-cfa 1: experimental, off by default. On the cs-5192 emulator it removed the per-REAGL dmesg
                                  error but small refreshes took ~160 ms instead of ~60 ms (emulated MDP; real panel unknown) */
 #ifdef FBINK_FOR_KOBO
@@ -1006,7 +1007,7 @@ static int busy_any(long long now)
     return n;
 }
 
-enum { M_AUTO, M_FULL, M_DU, M_GC16, M_REAGL, M_CLEAN, M_QPASS };
+enum { M_AUTO, M_FULL, M_DU, M_GC16, M_REAGL, M_CLEAN, M_QPASS, M_COLORFULL };
 
 /* waveform + update mode for one refresh. FBInk maps is_flashing to UPDATE_MODE_FULL. REAGL is always FULL (see the
    header: that is what the driver and the Kindle UI do, and it does not flash). WFM_AUTO stays PARTIAL so the driver
@@ -1821,6 +1822,21 @@ static int show_page_rows(const uint8_t *shm, int page, int mode, int force_full
            posts many full frames; sending them all back-to-back makes the panel
            queue them (several hundred ms of perceived lag). Let the in-flight
            refresh finish and draw the latest frame instead. */
+        if (mode == M_COLORFULL) {
+            if (g_rot) {
+                rgba_to_y8_rot(page_at(shm, page, (size_t)LW * LH * 4), 0, 0, g_rot == 180 ? VW : LW, LH, cur_y8);
+            } else {
+                rgba_to_y8_opaque(page_at(shm, page, (size_t)W * H * 4), W * 4, 0, 0, W, H, cur_y8);
+            }
+            lightf_pass(cur_y8, W, W, H, 0, H);
+            memcpy(prev_y8, cur_y8, (size_t)W * H);
+            prev_valid = 1;
+            int saved = color_no_anim;
+            color_no_anim = 1;
+            push_color(cur_rgba, 0, 0, W, H, M_AUTO);
+            color_no_anim = saved;
+            return 0;
+        }
         if (may_pace && prev_valid && busy_any(now_ms())) return 2;
     }
 #endif
@@ -2720,6 +2736,32 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
             if (!strcmp(line, "QUIT")) quit = 1;
             else if (!strcmp(line, "REDRAW")) redraw = 1;
             else if (!strcmp(line, "FULL")) full = 1;
+#ifdef FBINK_FOR_KOBO
+            else if (!strncmp(line, "IMG ", 4)) {
+                /* draw a screensaver/home wallpaper straight from the bridge: the standalone
+                   fbink-img on some builds lacks image support, this one is built with it. */
+                const char *ip = line + 4;
+                while (*ip == ' ') ip++;
+                FBInkConfig ic = cfg;
+                ic.no_refresh = false;
+                ic.is_flashing = true;
+                ic.halign = CENTER;
+                ic.valign = CENTER;
+                ic.scaled_width = -2;
+                ic.scaled_height = -2;
+                ic.dithering_mode = HWD_PASSTHROUGH;
+                ic.cfa_mode = CFA_DEFAULT;
+                long long t0 = now_ms();
+                int irc = fbink_print_image(fbfd, ip, 0, 0, &ic);
+                fprintf(stderr, "[%lld] epd: img %s -> %d (%lld ms)\n", t0, ip, irc, now_ms() - t0);
+                if (irc >= 0) {
+                    prev_valid = 0;
+                    need_full = 1;
+                    busy_add(0, 0, W, H, t0);
+                }
+            }
+#endif
+            else if (!strcmp(line, "COLORFULL")) colorfull = 1;
             else if (!strcmp(line, "VERIFY")) verify_page(fbmem);
 #ifdef FBINK_FOR_KOBO
             else if (!strncmp(line, "SHOT ", 5)) {
@@ -2966,6 +3008,12 @@ static int cmd_run(const char *shm, const char *fifo, const char *ctl)
         if (page >= 0 || have) last_frame_ms = tframe;
         if (full || redraw || have) last_draw_ms = tframe;
         if (full) { if (page >= 0) last_page = page; held_page = -1; prev_valid = 0; cl_valid = 0; req_y0 = -1; show_page(fbmem, last_page, M_FULL, 1, 0, 0); }
+        else if (colorfull) {
+            colorfull = 0;
+            if (page >= 0) last_page = page;
+            held_page = -1; cl_valid = 0; req_y0 = -1;
+            show_page(fbmem, last_page, M_COLORFULL, 1, 0, 0);
+        }
         else if (redraw) { if (page >= 0) last_page = page; held_page = -1; prev_valid = 0; cl_valid = 0; req_y0 = -1; show_page(fbmem, last_page, M_REAGL, 1, 0, 0); }
         else if (page >= 0) {
             /* a frame that arrives while a small change is held is drawn at once, whatever its size: it already waited.

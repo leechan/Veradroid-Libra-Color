@@ -42,6 +42,7 @@ final class BlocksHome {
 
     final HomeActivity a;
     final SharedPreferences prefs;
+    private final FrameLayout shell;
     private final LinearLayout root;
     private final FrameLayout body;
     ColorHome colorHome;
@@ -61,6 +62,7 @@ final class BlocksHome {
         prefs = Store.prefs(a, "home");
         files = new BlocksFiles(this);
         settings = new BlocksSettings(this);
+        shell = new FrameLayout(a);
         root = new LinearLayout(a);
         root.setOrientation(LinearLayout.VERTICAL);
         // 不涂底色：底下是 HomeActivity 的 page（白纸，首页标签有壁纸时是壁纸，见 HomeActivity.blocksWall）
@@ -71,7 +73,7 @@ final class BlocksHome {
         st.setPadding(dp(16), dp(5), dp(16), dp(4));
         st.setBackgroundColor(Color.WHITE);   // 最上面一行小字不压在壁纸上
         Icons.IconView logo = new Icons.IconView(a, Icons.Kind.BOOK);
-        if (Blocks.color(a)) logo.setColor(Palette.mood());
+        if (Blocks.color(a)) logo.setColor(Palette.GREEN);
         st.addView(logo, Blocks.lp(dp(16), dp(16)));
         stLeft = Ui.text(a, "", 12, true);
         stLeft.setSingleLine(true);
@@ -92,20 +94,58 @@ final class BlocksHome {
         if (Blocks.color(a)) { st.setVisibility(View.GONE); stRule.setVisibility(View.GONE); }
         body = new FrameLayout(a);
         root.addView(body, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        nav = new Blocks.Nav(a, new String[] { "首页", Blocks.color(a) ? "书库" : "文件", "应用", "我的" },
-            new Icons.Kind[] { Icons.Kind.HOME, Icons.Kind.FOLDER, Icons.Kind.GRID, Icons.Kind.USER }, new Blocks.Nav.Listener() {
+        final boolean twoTabs = Blocks.color(a);
+        nav = new Blocks.Nav(a,
+            twoTabs ? new String[] { "首页", "我的" } : new String[] { "首页", "文件", "应用", "我的" },
+            twoTabs ? new Icons.Kind[] { Icons.Kind.HOME, Icons.Kind.USER }
+                    : new Icons.Kind[] { Icons.Kind.HOME, Icons.Kind.FOLDER, Icons.Kind.GRID, Icons.Kind.USER },
+            new Blocks.Nav.Listener() {
                 @Override public void onTab(int i) {
-                    if (i == cur) { if (i == FILES && files.toRoot()) a.changed(); return; }
-                    Blocks.swipe(a, order(i) > order(cur) ? Blocks.DIR_LEFT : Blocks.DIR_RIGHT, Blocks.KIND_PAGE);
-                    show(i);
+                    int key = twoTabs ? (i == 0 ? HOME : ME) : i;
+                    if (key == cur) { if (key == FILES && files.toRoot()) a.changed(); return; }
+                    Blocks.swipe(a, order(key) > order(cur) ? Blocks.DIR_LEFT : Blocks.DIR_RIGHT, Blocks.KIND_PAGE);
+                    show(key);
                     a.changed();
+                    if (twoTabs && Blocks.color(a)) a.handler().postDelayed(new Runnable() {
+                        @Override public void run() { Blocks.tabRefresh(a); }
+                    }, 220);
                 }
             });
-        root.addView(nav);
+        shell.addView(root, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        FrameLayout.LayoutParams np = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        np.gravity = Gravity.BOTTOM;
+        shell.addView(nav, np);
         if (a.standalone) nav.setVisibility(View.GONE);   // 盖在应用上面的设置：没有 首页 / 文件 / 应用 标签
     }
 
-    View root() { return root; }
+    View root() { return shell; }
+
+    /** 设置页连续滚动区域用的标签：翻页键找到它往下翻。 */
+    static final String SCROLL_TAG = "vera-settings-scroll";
+
+    /** Hardware page / volume keys in the launcher: scroll My, turn the app grid. */
+    boolean scrollKey(int code) {
+        int dir = 0;
+        if (code == android.view.KeyEvent.KEYCODE_VOLUME_DOWN || code == android.view.KeyEvent.KEYCODE_PAGE_DOWN
+                || code == android.view.KeyEvent.KEYCODE_DPAD_DOWN || code == android.view.KeyEvent.KEYCODE_DPAD_RIGHT) dir = 1;
+        else if (code == android.view.KeyEvent.KEYCODE_VOLUME_UP || code == android.view.KeyEvent.KEYCODE_PAGE_UP
+                || code == android.view.KeyEvent.KEYCODE_DPAD_UP || code == android.view.KeyEvent.KEYCODE_DPAD_LEFT) dir = -1;
+        if (dir == 0) return false;
+        if (cur == ME && meScroll != null) {
+            meScroll.scrollBy(0, dir * Math.max(dp(100), meScroll.getHeight() * 3 / 4));
+            return true;
+        }
+        if (cur == HOME && colorHome != null) { colorHome.pageKey(dir); return true; }
+        if (cur >= 10) {
+            View v = pages.get(cur);
+            View sv = v == null ? null : v.findViewWithTag(SCROLL_TAG);
+            if (sv instanceof android.widget.ScrollView) {
+                sv.scrollBy(0, dir * Math.max(dp(100), sv.getHeight() * 3 / 4));
+                return true;
+            }
+        }
+        return false;
+    }
 
     /** 换页动画的方向：标签从左到右，设置页在“我的”的右边。 */
     private static int order(int key) { return key < 0 ? 0 : key >= 10 ? 4 : key; }
@@ -127,7 +167,7 @@ final class BlocksHome {
     /** 显示一页：签名变了先同步重搭，再只让它可见。 */
     void show(int key) {
         Perf.measure(a.perfRoot(), "blocks " + key);
-        if (key == HOME || key == FILES) a.ensureLib();
+        if (!Blocks.color(a) && (key == HOME || key == FILES)) a.ensureLib();
         if (key < 10) dropCats();
         View v = page(key);
         for (int i = 0; i < body.getChildCount(); i++) {
@@ -138,8 +178,12 @@ final class BlocksHome {
         int prevCur = cur;
         cur = key;
         a.blocksWall(key);
-        nav.setActive(key == S_LIBRARY ? HOME : key >= 10 ? ME : key);
-        if (key == HOME) { tickClock(); if (colorHome != null) colorHome.tick(); BlocksCards.maybeFetchWeather(a, new BlocksCards.Changed() { @Override public void changed() { if (cur == HOME) { dataChanged(); a.changed(); } } }); }
+        if (Blocks.color(a)) {
+            nav.setActive(key == HOME ? 0 : 1);
+            nav.setVisibility(key >= 10 ? View.GONE : (a.standalone ? View.GONE : View.VISIBLE));
+        }
+        else nav.setActive(key == S_LIBRARY ? HOME : key >= 10 ? ME : key);
+        if (key == HOME) { tickClock(); if (colorHome != null) colorHome.tick(); if (!Blocks.color(a)) BlocksCards.maybeFetchWeather(a, new BlocksCards.Changed() { @Override public void changed() { if (cur == HOME) { dataChanged(); a.changed(); } } }); }
         if (key == ME) refreshMe();
         if (key == S_STORAGE && prevCur != S_STORAGE) HostLink.cmd("status");
         if (key == catKey(HomeActivity.CAT_XFER_)) a.updateTransferInfo();
@@ -161,7 +205,7 @@ final class BlocksHome {
     private final Runnable dataChangedLater = new Runnable() { @Override public void run() { dataChanged(); } };
     void dataChanged() {
         // 不用 isShown()：从应用回来的 onResume 里窗口还没显示，那时正要在第一帧之前把页面换好
-        if (cur < 0 || root.getParent() == null || root.getVisibility() != View.VISIBLE) return;
+        if (cur < 0 || shell.getParent() == null || shell.getVisibility() != View.VISIBLE) return;
         if (a.touching()) { a.afterTouch(dataChangedLater); return; }   // 手指还按着：抬手、点按处理完再换页（见 HomeActivity.touching）
         String s = sig(cur);
         if (!s.equals(sigs.get(cur))) show(cur);
@@ -184,7 +228,8 @@ final class BlocksHome {
 
     /** 主页闲下来时：把四个标签先搭好、量好（不可见），第一次点哪个都只是换一棵树。 */
     void prebuild(View warmTarget) {
-        for (int k : PREBUILD) {
+        int[] list = prebuildList();
+        for (int k : list) {
             View v = pages.get(k);
             if (v != null && sig(k).equals(sigs.get(k))) continue;
             v = page(k);
@@ -193,9 +238,13 @@ final class BlocksHome {
         }
     }
     /** 闲下来时先搭好的页：四个标签和“我的”下面的设置页（和经典风格的设置页一样都预先搭）。 */
-    private static final int[] PREBUILD = Ui.ONE_CORE ? new int[] { HOME, FILES, APPS, ME }   // 单核：只搭四个标签，设置页点进去时再搭
-        : new int[] { HOME, FILES, APPS, ME, S_DISPLAY, S_DISPLAY_ADV, S_CONTROLS, S_POWER, S_STORAGE, S_UI, S_ABOUT, S_CARDS };
-    boolean prebuilt() { for (int k : PREBUILD) if (pages.get(k) == null || !sig(k).equals(sigs.get(k))) return false; return true; }
+    private int[] prebuildList() {
+        if (Blocks.color(a)) return new int[] { HOME, ME };   // settings pages are heavy now that categories are inlined
+        return Ui.ONE_CORE ? new int[] { HOME, FILES, APPS, ME }
+                : new int[] { HOME, FILES, APPS, ME, S_DISPLAY, S_DISPLAY_ADV, S_CONTROLS, S_POWER, S_STORAGE, S_UI, S_ABOUT, S_CARDS };
+    }
+    private int[] PREBUILD = new int[] { HOME, ME };
+    boolean prebuilt() { int[] list = prebuildList(); for (int k : list) if (pages.get(k) == null || !sig(k).equals(sigs.get(k))) return false; return true; }
 
     private String sig(int key) {
         String caps = Blocks.caps(a) + "/" + Fonts.weight(a);   // 英文小字、界面字重变了，每一页都要重搭
@@ -203,13 +252,9 @@ final class BlocksHome {
         case HOME: {
             Calendar c = Calendar.getInstance();
             if (Blocks.color(a)) {
-                // Deliberately coarse: the hero, covers and cards are rebuilt only when what they
-                // show really changes. Minute-level numbers are updated in ColorHome.tick() instead,
-                // so coming back from an app does not repaint the whole colour page.
-                return caps + "|c|" + Lib.version() + "|" + prefs.getString("la_pkg", "")
-                    + "|" + prefs.getLong("wx_at", 0) + prefs.getString("wx_city", "")
-                    + "|" + c.get(Calendar.DAY_OF_YEAR)
-                    + "|" + a.appsVersion() + "|" + a.libOn() + "|" + prefs.getString("name", "VeraDroid");
+                return caps + "|a|" + a.appsVersion() + "|" + prefs.getInt("sort", 0) + "|" + prefs.getInt("cols", 3)
+                    + "|" + prefs.getString("blk_pins", "") + prefs.getString("blk_hidden", "")
+                    + "|" + prefs.getString("name", "VeraDroid") + "|" + c.get(Calendar.DAY_OF_YEAR);
             }
             return caps + "|" + Lib.version() + "|" + prefs.getString(BlocksCards.KEY, BlocksCards.DEFAULT) + "|" + Stats.weekMs(a) / 60000 + "|" + Stats.bookmarkCount(a)
                 + "|" + prefs.getLong("la_time", 0) + "|" + prefs.getLong("wx_at", 0) + prefs.getString("wx_city", "") + "|" + c.get(Calendar.DAY_OF_YEAR)
@@ -217,7 +262,7 @@ final class BlocksHome {
         }
         case FILES: return caps + "|" + files.sig();
         case APPS: return appsSig(caps, a.appsVersion());
-        case ME: return caps + "|" + Stats.monthMs(a) / 60000 + "|" + Stats.bookmarkCount(a) + "|" + Lib.version() + "|" + prefs.getString("name", "VeraDroid");
+        case ME: return caps + "|" + prefs.getString("name", "VeraDroid") + "|" + a.appsVersion() + "|" + storageUsed();
         case S_LIBRARY: return caps + "|" + Lib.version() + "|" + libSort;
         default: return caps + "|" + settings.sig(key);
         }
@@ -242,6 +287,16 @@ final class BlocksHome {
     void invalidate(int key) { sigs.put(key, "x"); }
 
     boolean back() {
+        if (Blocks.color(a)) {
+            if (cur >= 10) {
+                Blocks.swipe(a, Blocks.DIR_RIGHT, Blocks.KIND_PAGE);
+                show(trail.isEmpty() ? backTo : trail.remove(trail.size() - 1));
+                a.changed();
+                return true;
+            }
+            if (cur != HOME) { Blocks.swipe(a, Blocks.DIR_RIGHT, Blocks.KIND_PAGE); show(HOME); a.changed(); }
+            return true;
+        }
         if (cur >= 10) {
             Blocks.swipe(a, Blocks.DIR_RIGHT, Blocks.KIND_PAGE);
             show(trail.isEmpty() ? backTo : trail.remove(trail.size() - 1));
@@ -1000,9 +1055,7 @@ final class BlocksHome {
         appsVerBuilt = a.appsVersion();
         LinearLayout pg = new LinearLayout(a);
         pg.setOrientation(LinearLayout.VERTICAL);
-        pg.addView(Blocks.pageHead(a, "Apps / " + a.appList().size() + " installed", "应用", Blocks.squareButton(a, Icons.Kind.MORE, new View.OnClickListener() {
-            @Override public void onClick(View v) { a.mainMenu(); }
-        })));
+        pg.addView(Blocks.pageHead(a, "Apps / " + a.appList().size() + " installed", "应用", null));
         // 一行工具：排序（点一下换下一种）、显示隐藏的应用
         LinearLayout tools = new LinearLayout(a);
         tools.setGravity(Gravity.CENTER_VERTICAL);
@@ -1130,17 +1183,22 @@ final class BlocksHome {
         List<String> l = list(key);
         if (!l.remove(pkg)) l.add(pkg);
         prefs.edit().putString(key, TextUtils.join(",", l)).apply();
-        invalidate(APPS); show(APPS); a.changed();
+        if (Blocks.color(a)) { invalidate(HOME); show(HOME); }
+        else { invalidate(APPS); show(APPS); }
+        a.changed();
     }
 
     private void appMenu(final ResolveInfo ri) {
         final String pkg = ri.activityInfo.packageName;
-        new VeraDialog.Builder(a).title(a.labelFor(ri)).items(new String[] { "打开", pins().contains(pkg) ? "取消置顶" : "置顶", hidden().contains(pkg) ? "取消隐藏" : "隐藏", "更多（图标、名字、应用优化、保持后台、卸载…）" },
+        String[] items = Blocks.color(a)
+            ? new String[] { "打开", pins().contains(pkg) ? "取消置顶" : "置顶", "更多（图标、名字、应用优化、卸载…）" }
+            : new String[] { "打开", pins().contains(pkg) ? "取消置顶" : "置顶", hidden().contains(pkg) ? "取消隐藏" : "隐藏", "更多（图标、名字、应用优化、保持后台、卸载…）" };
+        new VeraDialog.Builder(a).title(a.labelFor(ri)).items(items,
             new VeraDialog.OnPick() { @Override public void onPick(int w) {
                 switch (w) {
                 case 0: a.launch(ri); break;
                 case 1: toggleIn("blk_pins", pkg); break;
-                case 2: toggleIn("blk_hidden", pkg); break;
+                case 2: if (Blocks.color(a)) a.appMenu(ri); else toggleIn("blk_hidden", pkg); break;
                 default: a.appMenu(ri); break;
                 }
             } }).negative("取消", null).show();
@@ -1170,44 +1228,56 @@ final class BlocksHome {
     // ------------------------------------------------------------------ 我的
 
     private TextView meBattery, meBatterySub;
+    private android.widget.ScrollView meScroll;
 
     private View buildMe() {
         LinearLayout content = new LinearLayout(a);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(16), 0, dp(16), dp(6));
+        content.setPadding(dp(16), dp(12), dp(16), dp(100));
         LinearLayout pg = new LinearLayout(a);
         pg.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout head = Blocks.pageHead(a, a.standalone ? "Settings" : "Device / local reader", a.standalone ? "设置" : "我的", Blocks.squareButton(a, a.standalone ? Icons.Kind.CLOSE : Icons.Kind.MORE, new View.OnClickListener() {
-            @Override public void onClick(View v) { if (a.standalone) a.finish(); else a.mainMenu(); }
+
+        LinearLayout head = new LinearLayout(a);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        TextView meTitle = Ui.text(a, "我的", 26, true);
+        meTitle.setTextColor(Palette.INK);
+        head.addView(meTitle, Blocks.weight(1));
+        if (a.standalone) head.addView(Blocks.squareButton(a, Icons.Kind.CLOSE, new View.OnClickListener() {
+            @Override public void onClick(View v) { a.finish(); }
         }));
-        head.setPadding(dp(16), dp(4), dp(16), dp(4));
-        pg.addView(head);
-        // 设备卡片：上面是机器，下面一排三格（电量 / 存储 / 版本），同一个双线框里，格子之间竖线隔开
+        content.addView(head, Blocks.match());
+
+        // 设备卡片：机器 / 电量 / 存储 / 版本
         LinearLayout devBox = new LinearLayout(a);
         devBox.setOrientation(LinearLayout.VERTICAL);
-        devBox.setBackground(Blocks.frameDouble(a));
-        int ip = dp(4) + Blocks.stroke(a);
-        devBox.setPadding(ip, ip, ip + Blocks.shade(a), ip + Blocks.shade(a));
+        devBox.setBackground(Palette.roundStroke(a, Palette.PAPER, Palette.INK, 3, 24));
+        int ip = dp(10);
+        devBox.setPadding(ip, ip, ip, ip);
         LinearLayout dev = new LinearLayout(a);
         dev.setGravity(Gravity.CENTER_VERTICAL);
-        dev.setPadding(dp(10), dp(8), dp(10), dp(8));
+        dev.setPadding(dp(8), dp(6), dp(8), dp(7));
         FrameLayout ib = new FrameLayout(a);
-        ib.setBackground(Blocks.plain(a));
-        ib.addView(new Icons.IconView(a, Icons.Kind.DEVICE), new FrameLayout.LayoutParams(dp(34), dp(34), Gravity.CENTER));
-        dev.addView(ib, Blocks.lp(dp(56), dp(56)));
+        ib.setBackground(Palette.circle(a, Palette.SOFT_MINT));
+        ColorHome.Mascot devIcon = new ColorHome.Mascot(a, Palette.SOFT_PEACH);
+        ib.addView(devIcon, new FrameLayout.LayoutParams(dp(38), dp(38), Gravity.CENTER));
+        dev.addView(ib, Blocks.lp(dp(52), dp(52)));
         LinearLayout dc = new LinearLayout(a);
         dc.setOrientation(LinearLayout.VERTICAL);
         dc.setPadding(dp(12), 0, 0, 0);
-        dc.addView(Blocks.cap(a, "Local device"));
+        TextView cap = Blocks.cap(a, "Local device");
+        cap.setTextColor(Palette.GREEN);
+        dc.addView(cap);
         dc.addView(BlocksCards.line(a, prefs.getString("name", "VeraDroid").length() > 0 ? prefs.getString("name", "VeraDroid") : "VeraDroid", 18, true));
-        dc.addView(BlocksCards.line(a, model() + " · Android " + Build.VERSION.RELEASE + " · " + buildDate(), 13, false));
+        dc.addView(BlocksCards.line(a, model() + " · Android " + Build.VERSION.RELEASE, 12, false));
         dev.addView(dc, Blocks.weight(1));
-        dev.addView(new Icons.IconView(a, Icons.Kind.CHEV_R), Blocks.lp(dp(18), dp(18)));
+        Icons.IconView chev = new Icons.IconView(a, Icons.Kind.CHEV_R);
+        chev.setColor(Palette.GREEN);
+        dev.addView(chev, Blocks.lp(dp(18), dp(18)));
         dev.setClickable(true);
         dev.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { a.titleDialog(); } });
         Blocks.fast(dev);
         devBox.addView(dev);
-        devBox.addView(Blocks.hair(a));
+
         LinearLayout r1 = new LinearLayout(a);
         Map<String, String> st = HostLink.kv(HostLink.CTL + "status");
         int[] live = Ui.liveBattery(a);
@@ -1215,12 +1285,13 @@ final class BlocksHome {
         boolean initChg = live != null ? (live[1] == 1) : "1".equals(st.get("charging"));
         String[][] cells = { { (initBat == null ? "—" : initBat) + "%", initChg ? "充电中" : "剩余电量", "Battery" },
             { storageUsed() + "%", "存储已用", "Storage" }, { version(), "桌面版本", "Version" } };
+        int[] cellInk = { Palette.GREEN, Palette.TEAL, Palette.PLUM };
         for (int i = 0; i < 3; i++) {
-            if (i > 0) r1.addView(Blocks.vrule(a), new LinearLayout.LayoutParams(Math.max(1, Blocks.stroke(a) - 1), ViewGroup.LayoutParams.MATCH_PARENT));
             LinearLayout cl = new LinearLayout(a);
             cl.setOrientation(LinearLayout.VERTICAL);
             cl.setPadding(dp(10), dp(6), dp(6), dp(6));
             TextView v = BlocksCards.line(a, cells[i][0], 17, true);
+            v.setTextColor(cellInk[i]);
             TextView sub = BlocksCards.line(a, cells[i][1], 12, false);
             if (i == 0) { meBattery = v; meBatterySub = sub; }
             cl.addView(v);
@@ -1230,49 +1301,129 @@ final class BlocksHome {
         }
         devBox.addView(r1);
         content.addView(devBox, Blocks.gap(a, 2));
-        // 后台在做的事：系统更新 / 安装应用 / 优化应用（方块进度小卡片，没有就不显示）
+
         content.addView(TaskCards.strip(a), Blocks.match());
-        // 阅读统计
-        int done = 0;
-        if (a.libOn()) for (Lib.Book b : Lib.all()) if (b.percent >= 100) done++;
-        LinearLayout r2 = new LinearLayout(a);
-        r2.addView(meStat(Stats.shortDuration(Stats.monthMs(a)), "本月阅读", "This month"), cell(0));
-        r2.addView(meStat(String.valueOf(done), "已读完", "Finished"), cell(1));
-        r2.addView(meStat(String.valueOf(Stats.bookmarkCount(a)), "书签", "Bookmarks"), cell(2));
-        for (int i = 0; i < r2.getChildCount(); i++) {
-            View v = r2.getChildAt(i);
-            v.setClickable(true);
-            v.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) { a.startActivity(new Intent(a, StatsActivity.class)); a.overridePendingTransition(0, 0); } });
-            Blocks.fast(v);
-        }
-        content.addView(r2, Blocks.gap(a, 8));
-        // 设置分类
-        LinearLayout sh = new LinearLayout(a);
-        sh.setGravity(Gravity.BOTTOM);
-        sh.addView(Ui.text(a, "设备与设置", 16, true), Blocks.weight(1));
-        sh.addView(Blocks.cap(a, "Preferences"));
-        content.addView(sh, Blocks.gap(a, 10));
-        LinearLayout list = new LinearLayout(a);
-        list.setOrientation(LinearLayout.VERTICAL);
-        list.setBackground(Blocks.frameDouble(a));
-        int lp4 = dp(4) + Blocks.stroke(a);
-        list.setPadding(lp4, lp4, lp4 + Blocks.shade(a), lp4 + Blocks.shade(a));
+
+        // 常用功能：传书 / 软件商店 / 使用统计
+        content.addView(section("常用"), Blocks.gap(a, 12));
+        LinearLayout common = Blocks.group(a, null);
+        addMeRow(common, Icons.Kind.UPLOAD, Palette.GREEN, "传输", "网页传输 · 上传书籍、壁纸、应用", new View.OnClickListener() {
+            @Override public void onClick(View v) { a.startActivity(new Intent(a, TransferActivity.class).addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)); a.overridePendingTransition(0, 0); }
+        });
+        addMeRow(common, Icons.Kind.IMAGE, Palette.PLUM, "屏保", "休眠时显示的壁纸", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                a.startActivity(new Intent(a, ScreensaverActivity.class).addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION));
+                a.overridePendingTransition(0, 0);
+            }
+        });
+        addMeRow(common, Icons.Kind.STORE, Palette.SKY, "软件商店", "浏览并安装应用", new View.OnClickListener() {
+            @Override public void onClick(View v) { a.startActivity(new Intent(a, StoreActivity.class).addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)); a.overridePendingTransition(0, 0); }
+        });
+        addMeRow(common, Icons.Kind.CHART, Palette.AMBER, "使用统计", "阅读时长与使用情况", new View.OnClickListener() {
+            @Override public void onClick(View v) { a.startActivity(new Intent(a, StatsActivity.class).addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)); a.overridePendingTransition(0, 0); }
+        });
+        content.addView(common, Blocks.gap(a, 4));
+
+        // 设备与设置
+        content.addView(section("设备与设置"), Blocks.gap(a, 12));
+        LinearLayout list = Blocks.group(a, null);
         String[][] rows = {
             { "显示与阅读画质", "前光 · 刷新档位 · 文字笔锋 · 夜间与残影" },
             { "按键与手势操控", "实体翻页键 · 边缘滑调光 · 旋转 · 全局手势" },
             { "电源与省电", "休眠息灯 · 静止限频 · 屏保锁屏 · 时间" },
             { "网络与传书存储", BluetoothActivity.supported() ? "Wi-Fi · 蓝牙 · 网页传书 · 存储空间" : "Wi-Fi · 网页传书 · 存储空间" },
-            { "桌面与外观", "首页卡片 · 快捷面板 · 风格字重 · 网格图标" },
+            { "桌面与外观", "应用网格 · 风格字重 · 图标 · 快捷面板" },
             { "系统维护与关于", "微信读书维护看板 · 性能编译 · 日志 · 关于" } };
         final int[] keys = { S_DISPLAY, S_CONTROLS, S_POWER, S_STORAGE, S_UI, S_ABOUT };
+        final Icons.Kind[] icons = { Icons.Kind.SUN_L, Icons.Kind.SWIPE, Icons.Kind.POWER, Icons.Kind.WIFI, Icons.Kind.LAYOUT, Icons.Kind.INFO };
+        final int[] inks = { Palette.AMBER, Palette.TEAL, Palette.GREEN, Palette.SKY, Palette.PLUM, Palette.MUTED };
         for (int i = 0; i < rows.length; i++) {
             final int k = keys[i];
-            if (i > 0) list.addView(Blocks.hair(a));
-            list.addView(meNavRow(rows[i][0], rows[i][1], new View.OnClickListener() { @Override public void onClick(View v) { trail.clear(); backTo = ME; go(k); } }));
+            addMeRow(list, icons[i], inks[i], rows[i][0], rows[i][1], new View.OnClickListener() {
+                @Override public void onClick(View v) { trail.clear(); backTo = ME; go(k); }
+            });
         }
         content.addView(list, Blocks.gap(a, 4));
-        pg.addView(paged(content), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        // 电源：从下拉面板收进“我的”
+        content.addView(section("电源"), Blocks.gap(a, 12));
+        LinearLayout power = Blocks.group(a, null);
+        addMeRow(power, Icons.Kind.EXIT, Palette.SKY, "返回 Kobo", "退出 VeraDroid，回到 Kobo 系统", new View.OnClickListener() {
+            @Override public void onClick(View v) { confirm("返回 Kobo？", "VeraDroid 将退出，回到 Kobo 系统。", "exit"); }
+        });
+        addMeRow(power, Icons.Kind.ANDROID, Palette.GREEN, "重启安卓", "关闭并重新启动 Android", new View.OnClickListener() {
+            @Override public void onClick(View v) { confirm("重启 Android？", "正在运行的应用会被关闭。", "restart"); }
+        });
+        addMeRow(power, Icons.Kind.POWER, Palette.PLUM, "重启机器", "重启整台 Kobo", new View.OnClickListener() {
+            @Override public void onClick(View v) { confirm("重启机器？", "Kobo 会重新启动。", "reboot"); }
+        });
+        addMeRow(power, Icons.Kind.POWER, Palette.MUTED, "关机", "完全关闭设备", new View.OnClickListener() {
+            @Override public void onClick(View v) { confirm("关机？", "设备将完全关闭。", "poweroff"); }
+        });
+        content.addView(power, Blocks.gap(a, 4));
+
+        android.widget.ScrollView sv = new android.widget.ScrollView(a);
+        meScroll = sv;
+        sv.setFillViewport(true);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.setSmoothScrollingEnabled(false);
+        sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        sv.addView(content, new android.widget.ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        pg.addView(sv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         return pg;
+    }
+
+    private TextView section(String s) {
+        TextView t = Blocks.header(a, s);
+        t.setPadding(0, dp(4), 0, dp(6));
+        return t;
+    }
+
+    private void addMeRow(LinearLayout g, Icons.Kind icon, int accent, String zh, String hint, View.OnClickListener l) {
+        LinearLayout r = new LinearLayout(a);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setPadding(dp(12), dp(7), dp(10), dp(7));
+        r.setMinimumHeight(dp(58));
+
+        FrameLayout chip = new FrameLayout(a);
+        chip.setBackground(Palette.round(a, Palette.blend(accent, Palette.PAPER, 0.84f), 12));
+        Icons.IconView iv = new Icons.IconView(a, icon);
+        iv.setColor(accent);
+        chip.addView(iv, new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
+        r.addView(chip, new LinearLayout.LayoutParams(dp(38), dp(38)));
+
+        LinearLayout mid = new LinearLayout(a);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setGravity(Gravity.LEFT);
+        mid.setPadding(dp(11), 0, 6, 0);
+        TextView t = Ui.text(a, zh, 16, true);
+        t.setGravity(Gravity.LEFT);
+        mid.addView(t, Blocks.match());
+        if (hint != null) {
+            TextView h = Ui.text(a, hint, 11, false);
+            h.setTextColor(Palette.MUTED);
+            h.setGravity(Gravity.LEFT);
+            h.setSingleLine(true);
+            h.setEllipsize(TextUtils.TruncateAt.END);
+            mid.addView(h, Blocks.match());
+        }
+        r.addView(mid, Blocks.weight(1));
+
+        Icons.IconView chev = new Icons.IconView(a, Icons.Kind.CHEV_R);
+        chev.setColor(accent);
+        r.addView(chev, Blocks.lp(dp(16), dp(16)));
+
+        r.setClickable(true);
+        r.setOnClickListener(l);
+        Blocks.fast(r);
+        Blocks.addRow(g, r);
+    }
+
+    private void confirm(String title, String message, final String cmd) {
+        new VeraDialog.Builder(a).title(title).message(message).negative("取消", null).positive("确定", new Runnable() {
+            @Override public void run() { HostLink.cmd(cmd); }
+        }).show();
     }
 
     /** “我的”页的紧凑统计格与设置行，让整页（含全部“设备与设置”）在单屏内完整显示。 */

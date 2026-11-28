@@ -78,51 +78,20 @@ public class ScreensaverActivity extends Activity {
         TextView title = Ui.text(this, "屏保", 30, true);
         title.setPadding(0, dp(8), 0, dp(4));
         page.addView(title);
-        modeText = Ui.text(this, "正在读取…", 17, false);
-        modeText.setPadding(0, 0, 0, dp(4));
-        page.addView(modeText);
-        // 图片放在哪里：每次都写在页面上（用户问过“屏保图片放哪”），找到几张也直接说
-        foundText = Ui.text(this, "正在找你的图片…", 15, true);
-        foundText.setPadding(0, dp(2), 0, dp(2));
-        page.addView(foundText);
-        TextView where = Ui.text(this, WHERE, 14, false);
-        where.setPadding(0, 0, 0, dp(8));
-        page.addView(where);
-        LinearLayout modes = new LinearLayout(this);
-        modes.addView(Ui.button(this, "用 Kobo 自带的", 17, false, new View.OnClickListener() {
-            @Override public void onClick(View v) { choose("kindle", null); }
-        }), weight());
-        modes.addView(Ui.button(this, "轮换全部图片", 17, false, new View.OnClickListener() {
-            @Override public void onClick(View v) { choose("rotate", null); }
-        }), weight());
-        page.addView(modes);
-        TextView hint = Ui.text(this, "点一张图：每次休眠都只用这一张。", 15, false);
-        hint.setPadding(0, dp(10), 0, dp(4));
-        page.addView(hint);
+        // 只保留：随机 + 已导入图片 + 导入按钮（不再显示说明文字、模式按钮、翻页条）
+        modeText = Ui.text(this, "", 17, false);      // 兼容旧逻辑，不显示
+        foundText = Ui.text(this, "", 15, true);      // 兼容旧逻辑，不显示
         grid = new PagedBox(this);
         grid.setOrientation(LinearLayout.VERTICAL);
         ((PagedBox) grid).setListener(new PagedBox.Listener() { @Override public void onPage(int dir) { turn(dir); } });
-        page.addView(grid, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        LinearLayout nav = new LinearLayout(this);
-        nav.setGravity(Gravity.CENTER_VERTICAL);
-        nav.addView(Ui.button(this, "上一页", 17, false, new View.OnClickListener() { @Override public void onClick(View v) { turn(-1); } }), weight());
-        pageLabel = Ui.text(this, "", 17, false);
-        pageLabel.setGravity(Gravity.CENTER);
-        nav.addView(pageLabel, weight());
-        nav.addView(Ui.button(this, "下一页", 17, false, new View.OnClickListener() { @Override public void onClick(View v) { turn(1); } }), weight());
-        page.addView(nav);
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1);
+        gp.topMargin = dp(6);
+        page.addView(grid, gp);
         LinearLayout actions = new LinearLayout(this);
-        actions.setPadding(0, dp(6), 0, 0);
-        actions.addView(Ui.button(this, "返回", 17, false, new View.OnClickListener() { @Override public void onClick(View v) { finish(); } }), weight());
-        actions.addView(Ui.button(this, "从内部存储导入…", 17, true, new View.OnClickListener() { @Override public void onClick(View v) { importImage(); } }), weight());
+        actions.setPadding(0, dp(10), 0, 0);
+        actions.addView(Ui.button(this, "导入图片", 17, true, new View.OnClickListener() { @Override public void onClick(View v) { importImage(); } }), weight());
         page.addView(actions);
-        if (Blocks.on(this)) {   // 方块风格：方块页头；“上一页 / 下一页”换成翻页条
-            Blocks.restyle(this, page, title, actions, "Sleep / screensaver");
-            int at = page.indexOfChild(nav);
-            page.removeView(nav);
-            pager = new Blocks.Pager(this, new Blocks.Pager.Listener() { @Override public void onPage(int dir) { turn(dir); } });
-            page.addView(pager, at, Blocks.gap(this, 8));
-        }
+        if (Blocks.on(this)) Blocks.restyle(this, page, title, null, "Sleep / screensaver");
         readChoice();
         // 宿主把 veradroid/screensaver 的图拷出来（最多等 4 秒；宿主太旧就只显示 Android 里的图）
         new File(HostLink.CTL + "saver.listed").delete();
@@ -163,8 +132,7 @@ public class ScreensaverActivity extends Activity {
 
     private void load() {
         items.clear();
-        File kp = new File(VD_DIR, ".kindle-preview.png");
-        items.add(new Item("kindle", kp.isFile() ? kp : null, "Kobo 自带"));
+        items.add(new Item("random", null, "随机"));
         nSd = 0; nVd = 0;
         for (File f : images(SD_DIR)) { items.add(new Item("sd/" + f.getName(), f, f.getName())); nSd++; }
         for (File f : images(VD_DIR)) { items.add(new Item("vd/" + f.getName(), f, f.getName() + "（USB）")); nVd++; }
@@ -177,7 +145,7 @@ public class ScreensaverActivity extends Activity {
             items.add(it); nVd++;
         }
         elsewhere = elsewhere();
-        if (mode == null) mode = items.size() > 1 ? "rotate" : "kindle";   // 没选过：宿主照旧做法，有用户图就轮换
+        if (mode == null) mode = "rotate";   // 没选过：随机轮换已导入的图片
         foundText.setText(found(nSd, nVd));
         pageNo = 0;
         showMode();
@@ -219,7 +187,7 @@ public class ScreensaverActivity extends Activity {
         final boolean vdListed = new File(HostLink.CTL + "saver.listed").exists();
         new Thread(new Runnable() {
             @Override public void run() {
-                for (Item it : its) if (it.f != null && it.why == null && !it.key.equals("kindle")) it.why = SaverImage.check(it.f);
+                for (Item it : its) if (it.f != null && it.why == null && !it.key.equals("random") && !it.key.equals("kindle")) it.why = SaverImage.check(it.f);
                 handler.post(new Runnable() { @Override public void run() { if (!isFinishing() && myPrep == prepGen) { showFound(); renderPage(); } } });
                 if (myPrep != prepGen) return;
                 java.util.Set<String> keys = new java.util.HashSet<String>();
@@ -238,7 +206,7 @@ public class ScreensaverActivity extends Activity {
     }
 
     private void convertOne(final Item it, int[] p) {
-        if (it.f == null || it.why != null || it.key.equals("kindle")) return;
+        if (it.f == null || it.why != null || it.key.equals("random") || it.key.equals("kindle")) return;
         final String why = SaverImage.convert(it.key, it.f, p[0], p[1]);
         if (why == null) return;
         it.why = why;
@@ -260,7 +228,7 @@ public class ScreensaverActivity extends Activity {
 
     /** “找到 N 张你的图片”：分开说两个文件夹各几张，一张都没有时说下一步做什么。 */
     static String found(int nSd, int nVd) {
-        if (nSd + nVd == 0) return "还没有找到你的图片：按下面任一种方法放进去（现在用 Kobo 自带的屏保）。";
+        if (nSd + nVd == 0) return "还没有导入图片，先点下面的“导入图片”。";
         return "找到 " + (nSd + nVd) + " 张你的图片（Android 的 Screensaver " + nSd + " 张，USB 的 veradroid/screensaver " + nVd + " 张）。";
     }
 
@@ -268,14 +236,15 @@ public class ScreensaverActivity extends Activity {
         mode = null; file = null;
         java.util.Map<String, String> m = HostLink.kv(SEL);
         String md = m.get("mode");
-        if ("kindle".equals(md) || "rotate".equals(md) || "one".equals(md)) { mode = md; file = m.get("file"); }
+        if ("kindle".equals(md) || "rotate".equals(md) || "one".equals(md) || "wall".equals(md)) { mode = md; file = m.get("file"); }
     }
 
     private void showMode() {
         String s;
         if ("one".equals(mode) && file != null) s = "当前：只用一张（" + file.substring(file.indexOf('/') + 1) + "）";
-        else if ("rotate".equals(mode)) s = "当前：轮换全部图片（共 " + (items.size() - 1) + " 张，没有图片时用 Kobo 自带的）";
-        else s = "当前：Kobo 自带的屏保";
+        else if ("rotate".equals(mode)) s = "当前：随机显示已导入的图片";
+        else if ("wall".equals(mode)) s = "当前：使用首页壁纸";
+        else s = "当前：默认屏保";
         modeText.setText(s);
     }
 
@@ -307,6 +276,7 @@ public class ScreensaverActivity extends Activity {
     }
 
     private boolean selected(Item it) {
+        if (it.key.equals("random")) return "rotate".equals(mode);
         if (it.key.equals("kindle")) return "kindle".equals(mode);
         return "one".equals(mode) && it.key.equals(file);
     }
@@ -316,8 +286,8 @@ public class ScreensaverActivity extends Activity {
         final int my = ++gen;
         final int from = pageNo * PER, to = Math.min(items.size(), from + PER);
         int pages = Math.max(1, (items.size() + PER - 1) / PER);
-        pageLabel.setText((pageNo + 1) + " / " + pages);
-        if (pager != null) pager.set(pageNo + 1, pages);
+        if (pageLabel != null) pageLabel.setText((pageNo + 1) + " / " + pages);
+        if (pager != null) { pager.set(pageNo + 1, pages); pager.setVisibility(pages > 1 ? View.VISIBLE : View.GONE); }
         final int cw = Math.max(dp(80), (getResources().getDisplayMetrics().widthPixels - dp(32)) / COLS - dp(12));
         final int ch = cw * 4 / 3;
         new Thread(new Runnable() {
@@ -353,7 +323,13 @@ public class ScreensaverActivity extends Activity {
             bg.setStroke(sel ? dp(4) : 2, Color.BLACK);
             cell.setBackground(bg);
             cell.setPadding(dp(4), dp(4), dp(4), dp(4));
-            if (it.why != null) {
+            if (it.key.equals("random")) {
+                Icons.IconView ic = new Icons.IconView(this, Icons.Kind.SWIPE);
+                cell.addView(ic, new LinearLayout.LayoutParams(dp(52), dp(52)));
+                TextView r = Ui.text(this, "随机", 18, true);
+                r.setGravity(Gravity.CENTER);
+                cell.addView(r, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+            } else if (it.why != null) {
                 TextView bad = Ui.text(this, "用不了\n" + shortWhy(it.why), 15, true);
                 bad.setGravity(Gravity.CENTER);
                 cell.addView(bad, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
@@ -381,7 +357,9 @@ public class ScreensaverActivity extends Activity {
                             .positive("知道了", null).show();
                         return;
                     }
-                    if (it.key.equals("kindle")) choose("kindle", null); else choose("one", it.key);
+                    if (it.key.equals("random")) choose("rotate", null);
+                    else if (it.key.equals("kindle")) choose("kindle", null);
+                    else choose("one", it.key);
                 }
             });
             Ui.fast(cell);

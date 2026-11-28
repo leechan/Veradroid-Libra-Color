@@ -120,7 +120,14 @@ final class BlocksSettings {
         pg.addView(Blocks.pageHead(a, en, zh, Blocks.squareButton(a, Icons.Kind.BACK, new View.OnClickListener() {
             @Override public void onClick(View v) { h.back(); }
         })));
-        pg.addView(h.paged(content), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        android.widget.ScrollView sv = new android.widget.ScrollView(a);
+        sv.setTag(BlocksHome.SCROLL_TAG);
+        sv.setFillViewport(true);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.setSmoothScrollingEnabled(false);
+        sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        sv.addView(content, new android.widget.ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        pg.addView(sv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         return pg;
     }
 
@@ -232,14 +239,16 @@ final class BlocksSettings {
             @Override public void onStep(int i) { AppFont.setUser(a, FONT_S[i]); } })));
         add(fg, Blocks.navRow(a, "应用优化", "单独给某个应用设刷新、全刷、对比度、字号、保持后台", new View.OnClickListener() {
             @Override public void onClick(View v) { appDisplayPicker(); } }));
-        c.addView(Blocks.navRow(a, "高级显示设置", "夜间波形 · 残影控制 · 局部刷新 · 浅色过滤 · 系统字体", new View.OnClickListener() {
-            @Override public void onClick(View v) { h.push(BlocksHome.S_DISPLAY_ADV); } }), Blocks.gap(a, 14));
+        LinearLayout adv = displayAdvContent();
+        adv.setPadding(0, 0, 0, 0);
+        c.addView(Blocks.header(a, "高级显示设置"), Blocks.gap(a, 14));
+        c.addView(adv, Blocks.match());
         return shell("System / display", "显示与阅读画质", c);
     }
 
     // ------------------------------------------------------------------ 1b. 高级显示设置
 
-    private View displayAdv() {
+    private LinearLayout displayAdvContent() {
         LinearLayout c = content();
         final Map<String, String> cfg = HostLink.kv(HostLink.KFB + "settings");
         if (HostLink.isKobo()) {
@@ -300,7 +309,11 @@ final class BlocksSettings {
             @Override public void onClick(View v) { FontStoreActivity.open(a); } }));
         add(sf, Blocks.navRow(a, "导入字体", "在传输网页上传 .ttf / .otf 自动进入字体库", new View.OnClickListener() {
             @Override public void onClick(View v) { a.startActivity(new Intent(a, TransferActivity.class)); } }));
-        return shell("Display / advanced", "高级显示设置", c);
+        return c;
+    }
+
+    private View displayAdv() {
+        return shell("Display / advanced", "高级显示设置", displayAdvContent());
     }
 
     // ------------------------------------------------------------------ 2. 按键与手势操控
@@ -335,8 +348,8 @@ final class BlocksSettings {
             add(el, Blocks.row(a, "边缘调光 / 色温互换", "Swap brightness & warmth edges", toggle("1".equals(cfg.get("G_EDGE_LIGHT_SWAP")), new Icons.Toggle.Listener() {
                 @Override public void onToggle(boolean on) { host("G_EDGE_LIGHT_SWAP=" + (on ? 1 : 0)); } })));
         }
-        c.addView(Blocks.navRow(a, "更多手势设置", "底边上划返回 · 底边分三段 · 双指手势 · 四角长按 · 灵敏度", new View.OnClickListener() {
-            @Override public void onClick(View v) { h.openCat(2); } }), Blocks.gap(a, 14));
+        c.addView(Blocks.header(a, "更多手势设置"), Blocks.gap(a, 14));
+        c.addView(a.blocksCategory(2), Blocks.match());
         return shell("System / controls", "按键与手势操控", c);
     }
 
@@ -345,8 +358,6 @@ final class BlocksSettings {
     private View appearance() {
         LinearLayout c = content();
         LinearLayout hm = group(c, "首页与快捷面板");
-        add(hm, Blocks.navRow(a, "首页卡片", "继续阅读 · 天气 · 日历 · 小部件排序与内容", new View.OnClickListener() {
-            @Override public void onClick(View v) { h.push(BlocksHome.S_CARDS); } }));
         add(hm, Blocks.navRow(a, "下拉面板的快捷开关", "最多 5 个：" + quickNames(), new View.OnClickListener() {
             @Override public void onClick(View v) { a.quickDialog(); } }));
         String devName = prefs.getString("name", "VeraDroid");
@@ -356,19 +367,14 @@ final class BlocksSettings {
         add(hm, Blocks.navRow(a, "面板名称", prefs.getString("panelname", "").length() == 0 ? "（不显示）" : prefs.getString("panelname", ""), new View.OnClickListener() {
             @Override public void onClick(View v) { a.textDialog("面板名称", "最多 16 个字；留空就不显示。", "panelname", "", 16); } }));
         LinearLayout ui = group(c, "界面风格与字体");
-        final String[] styles = { "classic", "blocks", "color" };
-        int styleIdx = 2;
-        for (int i = 0; i < styles.length; i++) if (styles[i].equals(Blocks.style(a))) styleIdx = i;
-        add(ui, Blocks.row(a, "界面风格", "Launcher style", new Blocks.Stepper(a, new String[] { "经典", "方块", "色彩" }, styleIdx, new Blocks.Stepper.Listener() {
-            @Override public void onStep(final int i) { a.setStyle(styles[i]); } }).wrap()));
         add(ui, Blocks.row(a, "界面字重", "UI font weight", new Blocks.Stepper(a, Fonts.WEIGHT_L, Fonts.weight(a), new Blocks.Stepper.Listener() {
             @Override public void onStep(int i) { prefs.edit().putInt(Fonts.WEIGHT_KEY, i).commit(); a.reloadBlocks(BlocksHome.S_UI); } })));
         add(ui, Blocks.row(a, "英文小字", "English captions", toggle(Blocks.caps(a), new Icons.Toggle.Listener() {
             @Override public void onToggle(boolean on) { prefs.edit().putBoolean(Blocks.CAPS_KEY, on).commit(); h.show(BlocksHome.S_UI); a.changed(); } })));
         add(ui, Blocks.row(a, "桌面动画", "E-ink animation", new Blocks.Stepper(a, Blocks.ANIM_L, Blocks.anim(a), new Blocks.Stepper.Listener() {
             @Override public void onStep(int i) { prefs.edit().putInt(Blocks.ANIM_KEY, i).apply(); } })));
-        c.addView(Blocks.navRow(a, "更多桌面与输入法设置", "应用网格 · 壁纸与图标 · 状态栏 · 软件商店 · 输入法", new View.OnClickListener() {
-            @Override public void onClick(View v) { h.openCat(3); } }), Blocks.gap(a, 14));
+        c.addView(Blocks.header(a, "更多桌面与输入法设置"), Blocks.gap(a, 14));
+        c.addView(a.blocksCategory(3), Blocks.match());
         return shell("System / appearance", "桌面与外观", c);
     }
 
@@ -592,7 +598,7 @@ final class BlocksSettings {
             { "问题反馈", "连同系统日志一起上传" },
             { "设备与管理", "导出完整系统日志 · 恢复默认设置" } };
         for (int i = 0; i < rows.length; i++) {
-            if (kobo && (i == 1 || i == 3)) continue;
+            if ((kobo && (i == 1 || i == 3)) || i == 4) continue;
             final int k = i;
             add(m, Blocks.navRow(a, rows[i][0], rows[i][1], new View.OnClickListener() { @Override public void onClick(View v) {
                 switch (k) {
@@ -606,6 +612,8 @@ final class BlocksSettings {
         }
         // 系统更新的进度（宿主写 ctl/update.status；没有在更新时不占地方）
         c.addView(new TaskCards.Update(a, false), Blocks.gap(a, 14));
+        c.addView(Blocks.header(a, "设备与管理"), Blocks.gap(a, 14));
+        c.addView(a.blocksCategory(5), Blocks.match());
         LinearLayout g = group(c, "设备信息");
         android.app.ActivityManager am = (android.app.ActivityManager) a.getSystemService(android.content.Context.ACTIVITY_SERVICE);
         android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();

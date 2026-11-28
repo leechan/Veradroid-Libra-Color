@@ -49,6 +49,7 @@ done
 [ -x "$BIN_DIR/resize2fs" ] && cp "$BIN_DIR/resize2fs" "$STAGE/bin/resize2fs"
 [ -x "$BIN_DIR/kobo-sdcard" ] && cp "$BIN_DIR/kobo-sdcard" "$STAGE/bin/kobo-sdcard"
 [ -x "$BIN_DIR/fbink-img" ] && cp "$BIN_DIR/fbink-img" "$STAGE/bin/fbink-img"
+[ -x "$BIN_DIR/fbink-png" ] && cp "$BIN_DIR/fbink-png" "$STAGE/bin/fbink-png"
 [ -f "$BIN_DIR/libkobo_madvise.so" ] && cp "$BIN_DIR/libkobo_madvise.so" "$STAGE/bin/libkobo_madvise.so"
 [ -f "$BIN_DIR/kobo-weread-opt.jar" ] && cp "$BIN_DIR/kobo-weread-opt.jar" "$STAGE/bin/kobo-weread-opt.jar"
 [ -f "$BIN_DIR/ethernet-service-wifi.jar" ] && cp "$BIN_DIR/ethernet-service-wifi.jar" "$STAGE/bin/ethernet-service-wifi.jar"

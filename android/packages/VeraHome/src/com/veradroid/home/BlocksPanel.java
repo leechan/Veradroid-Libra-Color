@@ -140,13 +140,32 @@ final class BlocksPanel {
         try { panelName = Store.prefs(c, "home").getString("panelname", ""); } catch (Throwable ignored) { }
         root = new Root();
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.WHITE);
+        root.setBackground(Palette.scrim(ctx));   // 面板后面：细斜线遮罩
         // 内容在 body 里（左右留边），最底下一条贯通全宽的粗黑边（框线 + 投影的厚度），和下面的应用分开
         final LinearLayout body = new LinearLayout(ctx);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(16), dp(8), dp(16), dp(14));
-        root.addView(body, Blocks.match());
-        root.addView(Ui.rule(ctx, Blocks.stroke(ctx) + Blocks.shade(ctx), Color.BLACK));
+        android.widget.ScrollView sv = new android.widget.ScrollView(ctx) {
+            @Override protected void onMeasure(int w, int h) {
+                int max = (int) (getResources().getDisplayMetrics().heightPixels * 0.92f);
+                super.onMeasure(w, MeasureSpec.makeMeasureSpec(max, MeasureSpec.AT_MOST));
+            }
+        };
+        sv.setFillViewport(false);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        sv.addView(body, new android.widget.ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // 面板本体一层不透明白底，遮罩只留在它下面
+        LinearLayout myPanel = new LinearLayout(ctx);
+        myPanel.setOrientation(LinearLayout.VERTICAL);
+        myPanel.setBackgroundColor(Color.WHITE);
+        myPanel.addView(sv, Blocks.match());
+        myPanel.addView(Ui.rule(ctx, Blocks.stroke(ctx) + Blocks.shade(ctx), Color.BLACK));
+        root.addView(myPanel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // 剩下的整屏都是遮罩：点一下收起
+        View scrim = new View(ctx);
+        scrim.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { finish(); } });
+        root.addView(scrim, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         // 顶上：大字时间，右边日期 / 电量，再右边一个收起的方块
         LinearLayout top = new LinearLayout(ctx);
@@ -171,6 +190,7 @@ final class BlocksPanel {
         LinearLayout row = new LinearLayout(ctx);
         String q = Panel.QUICK_DEFAULT;
         try { q = Store.prefs(ctx, "home").getString("quick", Panel.QUICK_DEFAULT); } catch (Throwable ignored) { }
+        if ("wifi,bt,invert,clear,settings,clean".equals(q)) q = "wifi,bt,invert,clear,clean,settings";
         boolean bt = BluetoothActivity.supported();
         for (String raw : q.split(",")) {
             final String id = raw.trim();
@@ -259,41 +279,19 @@ final class BlocksPanel {
 
         // 回到桌面 | 回到 Kobo：在任何应用里下拉面板都能一下回到 VeraDroid 桌面
         LinearLayout go = new LinearLayout(ctx);
-        go.addView(Blocks.button(ctx, "回到桌面", false, new View.OnClickListener() {
+        TextView bh = Blocks.button(ctx, "返回桌面", false, new View.OnClickListener() {
             @Override public void onClick(View v) { goHome(); }
-        }), Blocks.weight(1));
+        });
+        bh.setTextColor(0xFF2E7D4F);
+        go.addView(bh, Blocks.weight(1));
         LinearLayout.LayoutParams kp = Blocks.weight(1);
         kp.leftMargin = dp(8);
-        go.addView(Blocks.button(ctx, "回到 Kobo", false, new View.OnClickListener() {
+        TextView bk = Blocks.button(ctx, "返回Kobo", false, new View.OnClickListener() {
             @Override public void onClick(View v) { HostLink.cmd("exit"); finish(); }
-        }), kp);
+        });
+        bk.setTextColor(0xFFB93B27);
+        go.addView(bk, kp);
         body.addView(go, Blocks.gap(ctx, 12));
-
-        // 重启安卓 | 重启机器 | 关机：黑底白字强调，点两次确认防误触
-        LinearLayout pwr = new LinearLayout(ctx);
-        restartBtn = Blocks.button(ctx, "重启安卓", true, new View.OnClickListener() {
-            @Override public void onClick(View v) { onPowerAction(1); }
-        });
-        restartBtn.setSingleLine(true);
-        restartBtn.setPadding(dp(6), dp(8), dp(6), dp(8));
-        pwr.addView(restartBtn, Blocks.weight(1));
-        LinearLayout.LayoutParams rp = Blocks.weight(1);
-        rp.leftMargin = dp(8);
-        rebootBtn = Blocks.button(ctx, "重启机器", true, new View.OnClickListener() {
-            @Override public void onClick(View v) { onPowerAction(2); }
-        });
-        rebootBtn.setSingleLine(true);
-        rebootBtn.setPadding(dp(6), dp(8), dp(6), dp(8));
-        pwr.addView(rebootBtn, rp);
-        LinearLayout.LayoutParams pp = Blocks.weight(1);
-        pp.leftMargin = dp(8);
-        powerBtn = Blocks.button(ctx, "关机", true, new View.OnClickListener() {
-            @Override public void onClick(View v) { onPowerAction(3); }
-        });
-        powerBtn.setSingleLine(true);
-        powerBtn.setPadding(dp(6), dp(8), dp(6), dp(8));
-        pwr.addView(powerBtn, pp);
-        body.addView(pwr, Blocks.gap(ctx, 8));
 
         // 通知：有才显示
         notesBox = group("通知");
@@ -307,49 +305,9 @@ final class BlocksPanel {
     }
 
     private LinearLayout optBar, optCard, appBar;
-    private TextView appHint, restartBtn, rebootBtn, powerBtn;
+    private TextView appHint;
     private int powerArmed = 0;   // 0 = 未确认，1 = 待确认重启安卓，2 = 待确认重启机器，3 = 待确认关机
     private String appPkg;
-
-    private final Runnable disarmPower = new Runnable() { @Override public void run() { resetPowerConfirm(); } };
-
-    private void resetPowerConfirm() {
-        handler.removeCallbacks(disarmPower);
-        powerArmed = 0;
-        if (restartBtn != null) {
-            restartBtn.setText("重启安卓");
-            restartBtn.setTextColor(Color.WHITE);
-            restartBtn.setBackground(Blocks.plainFilled(ctx));
-        }
-        if (rebootBtn != null) {
-            rebootBtn.setText("重启机器");
-            rebootBtn.setTextColor(Color.WHITE);
-            rebootBtn.setBackground(Blocks.plainFilled(ctx));
-        }
-        if (powerBtn != null) {
-            powerBtn.setText("关机");
-            powerBtn.setTextColor(Color.WHITE);
-            powerBtn.setBackground(Blocks.plainFilled(ctx));
-        }
-    }
-
-    private void onPowerAction(int want) {
-        if (powerArmed != want) {
-            resetPowerConfirm();
-            powerArmed = want;
-            TextView b = want == 1 ? restartBtn : (want == 2 ? rebootBtn : powerBtn);
-            if (b != null) {
-                b.setText("再点确认");
-                b.setTextColor(Color.BLACK);
-                b.setBackground(Blocks.plain(ctx));
-            }
-            handler.postDelayed(disarmPower, 4000);
-            return;
-        }
-        resetPowerConfirm();
-        HostLink.cmd(want == 1 ? "restart" : (want == 2 ? "reboot" : "poweroff"));
-        finish();
-    }
 
     /** 面板底下那个应用（HostService 记的“按哪个应用算显示设置”）；桌面在前台 = null */
     private void syncApp() {
@@ -443,12 +401,35 @@ final class BlocksPanel {
         LinearLayout r = new LinearLayout(ctx);
         r.setGravity(Gravity.CENTER_VERTICAL);
         r.setPadding(dp(8), dp(8), dp(8), dp(8));
-        r.addView(stepBox(lo, new View.OnClickListener() { @Override public void onClick(View v) { step(bar, cmd, -1); } }));
+        if ("warmth".equals(cmd)) {
+            r.addView(stepChip(Icons.Kind.MOON, 0xFF4A2A9A, Palette.PAPER, new View.OnClickListener() { @Override public void onClick(View v) { step(bar, cmd, -1); } }));
+        } else if ("light".equals(cmd)) {
+            r.addView(stepChip(Icons.Kind.SUN_S, 0xFFD5D7DA, Palette.INK, new View.OnClickListener() { @Override public void onClick(View v) { step(bar, cmd, -1); } }));
+        } else {
+            r.addView(stepBox(lo, new View.OnClickListener() { @Override public void onClick(View v) { step(bar, cmd, -1); } }));
+        }
         LinearLayout.LayoutParams bp = Blocks.weight(1);
         bp.leftMargin = dp(10); bp.rightMargin = dp(10);
         r.addView(bar, bp);
-        r.addView(stepBox(hi, new View.OnClickListener() { @Override public void onClick(View v) { step(bar, cmd, 1); } }));
+        if ("warmth".equals(cmd)) {
+            r.addView(stepChip(Icons.Kind.SUN_L, 0xFFC07A00, Palette.PAPER, new View.OnClickListener() { @Override public void onClick(View v) { step(bar, cmd, 1); } }));
+        } else {
+            r.addView(stepBox(hi, new View.OnClickListener() { @Override public void onClick(View v) { step(bar, cmd, 1); } }));
+        }
         return r;
+    }
+
+    private View stepChip(Icons.Kind k, int bg, int fg, View.OnClickListener l) {
+        FrameLayout f = new FrameLayout(ctx);
+        f.setBackground(Palette.roundStroke(ctx, bg, Palette.INK, 3, 18));
+        Icons.IconView iv = new Icons.IconView(ctx, k);
+        iv.setColor(fg);
+        f.addView(iv, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+        f.setLayoutParams(Blocks.lp(dp(48), dp(44)));
+        f.setClickable(true);
+        f.setOnClickListener(l);
+        Blocks.fast(f);
+        return f;
     }
 
     private View stepBox(Icons.Kind k, View.OnClickListener l) {
@@ -490,7 +471,7 @@ final class BlocksPanel {
         if ("wifi".equals(id)) return Icons.Kind.WIFI;
         if ("bt".equals(id)) return Icons.Kind.BLUETOOTH;
         if ("invert".equals(id)) return Icons.Kind.MOON;
-        if ("clear".equals(id)) return Icons.Kind.REFRESH;
+        if ("clear".equals(id)) return Icons.Kind.SPARKLE;
         if ("xfer".equals(id)) return Icons.Kind.UPLOAD;
         if ("shot".equals(id)) return Icons.Kind.CAMERA;
         if ("kindle".equals(id)) return Icons.Kind.EXIT;
@@ -500,7 +481,7 @@ final class BlocksPanel {
         if ("lightf".equals(id)) return Icons.Kind.EYE;
         if ("settings".equals(id)) return Icons.Kind.GEAR;
         if ("switch".equals(id)) return Icons.Kind.GRID;
-        if ("restart".equals(id)) return Icons.Kind.REFRESH;
+        if ("restart".equals(id)) return Icons.Kind.RESTART;
         return Icons.Kind.POWER;
     }
 
@@ -548,10 +529,11 @@ final class BlocksPanel {
 
     private WindowManager.LayoutParams params() {
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_SYSTEM_ALERT,
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-            PixelFormat.OPAQUE);
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.LEFT;
         lp.windowAnimations = 0;
         lp.setTitle("VeraPanel");
@@ -574,6 +556,9 @@ final class BlocksPanel {
             Perf.measure(root, "blocks panel (reused)");
             root.setVisibility(View.VISIBLE);
         }
+        root.post(new Runnable() { @Override public void run() { root.requestLayout(); root.invalidate(); } });
+        handler.postDelayed(new Runnable() { @Override public void run() { if (showing) HostLink.epd("REDRAW"); } }, 180);
+
         HostLink.cmd("status");   // 只请宿主把状态文件写新，不改设置
         if (!battReceiverOn) {
             android.content.IntentFilter bf = new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED);
@@ -600,7 +585,6 @@ final class BlocksPanel {
         if (!showing) return;
         showing = false;
         handler.removeCallbacks(recheck);
-        resetPowerConfirm();
         if (battReceiverOn) { try { ctx.unregisterReceiver(battReceiver); } catch (Throwable ignored) { } battReceiverOn = false; }
         HostLink.epdHint(Panel.PANEL_HINT_MS, Panel.PANEL_HINT_PCT);
         root.setVisibility(View.GONE);

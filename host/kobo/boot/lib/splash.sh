@@ -25,12 +25,36 @@ splash_begin() {
     [ "${SH:-0}" -gt 0 ] 2>/dev/null || SH=$(sed -n 's/.*U:\([0-9][0-9]*\)x\([0-9][0-9]*\)p.*/\1 \2/p' /sys/class/graphics/fb0/modes 2>/dev/null | awk '$2 >= $1 { print $2; exit }')
     [ "${SH:-0}" -gt 0 ] 2>/dev/null || SH=1696
     sc() { echo $(( $1 * SH / 1696 )); }
-    $FBINK -q -c -b -m -t $T,px=$(sc 96),top=$(sc 330),bottom=$(sc 1200) "VeraDroid"
-    $FBINK -q -b -m -t $T,px=$(sc 32),top=$(sc 470),bottom=$(sc 1100) "墨水屏上的 Android 阅读环境"
+    # 文字颜色：可在 boot/splash.conf 里改。FBInk 的 -C 只认“整段文字一个颜色”，
+    # 做不到一行里逐字变色（CLI 没有 x 偏移，逐字画会全部叠在正中间）。
+    SP_TITLE_COLOR='#007568'
+    SP_SUB_COLOR='#8A5A2B'
+    SP_POEM_COLOR='#6B4A78'
+    [ -f "$VD/boot/splash.conf" ] && . "$VD/boot/splash.conf"
+    hexok() { case "$1" in \#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) return 0 ;; esac; return 1; }
+    # 一次画字：先带 -C 画彩色；老 fbink / 颜色被拒时退回原来的黑白画法（保证一定有字）
+    spl() {  # color px top bottom text
+        if hexok "$1" && $FBINK -q -b -m -C "$1" -t $T,px=$(sc $2),top=$(sc $3),bottom=$(sc $4) "$5"; then
+            return 0
+        fi
+        $FBINK -q -b -m -t $T,px=$(sc $2),top=$(sc $3),bottom=$(sc $4) "$5"
+    }
+    # 清屏单独一次：颜色参数万一被拒，退回的黑白画法仍然能正常出字
+    $FBINK -q -c -b
+    # 标题：优先画逐字彩色的 PNG（文字模式做不到逐字上色）。自带的 fbink 是 MINIMAL 构建、
+    # 不含图片解码，所以用随包的 fbink-png（同一份 FBInk，开了 IMAGE）把 PNG 画在标题位置；
+    # 工具或图片缺失时退回整段单色文字。
+    if [ -x "$VD/bin/fbink-png" ] && [ -f "$VD/boot/splash-title.png" ] \
+            && "$VD/bin/fbink-png" 0 $(sc 330) "$VD/boot/splash-title.png" >/dev/null 2>&1; then
+        :
+    else
+        spl "$SP_TITLE_COLOR" 96 330 1200 "LibraColor(Android)"
+    fi
+    spl "$SP_SUB_COLOR" 32 470 1100 "墨水屏上的 Android 阅读环境"
     if [ -s $W/poem ]; then
         title=$(cut -d'|' -f1 $W/poem); poet=$(cut -d'|' -f2 $W/poem)
         tpx=36; case "$title" in *[A-Za-z]*) tpx=28 ;; esac
-        $FBINK -q -b -m -t $T,px=$(sc $tpx),top=$(sc 700),bottom=$(sc 900) "$title · $poet"
+        spl "$SP_POEM_COLOR" $tpx 700 900 "$title · $poet"
         # 英文诗句更长：字小一点，行距也小一点，免得超出屏幕宽度
         px=52; step=96
         case "$(cut -d'|' -f3 $W/poem)" in *[A-Za-z]*) px=40; step=78 ;; esac
@@ -41,7 +65,7 @@ splash_begin() {
 }$line"
             i=$((i + 1)); [ $i -gt 8 ] && break
         done
-        $FBINK -q -b -m -t $T,px=$(sc $px),top=$(sc 800),bottom=$(sc 500) "$body"
+        spl "$SP_POEM_COLOR" $px 800 500 "$body"
     fi
     # 底部：方块进度框（sp_box）；FBInk 太老 / 没有 progress.sh 时退回原来的整宽进度条
     if type vp_frame >/dev/null 2>&1 && sp_geom; then sp_box ${2:-3}; else $FBINK -q -b -P ${2:-3} -y -5; fi

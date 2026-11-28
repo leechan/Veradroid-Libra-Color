@@ -89,6 +89,22 @@ wifi_ps_tick() {
     return 0
 }
 
+# After wake: if the interface has no address, restart the supplicant and DHCP.
+# The MTK combo keeps the interface across suspend, but the supplicant/lease can be lost.
+wifi_resume() {
+    [ "$(cat "$W/wifi.was" 2>/dev/null)" = 1 ] || return 0   # Wi-Fi was off before sleep: leave it off
+    dev=$(kobo_wifi_if)
+    [ -d "/sys/class/net/$dev" ] || { t "wifi: interface missing after wake"; return 1; }
+    st=$(cat "/sys/class/net/$dev/operstate" 2>/dev/null)
+    ip=$(kobo_wifi_ip)
+    t "wifi: after wake iface=$dev oper=${st:-?} ip=${ip:-none}"
+    [ -n "$ip" ] && return 0
+    kobo_wifi_set 1
+    hostnet_write 2>/dev/null || true
+    type dns_apply >/dev/null 2>&1 && dns_apply 2>/dev/null || true
+    t "wifi: resumed ip=$(kobo_wifi_ip)"
+}
+
 hostnet_write() {
     dev=$(ip route 2>/dev/null | awk '$1 == "default" { for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
     gw=$(ip route 2>/dev/null | awk '$1 == "default" { for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }')

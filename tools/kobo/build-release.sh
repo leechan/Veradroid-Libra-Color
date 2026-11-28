@@ -107,6 +107,7 @@ resize2fs
 fbink
 fbdepth
 fbink-img
+fbink-png
 kobo-sdcard
 hwcomposer.kindle.so
 libkobo_madvise.so
@@ -200,7 +201,7 @@ EOF
     chmod 755 "$vd/bin/veradroid-epd" "$vd/bin/veradroid-input" "$vd/bin/pivot_init" \
               "$vd/bin/vdlmk" "$vd/bin/vdloopdio" "$vd/bin/vdmkswap" "$vd/bin/vdnocap" \
               "$vd/bin/vdsqueeze" "$vd/bin/e2fsck" "$vd/bin/mke2fs" "$vd/bin/resize2fs" \
-              "$vd/bin/fbink" "$vd/bin/fbdepth" "$vd/bin/fbink-img" "$vd/bin/kobo-sdcard"
+              "$vd/bin/fbink" "$vd/bin/fbdepth" "$vd/bin/fbink-img" "$vd/bin/fbink-png" "$vd/bin/kobo-sdcard"
     chmod 644 "$vd/bin/VeraHome.apk" "$vd/bin/hwcomposer.kindle.so" "$vd/bin/libkobo_madvise.so" \
               "$vd/bin/kobo-weread-opt.jar" "$vd/bin/ethernet-service-wifi.jar"
 

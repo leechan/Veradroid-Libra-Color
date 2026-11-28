@@ -72,7 +72,8 @@ run_action() {
     case "$1" in
         ''|none) ;;
         back|home|panel|switch|appopt)
-            case "$1" in back) hint back "BACK|返回" ;; home) hint home "HOME|桌面" ;; panel) hint panel "PANEL|面板" ;; switch) hint switch "SWITCH APPS|切换" ;; esac
+            # 面板：下拉就直接开，不先亮 "PANEL|面板" 的文字提示
+            case "$1" in back) hint back "BACK|返回" ;; home) hint home "HOME|桌面" ;; panel) ;; switch) hint switch "SWITCH APPS|切换" ;; esac
             touch "$X/ctl/act.$1"; watch_ctl "act.$1" ;;
         kindle|return) hint kindle "KOBO|返回 Kobo"; send exit ;;
         clear|refresh) hint clear "REFRESH|清残影"; [ -p "$X/epd.fifo" ] && kill -0 "$(cat "$W/epd.pid" 2>/dev/null)" 2>/dev/null && fifo_put FULL ;;

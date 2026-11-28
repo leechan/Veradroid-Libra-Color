@@ -214,6 +214,10 @@ public class HomeActivity extends Activity {
         pm = getPackageManager();
         prefs = Store.prefs(this, "home");
         Store.savedName(this);   // prefs 被写坏时用 name.txt 恢复设备名
+        // 一次性把“后台保留应用”改成 0：退出应用就停掉（之后用户仍可在设置里改回去）
+        if (!prefs.getBoolean("bg_keep_v2", false)) {
+            prefs.edit().putInt(Cleaner.LIMIT_KEY, 0).putBoolean("bg_keep_v2", true).commit();
+        }
         Store.purgeLegacyCloud();
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.WHITE));
         getWindow().setWindowAnimations(0);

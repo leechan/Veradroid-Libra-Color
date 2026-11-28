@@ -43,15 +43,9 @@ final class Cleaner {
      *  静读天下 轮换 3 轮，docs/jank.md 6 节）：1 个 14.7 s / 轮、每次切换读盘中位 171 MB；2 个 8.4 s、24 MB；3 个 8.7 s、23 MB；
      *  MemAvailable 最低 309 / 332 / 316 MB，三种都没有 lmkd / 内核 OOM 杀进程。 */
     static int defaultLimit() {
-        long kb = 0;
-        try {
-            BufferedReader r = new BufferedReader(new FileReader("/proc/meminfo"));
-            try {
-                String l;
-                while ((l = r.readLine()) != null) if (l.startsWith("MemTotal:")) { kb = Long.parseLong(l.replaceAll("[^0-9]", "")); break; }
-            } finally { r.close(); }
-        } catch (Throwable ignored) { }
-        return kb > 0 && kb < 700 * 1024 ? 1 : 2;
+        // 默认一个后台应用都不留：退出应用就停掉，最省电（用户要求）。
+        // 需要保留时可以在“后台保留应用”里改，或长按应用选“保持后台”。
+        return 0;
     }
 
     /** 后台最多留几个用户应用；-1 = 不限。 */
@@ -91,12 +85,16 @@ final class Cleaner {
     static void onForeground(Context c, String pkg) {
         appCtx = c.getApplicationContext();
         front = pkg;
-        if (!userApp(c, pkg)) return;   // 回到桌面 / 我们自己的页面 / 系统界面：不清理（只在用户应用到前台时）
-        recent.remove(pkg);
-        recent.addFirst(pkg);
-        while (recent.size() > 40) recent.removeLast();
+        boolean toApp = userApp(c, pkg);
+        if (toApp) {
+            recent.remove(pkg);
+            recent.addFirst(pkg);
+            while (recent.size() > 40) recent.removeLast();
+        }
+        // 回到桌面 / 切到别的应用也要清理：默认 0 个时，退出的应用会被停掉。
+        // 切到另一个用户应用时多等 3 秒（不和它的冷启动抢），回桌面 1.2 秒就够。
         ui.removeCallbacks(enforce);
-        ui.postDelayed(enforce, 3000);
+        ui.postDelayed(enforce, toApp ? 3000 : 1200);
     }
 
     private static void enforceNow() {

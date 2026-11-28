@@ -235,7 +235,7 @@ final class ColorHome {
         status.setGravity(Gravity.CENTER_VERTICAL);
 
         wifiView = new Icons.IconView(a, Icons.Kind.WIFI);
-        wifiView.setColor(Palette.TEAL);
+        wifiView.setColor(Palette.INK);   // 和时间文字同色
         wifiView.setVisibility(View.GONE);
         status.addView(wifiView, new LinearLayout.LayoutParams(dp(17), dp(17)));
 

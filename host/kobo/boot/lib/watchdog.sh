@@ -262,6 +262,30 @@ host_oom_protect() {
     return 0
 }
 
+# 低频性能快照（每 5 分钟一行组，logs/perf.log）：CPU 频率、负载、内存、zram、前台应用、top。
+# 只写文件，不参与任何决策；用来在真机上找到“卡在哪”。
+perf_snapshot() {
+    pf="$VD/logs/perf.log"
+    mkdir -p "$VD/logs" 2>/dev/null || true
+    [ -f "$pf" ] && [ "$(wc -c < "$pf" 2>/dev/null || echo 0)" -gt 262144 ] && mv -f "$pf" "$pf.1" 2>/dev/null || true
+    {
+        echo "=== $(date '+%F %T') up=$(cut -d. -f1 /proc/uptime) fg=$(cat $X/fg 2>/dev/null)"
+        echo "load $(cut -d' ' -f1-3 /proc/loadavg)"
+        for c in /sys/devices/system/cpu/cpu[0-9]*; do
+            [ -d "$c/cpufreq" ] || continue
+            echo "cpu${c##*cpu} cur=$(cat "$c/cpufreq/scaling_cur_freq" 2>/dev/null) max=$(cat "$c/cpufreq/scaling_max_freq" 2>/dev/null) gov=$(cat "$c/cpufreq/scaling_governor" 2>/dev/null)"
+        done
+        awk '/^(MemTotal|MemFree|MemAvailable|Cached|SwapTotal|SwapFree):/{printf "%s=%dMB ", substr($1,1,length($1)-1), int($2/1024)} END{print ""}' /proc/meminfo
+        [ -r /sys/block/zram0/mm_stat ] && echo "zram $(cat /sys/block/zram0/mm_stat)"
+        [ -f /proc/pressure/cpu ] && cat /proc/pressure/cpu 2>/dev/null
+        top -n 1 2>/dev/null | sed -n '1,12p'
+        # 微信读书的 AOT 过滤器（interpret-only = 没编好，会一直解释执行）
+        od=$(ls $SYS/data/app/com.tencent.weread.eink-*/oat/arm/base.odex 2>/dev/null | head -1)
+        [ -n "$od" ] && echo "weread odex=$(du -h "$od" 2>/dev/null | cut -f1) filter=$(dd if="$od" bs=4096 count=4 2>/dev/null | tr '\0' '\n' | sed -n '/^compiler-filter$/{n;p;q;}')"
+        echo
+    } >> "$pf" 2>/dev/null
+}
+
 dump_android_crash() {  # $1 = 旧 pid，$2 = 新 pid
     f="$VD/logs/android-crash.log"
     mkdir -p "$VD/logs" 2>/dev/null || true
@@ -324,6 +348,15 @@ watchdog() {
             fi
         fi
         type bat_log >/dev/null 2>&1 && bat_log
+        if [ -f $W/booted ] && [ ! -f $W/frozen ] && [ ! -f $W/saver_frozen ]; then
+            _now=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
+            _last=$(cat $W/perf.ts 2>/dev/null || echo 0)
+            case "$_last" in ''|*[!0-9]*) _last=0 ;; esac
+            if [ $((_now - _last)) -ge 300 ]; then
+                echo "$_now" > $W/perf.ts
+                perf_snapshot
+            fi
+        fi
         if [ -f $W/saver_frozen ] || [ -f $W/frozen ]; then BAT_POKE_T=0; else bat_poke_tick; fi
         # 系统盘快满了就自动扩（storage.sh）。冻结时不做。
         [ -f $W/saver_frozen ] || [ -f $W/frozen ] || { type st_auto_tick >/dev/null 2>&1 && st_auto_tick; }

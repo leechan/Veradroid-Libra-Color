@@ -227,6 +227,7 @@ after_boot() {
         set -- $(heap_values); hg=$1; hs=$2   # 和 heap_fix 一致（memory.sh）
         adb_sh "setprop dalvik.vm.heapgrowthlimit $hg; setprop dalvik.vm.heapsize $hs" >/dev/null 2>&1 || true
     fi
+    type perf_snapshot >/dev/null 2>&1 && perf_snapshot   # 开机性能快照（含微信读书 AOT 过滤器）
     lmk_tune          # 运行时参数，不持久：每次开机都要做
     proc_limit_apply  # 机型文件的 PROC_LIMIT（memory.sh）：同样不持久
     trust_unlock      # 剪贴板可读（见 trust_unlock）

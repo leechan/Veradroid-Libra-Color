@@ -180,6 +180,7 @@ settings_load() {
     if [ "$MODEL_ID" = libracolour ]; then
         case "$BOOST_MS" in ''|*[!0-9]*) BOOST_MS=400 ;; *) [ "$BOOST_MS" -lt 400 ] && BOOST_MS=400 ;; esac
         G_BACK_EXCLUDE=
+        G_BACK_REVEAL=0      # 底边上滑直接返回，不再先弹“返回”按钮（旧 settings.conf 也盖掉）
         case "$IDLE_CAP_KHZ" in ''|*[!0-9]*) IDLE_CAP_KHZ=1500000 ;; *) [ "$IDLE_CAP_KHZ" -lt 1500000 ] && IDLE_CAP_KHZ=1500000 ;; esac
     fi
     [ -f "$VD/settings.test" ] && . "$VD/settings.test"

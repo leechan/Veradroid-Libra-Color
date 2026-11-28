@@ -1329,7 +1329,6 @@ final class BlocksHome {
         for (int i = 0; i < 3; i++) {
             int bg = Palette.blend(cellHue[i], Palette.PAPER, 0.82f);
             int ink = Palette.blend(cellHue[i], Palette.INK, 0.30f);
-            int subInk = Palette.blend(cellHue[i], Palette.INK, 0.48f);
             LinearLayout cl = new LinearLayout(a);
             cl.setOrientation(LinearLayout.VERTICAL);
             cl.setGravity(Gravity.CENTER);
@@ -1339,7 +1338,7 @@ final class BlocksHome {
             v.setTextColor(ink);
             v.setGravity(Gravity.CENTER);
             TextView sub = BlocksCards.line(a, cells[i][1], 12, false);
-            sub.setTextColor(subInk);
+            sub.setTextColor(Palette.MUTED);   // 小字统一灰色，不跟块的颜色走
             sub.setGravity(Gravity.CENTER);
             if (i == 0) { meBattery = v; meBatterySub = sub; }
             cl.addView(v);

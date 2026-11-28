@@ -348,6 +348,17 @@ watchdog() {
             fi
         fi
         type bat_log >/dev/null 2>&1 && bat_log
+        # 手势诊断：把 input.log 里新增的“上滑 / 返回按钮”事件抄进主日志（查“上滑不出返回按钮”）
+        if [ -f $W/input.log ]; then
+            _isz=$(wc -c < $W/input.log 2>/dev/null || echo 0)
+            _ioff=$(cat $W/input.log.off 2>/dev/null || echo 0)
+            case "$_ioff" in ''|*[!0-9]*) _ioff=0 ;; esac
+            [ "$_isz" -lt "$_ioff" ] && _ioff=0
+            if [ "$_isz" -gt "$_ioff" ]; then
+                tail -c +$((_ioff + 1)) $W/input.log 2>/dev/null | grep -a -E 'edge swipe|back button|edge thirds|gconf:' | tail -6 | while IFS= read -r _il; do t "input: $_il"; done
+                echo "$_isz" > $W/input.log.off
+            fi
+        fi
         if [ -f $W/booted ] && [ ! -f $W/frozen ] && [ ! -f $W/saver_frozen ]; then
             _now=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
             _last=$(cat $W/perf.ts 2>/dev/null || echo 0)

@@ -1244,7 +1244,7 @@ final class BlocksHome {
         Calendar meNow = Calendar.getInstance();
         LinearLayout head = new LinearLayout(a);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        head.setPadding(0, dp(4), 0, dp(2));
+        head.setPadding(dp(16), dp(6), dp(16), dp(8));
         TextView meDate = Ui.text(a, meNow.get(Calendar.YEAR) + "年" + (meNow.get(Calendar.MONTH) + 1) + "月"
                 + meNow.get(Calendar.DAY_OF_MONTH) + "日  星期" + BlocksCards.weekday(meNow), 12, false);
         meDate.setTextColor(Palette.MUTED);
@@ -1274,7 +1274,7 @@ final class BlocksHome {
             @Override public void onClick(View v) { a.finish(); }
         }));
         head.addView(status);
-        content.addView(head, Blocks.match());
+        pg.addView(head, Blocks.match());   // 顶栏固定在顶部，不跟着内容滚动
 
         // 设备卡片：机器 / 电量 / 存储 / 版本
         LinearLayout devBox = new LinearLayout(a);
@@ -1324,18 +1324,22 @@ final class BlocksHome {
         boolean initChg = live != null ? (live[1] == 1) : "1".equals(st.get("charging"));
         String[][] cells = { { (initBat == null ? "—" : initBat) + "%", initChg ? "充电中" : "剩余电量", "Battery" },
             { storageUsed() + "%", "存储已用", "Storage" }, { version(), "桌面版本", "Version" } };
-        int[] cellInk = { Palette.GREEN, Palette.TEAL, Palette.PLUM };
-        int[] cellTint = { Palette.SOFT_MINT, Palette.SOFT_PEACH, Palette.SOFT_SKY };
+        // 三个数值：底色是同一个色相的浅色，主文字用同一色相压深，背景和文字是“一家人”
+        int[] cellHue = { Palette.GREEN, Palette.AMBER, Palette.SKY };
         for (int i = 0; i < 3; i++) {
+            int bg = Palette.blend(cellHue[i], Palette.PAPER, 0.82f);
+            int ink = Palette.blend(cellHue[i], Palette.INK, 0.30f);
+            int subInk = Palette.blend(cellHue[i], Palette.INK, 0.48f);
             LinearLayout cl = new LinearLayout(a);
             cl.setOrientation(LinearLayout.VERTICAL);
             cl.setGravity(Gravity.CENTER);
-            cl.setBackground(Palette.round(a, cellTint[i], 18));
+            cl.setBackground(Palette.round(a, bg, 18));
             cl.setPadding(dp(6), dp(10), dp(6), dp(10));
             TextView v = BlocksCards.line(a, cells[i][0], 19, true);
-            v.setTextColor(cellInk[i]);
+            v.setTextColor(ink);
             v.setGravity(Gravity.CENTER);
             TextView sub = BlocksCards.line(a, cells[i][1], 12, false);
+            sub.setTextColor(subInk);
             sub.setGravity(Gravity.CENTER);
             if (i == 0) { meBattery = v; meBatterySub = sub; }
             cl.addView(v);

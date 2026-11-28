@@ -331,42 +331,6 @@ wifi_diag() {
     } >> "$f" 2>/dev/null
 }
 
-# 最后手段：把 MTK 组合模块整个重载一次（能找到 .ko 才做；找不到就什么都不动）
-wifi_module_reset() {
-    dev=$(kobo_wifi_if)
-    rel=$(uname -r)
-    wlan=; wmtc=; wmtd=
-    for d in /lib/modules/$rel /usr/lib/modules/$rel /drivers; do
-        [ -d "$d" ] || continue
-        [ -n "$wlan" ] || wlan=$(find "$d" -maxdepth 8 -name 'wlan_drv_gen4m.ko*' 2>/dev/null | head -1)
-        [ -n "$wmtc" ] || wmtc=$(find "$d" -maxdepth 8 -name 'wmt_chrdev_wifi.ko*' 2>/dev/null | head -1)
-        [ -n "$wmtd" ] || wmtd=$(find "$d" -maxdepth 8 -name 'wmt_drv.ko*' 2>/dev/null | head -1)
-    done
-    if [ -z "$wlan" ] || [ -z "$wmtc" ] || [ -z "$wmtd" ]; then
-        t "wifi: module reset skipped (ko not found: $wlan | $wmtc | $wmtd)"
-        return 1
-    fi
-    t "wifi: resetting combo modules"
-    command -v wpa_cli >/dev/null 2>&1 && wpa_cli -i "$dev" terminate >/dev/null 2>&1 || true
-    killall -q -TERM wpa_supplicant 2>/dev/null || true
-    usleep 300000
-    killall -q -KILL wpa_supplicant 2>/dev/null || true
-    ifconfig "$dev" down 2>/dev/null || true
-    rmmod wlan_drv_gen4m 2>/dev/null || true
-    rmmod wmt_chrdev_wifi 2>/dev/null || true
-    rmmod wmt_drv 2>/dev/null || true
-    sleep 1
-    insmod "$wmtd" 2>/dev/null || t "wifi: insmod wmt_drv failed"
-    sleep 1
-    insmod "$wmtc" 2>/dev/null || t "wifi: insmod wmt_chrdev_wifi failed"
-    sleep 1
-    insmod "$wlan" 2>/dev/null || t "wifi: insmod wlan_drv_gen4m failed"
-    sleep 2
-    ifconfig "$dev" up 2>/dev/null || true
-    kobo_wpa_ensure >/dev/null 2>&1 || true
-    command -v wpa_cli >/dev/null 2>&1 && wpa_cli -i "$dev" reconnect >/dev/null 2>&1 || true
-}
-
 # 长时间休眠后 MTK 组合 Wi-Fi 有时整个卡住：supplicant 起得来，但扫不到 / 连不上、拿不到地址。
 # 把接口彻底 down/up 一次、清掉旧 socket 再重启 supplicant，多数情况下能救回来。
 wifi_hard_recover() {

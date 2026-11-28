@@ -172,7 +172,8 @@ public class WifiActivity extends Activity {
                 : "notfound".equals(e) ? "附近没有找到这个网络，靠近路由器后再试"
                 : "needpsk".equals(e) ? "这个网络需要密码"
                 : "badpsk".equals(e) ? "密码要 8–63 个字符，不能含有英文引号 \" 或反斜杠 \\"
-                : "create".equals(e) ? "Kobo 的 Wi-Fi 服务没有接受这个网络，请在 Kobo 设置里连接"
+                : "nodev".equals(e) ? "Wi-Fi 模块没有就绪（休眠后可能卡住了）：重启机器（长按电源键）后再连"
+                : "create".equals(e) ? "Wi-Fi 服务没有接受这个网络，重启机器后再试"
                 : "wifioff".equals(e) ? "Wi-Fi 打不开（飞行模式是不是开着？）"
                 : "not saved".equals(e) ? "Kobo 里没有这个已保存的网络"
                 : "网络名里有特殊字符，请在 Kobo 设置里连接";

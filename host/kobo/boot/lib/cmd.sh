@@ -58,6 +58,15 @@ wifi_scan() {
 
 wifi_connect() {
     rm -f "$X/ctl/wifi.result" 2>/dev/null || true
+    # 接口都不在：模块没起来（休眠后卡死过），怎么连都没用，直接告诉桌面
+    _wcdev=$(kobo_wifi_if)
+    if [ ! -d "/sys/class/net/$_wcdev" ]; then
+        t "wifi: connect rejected, $_wcdev missing"
+        type wifi_diag >/dev/null 2>&1 && wifi_diag "connect: $_wcdev missing"
+        wifi_result ok=0 "error=nodev" "essid=$1"
+        wifi_list; status_write
+        return 1
+    fi
     hex=$1
     case "$hex" in ''|*[!0-9a-f]*) wifi_result ok=0 "error=bad name"; return 1 ;; esac
     want=$(printf "$(printf '%s' "$hex" | sed 's/../\\x&/g')")
@@ -106,28 +115,9 @@ wifi_connect() {
                 hostnet_write 2>/dev/null || true
                 wifi_result ok=1 "essid=$hex"
             else
-                # 还连不上：最后把组合模块重载一次再试
-                type wifi_diag >/dev/null 2>&1 && wifi_diag "connect $want: before module reset"
-                if type wifi_module_reset >/dev/null 2>&1 && wifi_module_reset; then
-                    sleep 2
-                    if [ -n "$psk" ]; then
-                        kobo_wifi_connect_new "$want" "$psk" || kobo_wifi_select "$want" || true
-                    else
-                        kobo_wifi_select "$want" || kobo_wifi_connect_new "$want" "" || true
-                    fi
-                    i=0
-                    while [ $i -lt 25 ]; do
-                        sleep 1; i=$((i + 1))
-                        [ "$(kobo_wifi_current)" = "$want" ] && [ -n "$(kobo_wifi_ip)" ] && break
-                    done
-                fi
-                type wifi_diag >/dev/null 2>&1 && wifi_diag "connect $want: final"
-                if [ "$(kobo_wifi_current)" = "$want" ] && [ -n "$(kobo_wifi_ip)" ]; then
-                    hostnet_write 2>/dev/null || true
-                    wifi_result ok=1 "essid=$hex"
-                else
-                    wifi_result ok=0 "error=timeout" "essid=$hex"
-                fi
+                # 还连不上：留现场（不再自动重载内核模块——wmt_drv 还被蓝牙占着，卸不干净反而会把 wlan0 弄没）
+                type wifi_diag >/dev/null 2>&1 && wifi_diag "connect $want: failed"
+                wifi_result ok=0 "error=timeout" "essid=$hex"
             fi
         fi
     else

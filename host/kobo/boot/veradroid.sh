@@ -187,6 +187,11 @@ kmod_load     || { t "kmod_load failed"; splash "VeraDroid：内核模块加载�
 
 FRAMEWORK_AFTER_SAVE='splash_begin 正在准备 3'
 framework_stop || { t "cannot pause kobo ui"; exit 1; }
+# 开机恢复上次的前光亮度（驱动默认是 0，Kobo 自己的系统会记住）
+if [ "$(kobo_light_get)" = 0 ] && [ -f "$W/fl.last" ]; then
+    _fl=$(tr -cd '0-9' < "$W/fl.last" 2>/dev/null)
+    [ "${_fl:-0}" -gt 0 ] && kobo_light_set "$_fl" && t "light: restored $_fl from fl.last"
+fi
 [ -f "$W/splash.on" ] || splash_begin 正在准备 3
 splash_update 12
 

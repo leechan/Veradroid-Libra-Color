@@ -352,6 +352,11 @@ kobo_enter_sleep() {
         [ "${dim_fl:-0}" -gt 0 ] && cur_fl=$dim_fl
         rm -f "$W/fl.dimmed"
     fi
+    # 驱动刚休眠/刚被别的东西关过灯时读到 0：用最后一次非零亮度兜底
+    if [ "${cur_fl:-0}" -eq 0 ] && [ -f "$W/fl.last" ]; then
+        last_fl=$(tr -cd '0-9' < "$W/fl.last" 2>/dev/null)
+        [ "${last_fl:-0}" -gt 0 ] && cur_fl=$last_fl
+    fi
     echo "${cur_fl:-0}" > "$W/sleep.fl"
     kobo_light_set 0
     if sleep_transfer_busy; then
@@ -387,8 +392,14 @@ kobo_exit_sleep() {
     fi
     rm -f "$W/saver_frozen" "$W/sleeping"
     if [ -f "$W/sleep.fl" ]; then
-        kobo_light_set "$(cat "$W/sleep.fl" 2>/dev/null)"
+        want_fl=$(tr -cd '0-9' < "$W/sleep.fl" 2>/dev/null)
+        kobo_light_set "${want_fl:-0}"
         rm -f "$W/sleep.fl"
+        # 唤醒后驱动有时会再把亮度写回 0（或 Android 关屏时写 0）：3 秒 / 8 秒后各检查一次
+        if [ "${want_fl:-0}" -gt 0 ]; then
+            ( sleep 3; [ "$(kobo_light_get)" = 0 ] && kobo_light_set "$want_fl" ) </dev/null >/dev/null 2>&1 &
+            ( sleep 8; [ "$(kobo_light_get)" = 0 ] && kobo_light_set "$want_fl" ) </dev/null >/dev/null 2>&1 &
+        fi
     fi
     touch "$W/lastinput" "$X/lasttouch" 2>/dev/null || true
     chmod 644 "$X/lasttouch" 2>/dev/null || true

@@ -133,6 +133,9 @@ kobo_light_set() {
     [ "$v" -lt 0 ] && v=0
     [ "$v" -gt "$KOBO_BL_MAX" ] && v=$KOBO_BL_MAX
     [ -w "$KOBO_BL_BRIGHT" ] && printf '%d\n' "$v" > "$KOBO_BL_BRIGHT" 2>/dev/null
+    # 记住最后一次非零亮度：唤醒时驱动偶尔会把亮度清成 0，靠它兜底
+    [ "$v" -gt 0 ] && [ -n "$W" ] && echo "$v" > "$W/fl.last" 2>/dev/null || true
+    return 0
 }
 
 # VeraHome warmth scale is 0..24 (0 = cool, 24 = warmest).
@@ -281,6 +284,7 @@ kobo_wpa_conf() {
 }
 
 kobo_wpa_ensure() {
+    drv=${1:-nl80211}
     dev=$(kobo_wifi_if)
     sock=/var/run/wpa_supplicant/$dev
     # A socket left behind after a sleep/Wi-Fi-off cycle is not a live supplicant.
@@ -296,7 +300,7 @@ kobo_wpa_ensure() {
     usleep 400000
     killall -q -KILL wpa_supplicant 2>/dev/null || true
     rm -f "$sock"
-    _werr=$(wpa_supplicant -D nl80211 -s -i "$dev" -c "$conf" -C /var/run/wpa_supplicant -B 2>&1)
+    _werr=$(wpa_supplicant -D "$drv" -s -i "$dev" -c "$conf" -C /var/run/wpa_supplicant -B 2>&1)
     _wrc=$?
     if [ "$_wrc" != 0 ]; then t "wifi: wpa start rc=$_wrc err=$_werr"; return 1; fi
     i=0
@@ -323,6 +327,12 @@ wifi_diag() {
         done
         echo "--- dmesg (wifi/wmt)"
         dmesg 2>/dev/null | grep -i -E 'wlan|wifi|wmt|stp|conninfra|8723|cfg80211' | tail -60
+        echo "--- scan"
+        wpa_cli -i "$dev" scan >/dev/null 2>&1
+        sleep 3
+        wpa_cli -i "$dev" scan_results 2>&1 | head -25
+        echo "--- networks"
+        wpa_cli -i "$dev" list_networks 2>&1 | head -15
         echo "--- supplicant"
         wpa_cli -i "$dev" status 2>&1 | head -20
         echo "--- iface"
@@ -347,6 +357,25 @@ wifi_hard_recover() {
     sleep 1
     kobo_wpa_ensure >/dev/null 2>&1 || t "wifi: hard recover: supplicant restart failed"
     command -v wpa_cli >/dev/null 2>&1 && wpa_cli -i "$dev" reconnect >/dev/null 2>&1 || true
+    # 唤醒后 nl80211 有时扫不到任何 AP（scan 一直超时），换 wext 再试一次
+    sleep 2
+    if ! wifi_scan_ok; then
+        t "wifi: hard recover: no scan results, retrying supplicant with wext"
+        kobo_wpa_ensure wext >/dev/null 2>&1 || t "wifi: hard recover: wext supplicant failed"
+        command -v wpa_cli >/dev/null 2>&1 && wpa_cli -i "$dev" reconnect >/dev/null 2>&1 || true
+    else
+        t "wifi: hard recover: scan sees APs"
+    fi
+}
+
+# 扫一次：3 秒内有任何 AP（scan_results 的表头之外还有行）就算射频正常
+wifi_scan_ok() {
+    dev=$(kobo_wifi_if)
+    command -v wpa_cli >/dev/null 2>&1 || return 1
+    wpa_cli -i "$dev" scan >/dev/null 2>&1
+    sleep 3
+    n=$(wpa_cli -i "$dev" scan_results 2>/dev/null | awk 'NR > 1 { c++ } END { print c + 0 }')
+    [ "${n:-0}" -gt 0 ]
 }
 
 kobo_wifi_current() {

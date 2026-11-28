@@ -84,11 +84,30 @@ wifi_connect() {
             sleep 1; i=$((i + 1))
             [ "$(kobo_wifi_current)" = "$want" ] && [ -n "$(kobo_wifi_ip)" ] && break
         done
-        if [ "$(kobo_wifi_current)" = "$want" ]; then
+        if [ "$(kobo_wifi_current)" = "$want" ] && [ -n "$(kobo_wifi_ip)" ]; then
             hostnet_write 2>/dev/null || true
             wifi_result ok=1 "essid=$hex"
         else
-            wifi_result ok=0 "error=timeout" "essid=$hex"
+            # 长时间休眠后首次连接经常失败：把 Wi-Fi 彻底重启一次再试
+            t "wifi: connect $want failed, hard recovery and retry"
+            type wifi_hard_recover >/dev/null 2>&1 && wifi_hard_recover
+            sleep 2
+            if [ -n "$psk" ]; then
+                kobo_wifi_connect_new "$want" "$psk" || kobo_wifi_select "$want" || true
+            else
+                kobo_wifi_select "$want" || kobo_wifi_connect_new "$want" "" || true
+            fi
+            i=0
+            while [ $i -lt 25 ]; do
+                sleep 1; i=$((i + 1))
+                [ "$(kobo_wifi_current)" = "$want" ] && [ -n "$(kobo_wifi_ip)" ] && break
+            done
+            if [ "$(kobo_wifi_current)" = "$want" ] && [ -n "$(kobo_wifi_ip)" ]; then
+                hostnet_write 2>/dev/null || true
+                wifi_result ok=1 "essid=$hex"
+            else
+                wifi_result ok=0 "error=timeout" "essid=$hex"
+            fi
         fi
     else
         wifi_result ok=0 "error=create" "essid=$hex"

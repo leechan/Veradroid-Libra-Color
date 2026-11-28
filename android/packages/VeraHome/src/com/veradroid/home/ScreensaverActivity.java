@@ -133,6 +133,8 @@ public class ScreensaverActivity extends Activity {
     private void load() {
         items.clear();
         items.add(new Item("random", null, "随机"));
+        // 随包自带的默认屏保（小熊脸那张）：宿主 saver list 时把预览图拷到 ctl/saver/.default-preview.png
+        items.add(new Item("default", new File(VD_DIR, ".default-preview.png"), "默认屏保"));
         nSd = 0; nVd = 0;
         for (File f : images(SD_DIR)) { items.add(new Item("sd/" + f.getName(), f, f.getName())); nSd++; }
         for (File f : images(VD_DIR)) { items.add(new Item("vd/" + f.getName(), f, f.getName() + "（USB）")); nVd++; }
@@ -145,7 +147,8 @@ public class ScreensaverActivity extends Activity {
             items.add(it); nVd++;
         }
         elsewhere = elsewhere();
-        if (mode == null) mode = "rotate";   // 没选过：随机轮换已导入的图片
+        // 没选过：有导入的图片就轮换，没有就用随包的默认屏保
+        if (mode == null) mode = (nSd + nVd > 0) ? "rotate" : "default";
         foundText.setText(found(nSd, nVd));
         pageNo = 0;
         showMode();
@@ -187,7 +190,7 @@ public class ScreensaverActivity extends Activity {
         final boolean vdListed = new File(HostLink.CTL + "saver.listed").exists();
         new Thread(new Runnable() {
             @Override public void run() {
-                for (Item it : its) if (it.f != null && it.why == null && !it.key.equals("random") && !it.key.equals("kindle")) it.why = SaverImage.check(it.f);
+                for (Item it : its) if (it.f != null && it.why == null && !it.key.equals("random") && !it.key.equals("default") && !it.key.equals("kindle")) it.why = SaverImage.check(it.f);
                 handler.post(new Runnable() { @Override public void run() { if (!isFinishing() && myPrep == prepGen) { showFound(); renderPage(); } } });
                 if (myPrep != prepGen) return;
                 java.util.Set<String> keys = new java.util.HashSet<String>();
@@ -206,7 +209,7 @@ public class ScreensaverActivity extends Activity {
     }
 
     private void convertOne(final Item it, int[] p) {
-        if (it.f == null || it.why != null || it.key.equals("random") || it.key.equals("kindle")) return;
+        if (it.f == null || it.why != null || it.key.equals("random") || it.key.equals("default") || it.key.equals("kindle")) return;
         final String why = SaverImage.convert(it.key, it.f, p[0], p[1]);
         if (why == null) return;
         it.why = why;
@@ -236,12 +239,13 @@ public class ScreensaverActivity extends Activity {
         mode = null; file = null;
         java.util.Map<String, String> m = HostLink.kv(SEL);
         String md = m.get("mode");
-        if ("kindle".equals(md) || "rotate".equals(md) || "one".equals(md) || "wall".equals(md)) { mode = md; file = m.get("file"); }
+        if ("default".equals(md) || "kindle".equals(md) || "rotate".equals(md) || "one".equals(md) || "wall".equals(md)) { mode = md; file = m.get("file"); }
     }
 
     private void showMode() {
         String s;
-        if ("one".equals(mode) && file != null) s = "当前：只用一张（" + file.substring(file.indexOf('/') + 1) + "）";
+        if ("default".equals(mode)) s = "当前：默认屏保";
+        else if ("one".equals(mode) && file != null) s = "当前：只用一张（" + file.substring(file.indexOf('/') + 1) + "）";
         else if ("rotate".equals(mode)) s = "当前：随机显示已导入的图片";
         else if ("wall".equals(mode)) s = "当前：使用首页壁纸";
         else s = "当前：默认屏保";
@@ -277,6 +281,7 @@ public class ScreensaverActivity extends Activity {
 
     private boolean selected(Item it) {
         if (it.key.equals("random")) return "rotate".equals(mode);
+        if (it.key.equals("default")) return "default".equals(mode);
         if (it.key.equals("kindle")) return "kindle".equals(mode);
         return "one".equals(mode) && it.key.equals(file);
     }
@@ -339,7 +344,7 @@ public class ScreensaverActivity extends Activity {
                 iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
                 cell.addView(iv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
             } else {
-                TextView none = Ui.text(this, it.key.equals("kindle") ? "Kobo\n自带" : "无法预览", 18, true);
+                TextView none = Ui.text(this, it.key.equals("kindle") ? "Kobo\n自带" : it.key.equals("default") ? "默认\n屏保" : "无法预览", 18, true);
                 none.setGravity(Gravity.CENTER);
                 cell.addView(none, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
             }
@@ -358,6 +363,7 @@ public class ScreensaverActivity extends Activity {
                         return;
                     }
                     if (it.key.equals("random")) choose("rotate", null);
+                    else if (it.key.equals("default")) choose("default", null);
                     else if (it.key.equals("kindle")) choose("kindle", null);
                     else choose("one", it.key);
                 }

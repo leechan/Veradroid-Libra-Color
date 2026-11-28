@@ -1267,15 +1267,21 @@ final class BlocksHome {
         TextView cap = Blocks.cap(a, "Local device");
         cap.setTextColor(Palette.GREEN);
         dc.addView(cap);
-        dc.addView(BlocksCards.line(a, prefs.getString("name", "VeraDroid").length() > 0 ? prefs.getString("name", "VeraDroid") : "VeraDroid", 18, true));
+        // 名字 + 一支铅笔：点名字或铅笔都能改名（这里不是二级页面，所以不放右箭头）
+        LinearLayout nameRow = new LinearLayout(a);
+        nameRow.setGravity(Gravity.CENTER_VERTICAL);
+        nameRow.addView(BlocksCards.line(a, prefs.getString("name", "VeraDroid").length() > 0 ? prefs.getString("name", "VeraDroid") : "VeraDroid", 18, true));
+        Icons.IconView edit = new Icons.IconView(a, Icons.Kind.EDIT);
+        edit.setColor(Palette.MUTED);
+        LinearLayout.LayoutParams ep = Blocks.lp(dp(15), dp(15));
+        ep.leftMargin = dp(7);
+        nameRow.addView(edit, ep);
+        nameRow.setClickable(true);
+        nameRow.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { a.titleDialog(); } });
+        Blocks.fast(nameRow);
+        dc.addView(nameRow, Blocks.match());
         dc.addView(BlocksCards.line(a, model() + " · Android " + Build.VERSION.RELEASE, 12, false));
         dev.addView(dc, Blocks.weight(1));
-        Icons.IconView chev = new Icons.IconView(a, Icons.Kind.CHEV_R);
-        chev.setColor(Palette.GREEN);
-        dev.addView(chev, Blocks.lp(dp(18), dp(18)));
-        dev.setClickable(true);
-        dev.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { a.titleDialog(); } });
-        Blocks.fast(dev);
         devBox.addView(dev);
 
         LinearLayout r1 = new LinearLayout(a);

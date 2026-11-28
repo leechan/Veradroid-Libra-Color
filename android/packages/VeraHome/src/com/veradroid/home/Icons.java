@@ -23,7 +23,7 @@ final class Icons {
         SLIDERS, INFO, CLOSE, PLUS, MINUS, BELL, MOON, FONT, SWIPE, BOOK, UPLOAD, CLOUD, SEARCH, STORE, CHART, BLUETOOTH, CAMERA,
         EXIT, MORE, LIST, PLANE, BOOKMARK, TOC,
         FOLDER, USER, DEVICE, IMAGE, NOTE, LAYOUT, CLOCK, CALENDAR, WIDGET, CLEAN, LOCK, UNLOCK,
-        SPARKLE, RESTART, ANDROID, BROOM
+        SPARKLE, RESTART, ANDROID, BROOM, EDIT
     }
 
     static void draw(Canvas c, Kind k, float size, int color) {
@@ -98,6 +98,15 @@ final class Icons {
         case REFRESH: {
             c.drawArc(new RectF(4.5f, 4.5f, 19.5f, 19.5f), -50, 290, false, p);
             poly(c, p, 15, 2.5f, 17.8f, 5.6f, 14, 7.8f);
+            break; }
+        case EDIT: {
+            // 铅笔：笔身 + 笔尖 + 底部一道短横线
+            Path b = new Path();
+            b.moveTo(4.5f, 19.5f); b.lineTo(6, 14.5f); b.lineTo(15.5f, 5);
+            b.lineTo(19, 8.5f); b.lineTo(9.5f, 18); b.close();
+            c.drawPath(b, p);
+            c.drawLine(6, 14.5f, 9.5f, 18, p);
+            c.drawLine(4, 21.5f, 20, 21.5f, p);
             break; }
         case BROOM: {
             // 扫帚：斜柄 + 刷头 + 几根刷毛

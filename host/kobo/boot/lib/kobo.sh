@@ -307,6 +307,24 @@ kobo_wpa_ensure() {
     return 1
 }
 
+# 长时间休眠后 MTK 组合 Wi-Fi 有时整个卡住：supplicant 起得来，但扫不到 / 连不上、拿不到地址。
+# 把接口彻底 down/up 一次、清掉旧 socket 再重启 supplicant，多数情况下能救回来。
+wifi_hard_recover() {
+    dev=$(kobo_wifi_if)
+    t "wifi: hard recover on $dev"
+    command -v wpa_cli >/dev/null 2>&1 && wpa_cli -i "$dev" terminate >/dev/null 2>&1 || true
+    killall -q -TERM wpa_supplicant 2>/dev/null || true
+    usleep 300000
+    killall -q -KILL wpa_supplicant 2>/dev/null || true
+    rm -f "/var/run/wpa_supplicant/$dev"
+    ifconfig "$dev" down 2>/dev/null || true
+    sleep 1
+    ifconfig "$dev" up 2>/dev/null || true
+    sleep 1
+    kobo_wpa_ensure >/dev/null 2>&1 || t "wifi: hard recover: supplicant restart failed"
+    command -v wpa_cli >/dev/null 2>&1 && wpa_cli -i "$dev" reconnect >/dev/null 2>&1 || true
+}
+
 kobo_wifi_current() {
     dev=$(kobo_wifi_if); cur=
     if [ -S "/var/run/wpa_supplicant/$dev" ] && command -v wpa_cli >/dev/null 2>&1; then

@@ -262,6 +262,19 @@ host_oom_protect() {
     return 0
 }
 
+dump_android_crash() {  # $1 = 旧 pid，$2 = 新 pid
+    f="$VD/logs/android-crash.log"
+    mkdir -p "$VD/logs" 2>/dev/null || true
+    [ -f "$f" ] && [ "$(wc -c < "$f" 2>/dev/null || echo 0)" -gt 524288 ] && mv -f "$f" "$f.1" 2>/dev/null || true
+    {
+        echo "=== $(date '+%F %T') system_server $1 -> $2 ==="
+        adb_sh 'logcat -d -b crash -t 400' 2>/dev/null | tr -d '\r' | tail -120
+        adb_sh 'logcat -d -b system -t 4000' 2>/dev/null | tr -d '\r' \
+            | grep -a -i -E 'watchdog killing|watchdog.*overdue|fatal exception|anr in |lowmemorykiller|lmkd.*kill|system_server.*crash' | tail -80
+        echo
+    } >> "$f" 2>/dev/null
+}
+
 watchdog() {
     # PERF: poll every 60s while frozen to cut host wakeups. FIFO cmd.sh still handles UI.
     # MEM: re-apply kernel LMK each tick (lab126 can reset minfree).
@@ -287,7 +300,12 @@ watchdog() {
             # 512 MB 机型上前台的微信读书又会被反复杀掉（用户诊断）。pid 变了就重新设一次。
             ss=$(pidof system_server 2>/dev/null | cut -d' ' -f1)
             if [ -n "$ss" ] && [ "$ss" != "$(cat $W/ss.pid 2>/dev/null)" ]; then
-                [ -f $W/ss.pid ] && [ -f $W/booted ] && { t "system_server restarted ($(cat $W/ss.pid) -> $ss): re-tuning lmkd"; ( sleep 20; lmk_tune; i=0; while [ $i -lt 30 ] && [ "$(adb_sh 'getprop sys.boot_completed' 2>/dev/null | tr -d '\r\n')" != 1 ]; do sleep 5; i=$((i+1)); done; trust_unlock ) & }
+                if [ -f $W/ss.pid ] && [ -f $W/booted ]; then
+                    t "system_server restarted ($(cat $W/ss.pid) -> $ss): re-tuning lmkd"
+                    # 留一份 Android 的崩溃/Watchdog 记录，便于查“为什么又软重启了”
+                    ( dump_android_crash "$(cat $W/ss.pid 2>/dev/null)" "$ss" ) </dev/null >>"$LOG" 2>&1 &
+                    ( sleep 20; lmk_tune; i=0; while [ $i -lt 30 ] && [ "$(adb_sh 'getprop sys.boot_completed' 2>/dev/null | tr -d '\r\n')" != 1 ]; do sleep 5; i=$((i+1)); done; trust_unlock ) &
+                fi
                 echo "$ss" > $W/ss.pid
             fi
         fi

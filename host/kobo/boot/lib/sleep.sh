@@ -20,7 +20,9 @@ screensaver_show() {
     : > "$list"
     smode=; sone=
     type saver_choice >/dev/null 2>&1 && saver_choice
-    if [ "$smode" = one ] && [ -n "$sone" ]; then
+    if [ "$smode" = default ]; then
+        [ -f "$VD/boot/screensaver-default.png" ] && echo "$VD/boot/screensaver-default.png" >> "$list"
+    elif [ "$smode" = one ] && [ -n "$sone" ]; then
         echo "$sone" >> "$list"
     elif [ "$smode" = kindle ]; then
         for d in /mnt/onboard/.kobo/screensaver /mnt/onboard/.adds/koreader/screensaver; do
@@ -395,18 +397,13 @@ kobo_exit_sleep() {
     type vinput_reset >/dev/null 2>&1 && vinput_reset thaw
     epd_send REDRAW
     type status_write >/dev/null 2>&1 && status_write 2>/dev/null || true
+    # 唤醒后统一走 wifi_resume：它会检查“有地址但 supplicant 没连上”的假连接，
+    # 失败后再做一次硬恢复（接口 down/up + 重启 supplicant）并重试。
     if [ -f "$W/sleep.wifi" ]; then
         rm -f "$W/sleep.wifi"
-        (
-            kobo_wifi_set 1
-            type hostnet_write >/dev/null 2>&1 && hostnet_write
-            type wifi_ps_set >/dev/null 2>&1 && wifi_ps_set on
-            type status_write >/dev/null 2>&1 && status_write 2>/dev/null || true
-            t "sleep: wifi restored after wakeup"
-        ) </dev/null >>"$LOG" 2>&1 &
-    else
-        type wifi_resume >/dev/null 2>&1 && ( wifi_resume ) </dev/null >>"$LOG" 2>&1 &
+        type wifi_ps_set >/dev/null 2>&1 && wifi_ps_set on
     fi
+    type wifi_resume >/dev/null 2>&1 && ( wifi_resume ) </dev/null >>"$LOG" 2>&1 &
     t "sleep: woke up and redrew screen (battery $(kobo_battery)%)"
 }
 

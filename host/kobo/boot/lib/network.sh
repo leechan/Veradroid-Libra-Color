@@ -97,12 +97,26 @@ wifi_resume() {
     [ -d "/sys/class/net/$dev" ] || { t "wifi: interface missing after wake"; return 1; }
     st=$(cat "/sys/class/net/$dev/operstate" 2>/dev/null)
     ip=$(kobo_wifi_ip)
-    t "wifi: after wake iface=$dev oper=${st:-?} ip=${ip:-none}"
-    [ -n "$ip" ] && return 0
+    wst=$(wpa_cli -i "$dev" status 2>/dev/null | sed -n 's/^wpa_state=//p')
+    t "wifi: after wake iface=$dev oper=${st:-?} ip=${ip:-none} wpa=${wst:-none}"
+    # 只有「有地址 + supplicant 已连上」才算好的；有地址但没连上说明是休眠前的旧地址
+    if [ -n "$ip" ] && { [ -z "$wst" ] || [ "$wst" = COMPLETED ]; }; then return 0; fi
     kobo_wifi_set 1
     hostnet_write 2>/dev/null || true
     type dns_apply >/dev/null 2>&1 && dns_apply 2>/dev/null || true
-    t "wifi: resumed ip=$(kobo_wifi_ip)"
+    i=0
+    while [ $i -lt 8 ]; do
+        [ -n "$(kobo_wifi_ip)" ] && break
+        sleep 1; i=$((i + 1))
+    done
+    if [ -z "$(kobo_wifi_ip)" ]; then
+        t "wifi: still no address after wake, hard recovery"
+        type wifi_hard_recover >/dev/null 2>&1 && wifi_hard_recover
+        kobo_wifi_set 1
+        hostnet_write 2>/dev/null || true
+        type dns_apply >/dev/null 2>&1 && dns_apply 2>/dev/null || true
+    fi
+    t "wifi: resumed oper=$(cat /sys/class/net/$dev/operstate 2>/dev/null) ip=$(kobo_wifi_ip)"
 }
 
 hostnet_write() {

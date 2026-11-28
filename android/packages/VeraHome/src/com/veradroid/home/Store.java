@@ -88,6 +88,44 @@ final class Store {
         return sp;
     }
 
+    /**
+     * 设备名字单独再存一份纯文本（DIR/name.txt）：极少数情况下 prefs 文件在异常重启后被写坏、
+     * 或启动早期目录不可写落到内部存储（重启即清），名字就会“变回默认”。这里读不到就恢复一次。
+     */
+    static String savedName(Context c) {
+        SharedPreferences sp = prefs(c, "home");
+        String n = sp.getString("name", "");
+        if (n.length() > 0) return n;
+        try {
+            File f = new File(dir(null), "name.txt");
+            if (f.isFile() && f.length() > 0 && f.length() < 256) {
+                byte[] b = new byte[(int) f.length()];
+                java.io.InputStream in = new FileInputStream(f);
+                int r = in.read(b);
+                in.close();
+                String s = r > 0 ? new String(b, 0, r, "UTF-8").trim() : "";
+                if (s.length() > 0) {
+                    sp.edit().putString("name", s).commit();
+                    return s;
+                }
+            }
+        } catch (Throwable ignored) { }
+        return "";
+    }
+
+    static void saveName(Context c, String n) {
+        prefs(c, "home").edit().putString("name", n).commit();
+        try {
+            File d = dir(null);
+            File t = new File(d, "name.tmp");
+            FileOutputStream out = new FileOutputStream(t);
+            out.write(n.getBytes("UTF-8"));
+            out.flush();
+            out.close();
+            t.renameTo(new File(d, "name.txt"));
+        } catch (Throwable ignored) { }
+    }
+
     /** Replacement for getFilesDir(); copies an old internal file over the first time it is asked for. */
     static File file(Context c, String name) {
         File d = dir("files");

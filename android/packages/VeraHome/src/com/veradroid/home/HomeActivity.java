@@ -213,6 +213,7 @@ public class HomeActivity extends Activity {
         });
         pm = getPackageManager();
         prefs = Store.prefs(this, "home");
+        Store.savedName(this);   // prefs 被写坏时用 name.txt 恢复设备名
         Store.purgeLegacyCloud();
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.WHITE));
         getWindow().setWindowAnimations(0);
@@ -1822,7 +1823,7 @@ public class HomeActivity extends Activity {
                     String t = input.getText().toString().trim();
                     if (t.length() > 24) t = t.substring(0, 24);
                     if (t.length() == 0) t = "VeraDroid";
-                    prefs.edit().putString("name", t).commit();
+                    Store.saveName(HomeActivity.this, t);
                     refreshStatus();
                     if (blocks != null && Blocks.on(HomeActivity.this)) {
                         blocks.invalidate(BlocksHome.HOME);

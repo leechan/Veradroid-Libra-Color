@@ -11,7 +11,7 @@ saver_choice() {
     smode=; sone=
     [ -f "$SAVER_SEL" ] && [ ! -L "$SAVER_SEL" ] || return 0
     smode=$(sed -n 's/^mode=\([a-z]*\)$/\1/p' "$SAVER_SEL" | tail -1)
-    case "$smode" in kindle|rotate|one|wall) ;; *) smode= ; return 0 ;; esac
+    case "$smode" in default|kindle|rotate|one|wall) ;; *) smode= ; return 0 ;; esac
     [ "$smode" = one ] || return 0
     sf=$(sed -n 's/^file=\(.*\)$/\1/p' "$SAVER_SEL" | tail -1)
     sname=${sf#*/}
@@ -44,11 +44,13 @@ saver_cmd() {
                 [ -f "$f" ] && [ ! -L "$f" ] && { cp "$f" "$X/saver.tmp/.kindle-preview.png"; break 2; }
             done
         done
+        # 自带的默认屏保：给桌面当缩略图
+        [ -f "$VD/boot/screensaver-default.png" ] && cp "$VD/boot/screensaver-default.png" "$X/saver.tmp/.default-preview.png" 2>/dev/null || true
         if [ -x "$FBINK" ]; then
             eval "$("$FBINK" -e 2>/dev/null)" 2>/dev/null || true
             [ -n "${viewWidth:-}" ] && [ -n "${viewHeight:-}" ] && echo "$viewWidth $viewHeight" > "$X/saver.tmp/.panel"
         fi
-        chmod 755 "$X/saver.tmp"; chmod 644 "$X/saver.tmp"/* "$X/saver.tmp/.kindle-preview.png" "$X/saver.tmp/.panel" 2>/dev/null
+        chmod 755 "$X/saver.tmp"; chmod 644 "$X/saver.tmp"/* "$X/saver.tmp/.kindle-preview.png" "$X/saver.tmp/.default-preview.png" "$X/saver.tmp/.panel" 2>/dev/null
         mv "$X/saver.tmp" "$X/saver"; : > "$X/ctl/saver.listed"
         t "screensaver: exported $n image(s) from screensaver dir for picker" ;;
     done) rm -rf $X/saver $X/saver.tmp $X/ctl/saver.listed ;;

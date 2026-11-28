@@ -184,6 +184,9 @@ settings_load() {
         case "$IDLE_CAP_KHZ" in ''|*[!0-9]*) IDLE_CAP_KHZ=1500000 ;; *) [ "$IDLE_CAP_KHZ" -lt 1500000 ] && IDLE_CAP_KHZ=1500000 ;; esac
     fi
     [ -f "$VD/settings.test" ] && . "$VD/settings.test"
+    # 底边上滑：第一下直接返回，不要中间的“返回”按钮（任何机型 / 旧 settings.conf 都不能改回来）
+    G_BACK_REVEAL=0
+    G_BACK_REVEAL_MS=4000
     for k in KFB_CONTRAST KFB_DITHER KFB_FLASH KFB_INVERT KFB_LIGHTF KFB_DARKEN KFB_MODE KFB_SETTLE KFB_HOLD KFB_SMOOTH KFB_PACE KFB_CLEAN KFB_REAGL_MIN KFB_SCROLLDU KFB_IMG KFB_ANIM_MODE KFB_ANIM_DIR KFB_ANIM_STEPS KFB_ANIM_MIN KFB_GCN KFB_NEWWIN KFB_ECLIPSE KFB_DARKCRUSH KFB_HEAVY_FLASH KFB_IMG_DITHER; do
         eval "GLOB_$k=\$$k"
     done
@@ -312,6 +315,9 @@ gestures_write() {
         echo "FL_TIMEOUT=${FL_TIMEOUT:-0}"
         echo "ROTATE=$(rot_deg)"
     } > "$W/gestures.tmp" && mv -f "$W/gestures.tmp" "$W/gestures"
+    # 留一份在 logs/ 里：插 USB 就能确认底边上滑到底是“直接返回”还是“先弹按钮”
+    mkdir -p "$VD/logs" 2>/dev/null || true
+    cp -f "$W/gestures" "$VD/logs/gestures.txt" 2>/dev/null || true
 }
 
 dns_apply() {

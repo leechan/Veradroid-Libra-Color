@@ -1228,6 +1228,9 @@ final class BlocksHome {
     // ------------------------------------------------------------------ 我的
 
     private TextView meBattery, meBatterySub;
+    private Icons.IconView meWifi;
+    private ColorHome.Battery meBatIcon;
+    private TextView meBatPct, meClock;
     private android.widget.ScrollView meScroll;
 
     private View buildMe() {
@@ -1237,14 +1240,40 @@ final class BlocksHome {
         LinearLayout pg = new LinearLayout(a);
         pg.setOrientation(LinearLayout.VERTICAL);
 
+        // 顶部：日期 + 右上角状态栏（Wi-Fi / 电量 / 时间），和首页一致；不再显示“我的”标题
+        Calendar meNow = Calendar.getInstance();
         LinearLayout head = new LinearLayout(a);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView meTitle = Ui.text(a, "我的", 26, true);
-        meTitle.setTextColor(Palette.INK);
-        head.addView(meTitle, Blocks.weight(1));
-        if (a.standalone) head.addView(Blocks.squareButton(a, Icons.Kind.CLOSE, new View.OnClickListener() {
+        head.setPadding(0, dp(4), 0, dp(2));
+        TextView meDate = Ui.text(a, meNow.get(Calendar.YEAR) + "年" + (meNow.get(Calendar.MONTH) + 1) + "月"
+                + meNow.get(Calendar.DAY_OF_MONTH) + "日  星期" + BlocksCards.weekday(meNow), 12, false);
+        meDate.setTextColor(Palette.MUTED);
+        head.addView(meDate, Blocks.weight(1));
+        int[] meLive = Ui.liveBattery(a);
+        int mePct = meLive != null ? meLive[0] : 60;
+        boolean meChg = meLive != null && meLive[1] == 1;
+        LinearLayout status = new LinearLayout(a);
+        status.setGravity(Gravity.CENTER_VERTICAL);
+        meWifi = new Icons.IconView(a, Icons.Kind.WIFI);
+        meWifi.setColor(Palette.INK);
+        meWifi.setVisibility(View.GONE);
+        status.addView(meWifi, Blocks.lp(dp(17), dp(17)));
+        meBatIcon = new ColorHome.Battery(a, mePct, meChg);
+        LinearLayout.LayoutParams mbp = Blocks.lp(dp(28), dp(14));
+        mbp.leftMargin = dp(8);
+        status.addView(meBatIcon, mbp);
+        meBatPct = Ui.text(a, mePct + "%", 11.5f, true);
+        meBatPct.setTextColor(Palette.INK);
+        meBatPct.setPadding(dp(5), 0, dp(9), 0);
+        status.addView(meBatPct);
+        meClock = Ui.text(a, Ui.clock(a), 14, true);
+        meClock.setTextColor(Palette.INK);
+        clocks.add(meClock);
+        status.addView(meClock);
+        if (a.standalone) status.addView(Blocks.squareButton(a, Icons.Kind.CLOSE, new View.OnClickListener() {
             @Override public void onClick(View v) { a.finish(); }
         }));
+        head.addView(status);
         content.addView(head, Blocks.match());
 
         // 设备卡片：机器 / 电量 / 存储 / 版本
@@ -1273,12 +1302,16 @@ final class BlocksHome {
         nameRow.addView(BlocksCards.line(a, prefs.getString("name", "VeraDroid").length() > 0 ? prefs.getString("name", "VeraDroid") : "VeraDroid", 18, true));
         Icons.IconView edit = new Icons.IconView(a, Icons.Kind.EDIT);
         edit.setColor(Palette.MUTED);
-        LinearLayout.LayoutParams ep = Blocks.lp(dp(15), dp(15));
-        ep.leftMargin = dp(7);
-        nameRow.addView(edit, ep);
-        nameRow.setClickable(true);
-        nameRow.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { a.titleDialog(); } });
-        Blocks.fast(nameRow);
+        FrameLayout editBox = new FrameLayout(a);
+        editBox.addView(edit, new FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER));
+        editBox.setPadding(dp(6), dp(6), dp(6), dp(6));
+        LinearLayout.LayoutParams ep = Blocks.lp(dp(28), dp(28));
+        ep.leftMargin = dp(4);
+        nameRow.addView(editBox, ep);
+        // 只有铅笔能改名：名字本身不再响应点击
+        editBox.setClickable(true);
+        editBox.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { a.titleDialog(); } });
+        Blocks.fast(editBox);
         dc.addView(nameRow, Blocks.match());
         dc.addView(BlocksCards.line(a, model() + " · Android " + Build.VERSION.RELEASE, 12, false));
         dev.addView(dc, Blocks.weight(1));
@@ -1292,20 +1325,26 @@ final class BlocksHome {
         String[][] cells = { { (initBat == null ? "—" : initBat) + "%", initChg ? "充电中" : "剩余电量", "Battery" },
             { storageUsed() + "%", "存储已用", "Storage" }, { version(), "桌面版本", "Version" } };
         int[] cellInk = { Palette.GREEN, Palette.TEAL, Palette.PLUM };
+        int[] cellTint = { Palette.SOFT_MINT, Palette.SOFT_PEACH, Palette.SOFT_SKY };
         for (int i = 0; i < 3; i++) {
             LinearLayout cl = new LinearLayout(a);
             cl.setOrientation(LinearLayout.VERTICAL);
-            cl.setPadding(dp(10), dp(6), dp(6), dp(6));
-            TextView v = BlocksCards.line(a, cells[i][0], 17, true);
+            cl.setGravity(Gravity.CENTER);
+            cl.setBackground(Palette.round(a, cellTint[i], 18));
+            cl.setPadding(dp(6), dp(10), dp(6), dp(10));
+            TextView v = BlocksCards.line(a, cells[i][0], 19, true);
             v.setTextColor(cellInk[i]);
+            v.setGravity(Gravity.CENTER);
             TextView sub = BlocksCards.line(a, cells[i][1], 12, false);
+            sub.setGravity(Gravity.CENTER);
             if (i == 0) { meBattery = v; meBatterySub = sub; }
             cl.addView(v);
             cl.addView(sub);
-            cl.addView(Blocks.cap(a, cells[i][2]));
-            r1.addView(cl, Blocks.weight(1));
+            LinearLayout.LayoutParams cp = Blocks.weight(1);
+            if (i > 0) cp.leftMargin = dp(8);
+            r1.addView(cl, cp);
         }
-        devBox.addView(r1);
+        devBox.addView(r1, Blocks.gap(a, 8));
         content.addView(devBox, Blocks.gap(a, 2));
 
         content.addView(TaskCards.strip(a), Blocks.match());
@@ -1485,7 +1524,7 @@ final class BlocksHome {
     private void refreshMe() {
         if (meBattery == null) return;
         int[] live = Ui.liveBattery(a);
-        Map<String, String> st = live == null ? HostLink.kv(HostLink.CTL + "status") : null;
+        Map<String, String> st = HostLink.kv(HostLink.CTL + "status");
         String b = live != null ? String.valueOf(live[0]) : Ui.clampBat(st.get("battery"));
         boolean chg = live != null ? (live[1] == 1) : "1".equals(st.get("charging"));
         String s = (b == null ? "—" : b) + "%";
@@ -1493,6 +1532,20 @@ final class BlocksHome {
         if (meBatterySub != null) {
             String sub = chg ? "充电中" : "剩余电量";
             if (!sub.contentEquals(meBatterySub.getText())) meBatterySub.setText(sub);
+        }
+        // 顶部状态栏：和首页同一套 wifi / 电量 / 时间
+        int pct = live != null ? live[0] : 60;
+        if (meBatIcon != null) meBatIcon.set(pct, chg);
+        if (meBatPct != null) {
+            String ps = pct + "%";
+            if (!ps.contentEquals(meBatPct.getText())) meBatPct.setText(ps);
+        }
+        String lanip = st.get("lanip");
+        boolean wifi = "1".equals(st.get("wifi")) && lanip != null && lanip.trim().length() > 0;
+        if (meWifi != null) meWifi.setVisibility(wifi ? View.VISIBLE : View.GONE);
+        if (meClock != null) {
+            String cs = Ui.clock(a);
+            if (!cs.contentEquals(meClock.getText())) meClock.setText(cs);
         }
     }
 
